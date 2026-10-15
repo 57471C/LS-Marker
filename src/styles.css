@@ -1,0 +1,119 @@
+@import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --color-bg: #f3f1ee;
+  --color-surface: #faf9f7;
+  --color-ink: #1c1b19;
+  --color-muted: #6e6a64;
+  --color-line: #e4e0da;
+  --color-accent: #3d4c5c;
+  --color-accent-ink: #f7f6f4;
+
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    line-height: 1.5;
+  }
+
+  button,
+  a,
+  input,
+  select {
+    transition-property: background-color, color, border-color, opacity, transform;
+    transition-duration: 150ms;
+    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .press:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
+  .btn-blue {
+    background: #2563eb;
+    color: #fff;
+  }
+
+  .btn-blue:hover:not(:disabled) {
+    background: #1d4ed8;
+  }
+
+  .box-mark {
+    border: 2px solid var(--color-surface);
+    box-shadow: 0 0 0 1px var(--color-ink);
+  }
+
+  .box-mark.is-selected {
+    border-color: var(--color-ink);
+    box-shadow: 0 0 0 2px var(--color-surface);
+  }
+
+  .class-pane {
+    width: 100%;
+  }
+
+  .pane-resize {
+    display: none;
+  }
+
+  @media (min-width: 64rem) {
+    .class-pane {
+      width: var(--pane-width);
+      flex-shrink: 0;
+    }
+
+    .pane-resize {
+      display: block;
+    }
+  }
+  [data-pan="ready"],
+  [data-pan="ready"] *,
+  [data-pan="ready"] button {
+    cursor: grab;
+  }
+
+  [data-pan="dragging"],
+  [data-pan="dragging"] *,
+  [data-pan="dragging"] button {
+    cursor: grabbing;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    button,
+    a,
+    input,
+    select,
+    .press:active:not(:disabled) {
+      transition: none;
+      transform: none;
+    }
+  }
+}
