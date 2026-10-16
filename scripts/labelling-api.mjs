@@ -151,9 +151,18 @@ function getDb(root) {
               rel_path TEXT NOT NULL,
               claimed_by TEXT,
               claimed_at TEXT,
+              status TEXT DEFAULT 'open',
+              completed_at TEXT,
               PRIMARY KEY (project_id, rel_path)
             );
           `);
+          const claimCols = db.prepare("PRAGMA table_info(image_claims)").all();
+          if (claimCols.length && !claimCols.some((col) => col.name === "status")) {
+            db.exec("ALTER TABLE image_claims ADD COLUMN status TEXT DEFAULT 'open'");
+          }
+          if (claimCols.length && !claimCols.some((col) => col.name === "completed_at")) {
+            db.exec("ALTER TABLE image_claims ADD COLUMN completed_at TEXT");
+          }
           ensureDefaultProject(db, root);
         }
         for (const project of db.prepare("SELECT id FROM projects").all()) {
@@ -464,8 +473,11 @@ function claimForWrite(db, projectId, rel, username) {
   const now = new Date().toISOString();
   if (!row?.claimed_by) {
     db.prepare(
-      `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(project_id, rel_path) DO UPDATE SET claimed_by = excluded.claimed_by, claimed_at = excluded.claimed_at`,
+      `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status) VALUES (?, ?, ?, ?, 'open')
+       ON CONFLICT(project_id, rel_path) DO UPDATE SET
+         claimed_by = excluded.claimed_by,
+         claimed_at = COALESCE(image_claims.claimed_at, excluded.claimed_at),
+         status = CASE WHEN image_claims.status = 'incomplete' THEN 'open' ELSE COALESCE(image_claims.status, 'open') END`,
     ).run(projectId, rel, username, now);
     return;
   }
@@ -975,8 +987,9 @@ function listClasses(db, projectId) {
 /**
  * @param {string} root
  * @param {{ id: number, name: string, folder: string }} project
+ * @param {import("better-sqlite3").Database} [db]
  */
-function publicProject(root, project) {
+function publicProject(root, project, db) {
   const resolvedFolder = path.resolve(root, project.folder);
   const error = folderError(resolvedFolder);
   let totalPhotos = 0;
@@ -985,9 +998,20 @@ function publicProject(root, project) {
     try {
       const images = listImages(resolvedFolder);
       totalPhotos = images.length;
+      let claimsMap = null;
+      if (db) {
+        claimsMap = new Map(
+          db
+            .prepare("SELECT rel_path, status FROM image_claims WHERE project_id = ?")
+            .all(project.id)
+            .map((r) => [r.rel_path, r.status]),
+        );
+      }
       for (const name of images) {
         const full = resolveInside(resolvedFolder, name);
-        if (fs.existsSync(labelFileFor(full))) {
+        const hasTxt = fs.existsSync(labelFileFor(full));
+        const status = claimsMap?.get(name);
+        if (status === "complete" || (!status && hasTxt)) {
           completePhotos++;
         }
       }
@@ -1061,7 +1085,7 @@ async function catalogue(root, project) {
   const db = await getDb(root);
   const resolvedFolder = path.resolve(root, project.folder);
   const error = folderError(resolvedFolder);
-  /** @type {{ name: string, labelled: boolean, claimedBy: string | null, claimedAt: string | null }[]} */
+  /** @type {{ name: string, labelled: boolean, claimedBy: string | null, claimedAt: string | null, status: string, completedAt: string | null }[]} */
   let images = [];
   if (!error) {
     try {
@@ -1071,17 +1095,23 @@ async function catalogue(root, project) {
     }
     const claims = new Map(
       db
-        .prepare("SELECT rel_path, claimed_by, claimed_at FROM image_claims WHERE project_id = ?")
+        .prepare(
+          "SELECT rel_path, claimed_by, claimed_at, status, completed_at FROM image_claims WHERE project_id = ?",
+        )
         .all(project.id)
         .map((row) => [row.rel_path, row]),
     );
     images = listImages(resolvedFolder).map((name) => {
       const claim = claims.get(name);
+      const labelled = fs.existsSync(labelFileFor(resolveInside(resolvedFolder, name)));
+      const status = claim?.status || (labelled ? "complete" : "open");
       return {
         name,
-        labelled: fs.existsSync(labelFileFor(resolveInside(resolvedFolder, name))),
+        labelled,
         claimedBy: claim?.claimed_by || null,
         claimedAt: claim?.claimed_at || null,
+        status,
+        completedAt: claim?.completed_at || null,
       };
     });
   }
@@ -1241,16 +1271,86 @@ async function guard(req, res, url, root, method, pathname) {
         throw new HttpError(404, "Image not found");
       }
       const row = db
-        .prepare("SELECT claimed_by FROM image_claims WHERE project_id = ? AND rel_path = ?")
+        .prepare(
+          "SELECT claimed_by, claimed_at, status, completed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
+        )
         .get(project.id, name);
+      const action = typeof body.action === "string" ? body.action : "claim";
+
+      if (action === "release-incomplete") {
+        if (row?.claimed_by && row.claimed_by !== user.username && !body.takeover && !admin) {
+          throw new HttpError(403, `Claimed by ${row.claimed_by}`);
+        }
+        db.prepare(
+          `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+           VALUES (?, ?, NULL, NULL, 'incomplete', NULL)
+           ON CONFLICT(project_id, rel_path) DO UPDATE SET
+             claimed_by = NULL,
+             claimed_at = NULL,
+             status = 'incomplete',
+             completed_at = NULL`,
+        ).run(project.id, name);
+        send(res, 200, {
+          name,
+          claimedBy: null,
+          claimedAt: null,
+          status: "incomplete",
+          completedAt: null,
+        });
+        return true;
+      }
+
+      if (action === "complete") {
+        if (row?.claimed_by && row.claimed_by !== user.username && !body.takeover) {
+          throw new HttpError(409, `Claimed by ${row.claimed_by}`);
+        }
+        if (body.boxes !== undefined) {
+          const boxes = cleanBoxes(body.boxes);
+          const lines = boxes.map(
+            (box) =>
+              `${box.classId} ${box.x.toFixed(6)} ${box.y.toFixed(6)} ${box.w.toFixed(6)} ${box.h.toFixed(6)}`,
+          );
+          fs.writeFileSync(labelFileFor(imageFull), lines.length ? `${lines.join("\n")}\n` : "");
+        }
+        const claimedAt = row?.claimed_at || now;
+        db.prepare(
+          `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+           VALUES (?, ?, ?, ?, 'complete', ?)
+           ON CONFLICT(project_id, rel_path) DO UPDATE SET
+             claimed_by = excluded.claimed_by,
+             claimed_at = COALESCE(image_claims.claimed_at, excluded.claimed_at),
+             status = 'complete',
+             completed_at = excluded.completed_at`,
+        ).run(project.id, name, user.username, claimedAt, now);
+        send(res, 200, {
+          name,
+          claimedBy: user.username,
+          claimedAt,
+          status: "complete",
+          completedAt: now,
+        });
+        return true;
+      }
+
       if (row?.claimed_by && row.claimed_by !== user.username && !body.takeover) {
         throw new HttpError(409, `Claimed by ${row.claimed_by}`);
       }
       db.prepare(
-        `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT(project_id, rel_path) DO UPDATE SET claimed_by = excluded.claimed_by, claimed_at = excluded.claimed_at`,
+        `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+         VALUES (?, ?, ?, ?, 'open', NULL)
+         ON CONFLICT(project_id, rel_path) DO UPDATE SET
+           claimed_by = excluded.claimed_by,
+           claimed_at = excluded.claimed_at,
+           status = 'open',
+           completed_at = NULL`,
       ).run(project.id, name, user.username, now);
-      send(res, 200, { name, claimedBy: user.username, claimedAt: now });
+      send(res, 200, {
+        name,
+        claimedBy: user.username,
+        claimedAt: now,
+        status: "open",
+        completedAt: null,
+      });
       return true;
     }
     if (method === "DELETE") {
@@ -1259,14 +1359,19 @@ async function guard(req, res, url, root, method, pathname) {
       const row = db
         .prepare("SELECT claimed_by FROM image_claims WHERE project_id = ? AND rel_path = ?")
         .get(project.id, name);
-      if (row?.claimed_by && row.claimed_by !== user.username) {
+      if (row?.claimed_by && row.claimed_by !== user.username && !admin) {
         throw new HttpError(403, `Claimed by ${row.claimed_by}`);
       }
-      db.prepare("DELETE FROM image_claims WHERE project_id = ? AND rel_path = ?").run(
-        project.id,
-        name,
-      );
-      send(res, 200, { ok: true });
+      db.prepare(
+        `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+         VALUES (?, ?, NULL, NULL, 'incomplete', NULL)
+         ON CONFLICT(project_id, rel_path) DO UPDATE SET
+           claimed_by = NULL,
+           claimed_at = NULL,
+           status = 'incomplete',
+           completed_at = NULL`,
+      ).run(project.id, name);
+      send(res, 200, { ok: true, status: "incomplete" });
       return true;
     }
     throw new HttpError(404, "Not found");
@@ -1295,7 +1400,7 @@ async function handle(req, res, url, root) {
   if (method === "GET" && pathname === "/api/project") {
     const db = await getDb(root);
     const project = currentProject(db, req);
-    send(res, 200, { project: project ? publicProject(root, project) : null });
+    send(res, 200, { project: project ? publicProject(root, project, db) : null });
     return;
   }
 
@@ -1304,7 +1409,7 @@ async function handle(req, res, url, root) {
     const rows = db
       .prepare("SELECT id, name, folder FROM projects ORDER BY name COLLATE NOCASE")
       .all();
-    send(res, 200, { projects: rows.map((row) => publicProject(root, row)) });
+    send(res, 200, { projects: rows.map((row) => publicProject(root, row, db)) });
     return;
   }
 
@@ -1315,7 +1420,7 @@ async function handle(req, res, url, root) {
     const folder = cleanText(body.folder, "Folder", 1000);
     const project = createProject(db, root, name, folder);
     writeCookie(res, "partlab_project", String(project.id), Math.floor(SESSION_MS / 1000));
-    send(res, 200, { project: publicProject(root, project) });
+    send(res, 200, { project: publicProject(root, project, db) });
     return;
   }
 
@@ -1327,7 +1432,7 @@ async function handle(req, res, url, root) {
     const project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(id);
     if (!project) throw new HttpError(404, "Project not found");
     writeCookie(res, "partlab_project", String(project.id), Math.floor(SESSION_MS / 1000));
-    send(res, 200, { project: publicProject(root, project) });
+    send(res, 200, { project: publicProject(root, project, db) });
     return;
   }
 

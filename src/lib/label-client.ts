@@ -1,9 +1,12 @@
 export type ClassRow = { id: number; ic: string; des: string; color: string };
+export type PhotoStatus = "open" | "incomplete" | "complete";
 export type ImageRow = {
   name: string;
   labelled: boolean;
   claimedBy: string | null;
   claimedAt: string | null;
+  status: PhotoStatus;
+  completedAt: string | null;
 };
 export type Box = { classId: number; x: number; y: number; w: number; h: number };
 
@@ -249,13 +252,55 @@ export async function deleteUser(id: number): Promise<void> {
   await asJson(res);
 }
 
-export async function claimImage(name: string, takeover = false): Promise<void> {
+export async function claimImage(
+  name: string,
+  takeover = false,
+): Promise<{
+  name: string;
+  claimedBy: string;
+  claimedAt: string;
+  status: PhotoStatus;
+  completedAt: string | null;
+}> {
   const res = await fetch(api("/api/claim"), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name, takeover }),
+    body: JSON.stringify({ name, takeover, action: "claim" }),
   });
-  await asJson(res);
+  return asJson(res);
+}
+
+export async function releaseIncomplete(name: string): Promise<{
+  name: string;
+  claimedBy: null;
+  claimedAt: null;
+  status: PhotoStatus;
+  completedAt: null;
+}> {
+  const res = await fetch(api("/api/claim"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, action: "release-incomplete" }),
+  });
+  return asJson(res);
+}
+
+export async function completeImage(
+  name: string,
+  boxes?: Box[],
+): Promise<{
+  name: string;
+  claimedBy: string;
+  claimedAt: string;
+  status: PhotoStatus;
+  completedAt: string;
+}> {
+  const res = await fetch(api("/api/claim"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, action: "complete", boxes }),
+  });
+  return asJson(res);
 }
 
 export async function releaseImage(name: string): Promise<void> {

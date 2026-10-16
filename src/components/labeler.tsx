@@ -1,18 +1,28 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronLeft, ChevronRight, Eye, EyeOff, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Eye,
+  EyeOff,
+  Trash2,
+} from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { LabelStage, newId, round6, type StageBox } from "@/components/label-stage";
 import { classFill } from "@/lib/class-color";
 import {
   claimImage,
+  completeImage,
   fetchCatalogue,
   fetchLabel,
   imageSrc,
-  releaseImage,
+  releaseIncomplete,
   saveLabel,
   type Catalogue,
   type ClassRow,
   type ImageRow,
+  type PhotoStatus,
 } from "@/lib/label-client";
 import { useSession } from "@/lib/session";
 
@@ -53,12 +63,36 @@ function withKeys(
   }));
 }
 
-type Queue = "all" | "mine" | "free" | "open";
+function StatusBadge({ status }: { status: PhotoStatus }) {
+  if (status === "complete") {
+    return (
+      <span className="inline-flex items-center rounded-sm bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-800">
+        Complete
+      </span>
+    );
+  }
+  if (status === "incomplete") {
+    return (
+      <span className="inline-flex items-center rounded-sm bg-orange-500/15 px-2 py-0.5 text-xs font-medium text-orange-800">
+        Incomplete
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded-sm bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-800">
+      Open
+    </span>
+  );
+}
+
+type Queue = "all" | "open" | "incomplete" | "complete" | "mine" | "free";
 
 function matchesQueue(image: ImageRow, next: Queue, username: string | null): boolean {
   if (next === "mine") return image.claimedBy === username;
   if (next === "free") return !image.claimedBy;
-  if (next === "open") return !image.labelled;
+  if (next === "open") return image.status === "open";
+  if (next === "incomplete") return image.status === "incomplete";
+  if (next === "complete") return image.status === "complete";
   return true;
 }
 
@@ -95,6 +129,7 @@ export function Labeler() {
   const [confirmTakeover, setConfirmTakeover] = useState(false);
   const [codeList, setCodeList] = useState("");
   const [codesHydrated, setCodesHydrated] = useState(false);
+  const [codesOpen, setCodesOpen] = useState(false);
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(() => new Set());
   const [paneWidth, setPaneWidth] = useState(360);
   const [paneReady, setPaneReady] = useState(false);
@@ -160,6 +195,15 @@ export function Labeler() {
     if (!codesHydrated || projectId == null) return;
     sessionStorage.setItem(`part-lab-codes:${projectId}`, codeList);
   }, [codeList, codesHydrated, projectId]);
+
+  useEffect(() => {
+    const stored = sessionStorage.getItem("part-lab-codes-open");
+    if (stored !== null) setCodesOpen(stored === "true");
+  }, []);
+
+  useEffect(() => {
+    sessionStorage.setItem("part-lab-codes-open", String(codesOpen));
+  }, [codesOpen]);
 
   useEffect(() => {
     if (projectId == null) return;
@@ -309,6 +353,7 @@ export function Labeler() {
                       labelled: true,
                       claimedBy: image.claimedBy ?? username,
                       claimedAt: image.claimedAt ?? new Date().toISOString(),
+                      status: image.status === "incomplete" ? "open" : image.status,
                     }
                   : image,
               ),
@@ -571,10 +616,16 @@ export function Labeler() {
     if (!current) return;
     setBusy(true);
     try {
-      await claimImage(current.name, takeover);
-      const at = new Date().toISOString();
-      await refreshClaims((image) => ({ ...image, claimedBy: username, claimedAt: at }));
+      const res = await claimImage(current.name, takeover);
+      await refreshClaims((image) => ({
+        ...image,
+        claimedBy: res.claimedBy,
+        claimedAt: res.claimedAt,
+        status: res.status,
+        completedAt: res.completedAt,
+      }));
       setConfirmTakeover(false);
+      setStatus("Claimed");
       setError(null);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Could not claim");
@@ -583,15 +634,52 @@ export function Labeler() {
     }
   }
 
-  async function release() {
+  async function releaseIncompleteAction() {
     if (!current) return;
     setBusy(true);
     try {
-      await releaseImage(current.name);
-      await refreshClaims((image) => ({ ...image, claimedBy: null, claimedAt: null }));
+      const res = await releaseIncomplete(current.name);
+      await refreshClaims((image) => ({
+        ...image,
+        claimedBy: null,
+        claimedAt: null,
+        status: res.status,
+        completedAt: null,
+      }));
+      setStatus("Released as incomplete");
       setError(null);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Could not release");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function completeCurrent() {
+    if (!current) return;
+    setBusy(true);
+    try {
+      const cleaned = boxes.map((box) => ({
+        classId: box.classId,
+        x: round6(box.x),
+        y: round6(box.y),
+        w: round6(box.w),
+        h: round6(box.h),
+      }));
+      const res = await completeImage(current.name, cleaned);
+      setSaved(serialize(boxes));
+      await refreshClaims((image) => ({
+        ...image,
+        labelled: cleaned.length > 0,
+        claimedBy: res.claimedBy,
+        claimedAt: res.claimedAt,
+        status: "complete",
+        completedAt: res.completedAt,
+      }));
+      setStatus("Complete");
+      setError(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not complete");
     } finally {
       setBusy(false);
     }
@@ -622,6 +710,7 @@ export function Labeler() {
                 {labelledCount} of {allImages.length} labelled
               </p>
             ) : null}
+            {current ? <StatusBadge status={current.status} /> : null}
             {current ? <p className="font-mono text-sm text-muted">{claimLabel}</p> : null}
           </>
         }
@@ -764,125 +853,158 @@ export function Labeler() {
           className="class-pane flex max-h-96 min-h-0 flex-col overflow-hidden border-t border-line bg-surface lg:max-h-none lg:border-t-0"
           style={{ "--pane-width": `${paneWidth}px` } as CSSProperties}
         >
-          <div className="flex shrink-0 flex-col gap-4 p-4 pb-2">
-            <label className="flex flex-col gap-2 text-sm font-medium">
-              Codes on this image
-              <textarea
-                className="min-h-24 w-full rounded-sm border border-line bg-bg px-3 py-2 font-mono text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                value={codeList}
-                spellCheck={false}
-                disabled={locked}
-                placeholder={"HX-M8\nNUT-M8"}
-                onChange={(event) => setCodeList(event.target.value)}
-              />
-            </label>
-            {tokens.length > 0 ? (
-              <p className="text-sm text-muted">
-                {picks.length} of {tokens.length} codes are in the class list.
-                {unknownCodes.length > 0 ? ` Missing: ${unknownCodes.join(", ")}` : ""}
-              </p>
-            ) : options.length > 0 ? (
-              <p className="text-sm text-muted">
-                Classes already on this image are in the menu. Paste codes to add others.
-              </p>
-            ) : (
-              <p className="text-sm text-muted">
-                Paste item codes. The class menu only lists those.
-              </p>
-            )}
-            <label className="flex flex-col gap-2 text-sm font-medium">
-              <span className="flex items-center gap-2">
-                Class
-                <span className="font-normal text-muted">
-                  {selectedKey ? "selected box" : "next box"}
-                </span>
-                {activeClassId != null ? (
-                  <span
-                    className="size-3 rounded-full"
-                    style={{ background: colorFor(activeClassId) }}
-                    aria-hidden="true"
-                  />
+          <div
+            className={`flex flex-col gap-3 p-4 pb-2 ${codesOpen ? "flex-1 min-h-0" : "shrink-0"}`}
+          >
+            <div className="flex items-center justify-between rounded-sm border border-line bg-bg p-2.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="text-sm font-medium">Codes on this image</span>
+                {tokens.length > 0 ? (
+                  <span className="rounded-sm bg-ink/10 px-1.5 py-0.5 font-mono text-xs text-ink">
+                    {tokens.length} {tokens.length === 1 ? "code" : "codes"}
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted">None</span>
+                )}
+                {unknownCodes.length > 0 ? (
+                  <span className="rounded-sm bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700">
+                    {unknownCodes.length} missing
+                  </span>
                 ) : null}
-              </span>
-              <select
-                className={field}
-                value={options.some((row) => row.id === activeClassId) ? (activeClassId ?? "") : ""}
-                disabled={options.length === 0 || locked}
-                onChange={(event) => chooseClass(Number(event.target.value))}
+              </div>
+              <button
+                type="button"
+                className="press inline-flex size-8 items-center justify-center rounded-sm border border-line bg-surface text-ink hover:bg-surface-raised"
+                onClick={() => setCodesOpen((prev) => !prev)}
+                title={codesOpen ? "Minimise" : "Full column"}
+                aria-label={codesOpen ? "Minimise" : "Full column"}
               >
-                {options.length === 0 ? <option value="">Paste item codes</option> : null}
-                {options.map((row) => (
-                  <option key={row.id} value={row.id}>
-                    {classLine(row)}
-                  </option>
-                ))}
-              </select>
-              <span className="text-sm font-normal text-muted">
-                {selectedKey
-                  ? "Changing this updates the selected box."
-                  : "Used for the next box you draw."}
-              </span>
-            </label>
-          </div>
-          <div className="flex min-h-0 flex-1 flex-col gap-2 px-4">
-            <div className="flex items-center justify-between text-sm font-medium">
-              <span>Boxes</span>
-              <span className="font-mono text-muted tabular-nums">{boxes.length}</span>
+                {codesOpen ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+              </button>
             </div>
-            {boxes.length === 0 ? (
-              <p className="pb-2 text-sm text-muted">
-                Drag on the image. The selected class is written into the YOLO file.
-              </p>
+
+            {codesOpen ? (
+              <div className="flex min-h-0 flex-1 flex-col gap-2">
+                <textarea
+                  className="w-full flex-1 min-h-[300px] resize-none rounded-sm border border-line bg-surface px-3 py-2 font-mono text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  value={codeList}
+                  spellCheck={false}
+                  disabled={locked}
+                  placeholder={"HX-M8\nNUT-M8\nWSH-M8"}
+                  onChange={(event) => setCodeList(event.target.value)}
+                  autoFocus
+                />
+                <div className="text-xs text-muted">
+                  {tokens.length > 0 ? (
+                    <p>
+                      {picks.length} of {tokens.length} codes in class list.
+                      {unknownCodes.length > 0 ? ` Missing: ${unknownCodes.join(", ")}` : ""}
+                    </p>
+                  ) : (
+                    <p>Paste item codes (one per line). Class dropdown will filter to these.</p>
+                  )}
+                </div>
+              </div>
             ) : (
-              <ul
-                ref={boxListRef}
-                className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pb-2"
-              >
-                {boxes.map((box, boxIndex) => {
-                  const hidden = hiddenKeys.has(box.key);
-                  return (
-                    <li key={box.key} className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => selectBox(box.key)}
-                        className={`press h-11 min-w-0 flex-1 truncate rounded-sm px-3 text-left font-mono text-sm ${
-                          hidden ? "opacity-40" : ""
-                        } ${box.key === selectedKey ? "bg-ink text-surface" : "bg-bg text-ink"}`}
-                        style={{ boxShadow: `inset 4px 0 0 ${colorFor(box.classId)}` }}
-                      >
-                        {boxIndex + 1} {boxTitle(box.classId)}
-                      </button>
-                      <button
-                        type="button"
-                        className={iconBtn}
-                        aria-pressed={!hidden}
-                        aria-label={`${hidden ? "Show" : "Hide"} box ${boxIndex + 1}`}
-                        onClick={() => toggleBox(box.key)}
-                      >
-                        {hidden ? (
-                          <EyeOff className="size-4" aria-hidden="true" />
-                        ) : (
-                          <Eye className="size-4" aria-hidden="true" />
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        className={iconBtn}
-                        disabled={locked}
-                        aria-label={`Delete box ${boxIndex + 1}`}
-                        onClick={() => {
-                          setBoxes((prev) => prev.filter((item) => item.key !== box.key));
-                          if (selectedKey === box.key) setSelectedKey(null);
-                        }}
-                      >
-                        <Trash2 className="size-4" aria-hidden="true" />
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+              <label className="flex flex-col gap-2 text-sm font-medium">
+                <span className="flex items-center gap-2">
+                  Class
+                  <span className="font-normal text-muted">
+                    {selectedKey ? "selected box" : "next box"}
+                  </span>
+                  {activeClassId != null ? (
+                    <span
+                      className="size-3 rounded-full"
+                      style={{ background: colorFor(activeClassId) }}
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                </span>
+                <select
+                  className={field}
+                  value={
+                    options.some((row) => row.id === activeClassId) ? (activeClassId ?? "") : ""
+                  }
+                  disabled={options.length === 0 || locked}
+                  onChange={(event) => chooseClass(Number(event.target.value))}
+                >
+                  {options.length === 0 ? <option value="">Paste item codes</option> : null}
+                  {options.map((row) => (
+                    <option key={row.id} value={row.id}>
+                      {classLine(row)}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-sm font-normal text-muted">
+                  {selectedKey
+                    ? "Changing this updates the selected box."
+                    : "Used for the next box you draw."}
+                </span>
+              </label>
             )}
           </div>
+
+          {!codesOpen ? (
+            <div className="flex min-h-0 flex-1 flex-col gap-2 px-4">
+              <div className="flex items-center justify-between text-sm font-medium">
+                <span>Boxes</span>
+                <span className="font-mono text-muted tabular-nums">{boxes.length}</span>
+              </div>
+              {boxes.length === 0 ? (
+                <p className="pb-2 text-sm text-muted">
+                  Drag on the image. The selected class is written into the YOLO file.
+                </p>
+              ) : (
+                <ul
+                  ref={boxListRef}
+                  className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pb-2"
+                >
+                  {boxes.map((box, boxIndex) => {
+                    const hidden = hiddenKeys.has(box.key);
+                    return (
+                      <li key={box.key} className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => selectBox(box.key)}
+                          className={`press h-11 min-w-0 flex-1 truncate rounded-sm px-3 text-left font-mono text-sm ${
+                            hidden ? "opacity-40" : ""
+                          } ${box.key === selectedKey ? "bg-ink text-surface" : "bg-bg text-ink"}`}
+                          style={{ boxShadow: `inset 4px 0 0 ${colorFor(box.classId)}` }}
+                        >
+                          {boxIndex + 1} {boxTitle(box.classId)}
+                        </button>
+                        <button
+                          type="button"
+                          className={iconBtn}
+                          aria-pressed={!hidden}
+                          aria-label={`${hidden ? "Show" : "Hide"} box ${boxIndex + 1}`}
+                          onClick={() => toggleBox(box.key)}
+                        >
+                          {hidden ? (
+                            <EyeOff className="size-4" aria-hidden="true" />
+                          ) : (
+                            <Eye className="size-4" aria-hidden="true" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          className={iconBtn}
+                          disabled={locked}
+                          aria-label={`Delete box ${boxIndex + 1}`}
+                          onClick={() => {
+                            setBoxes((prev) => prev.filter((item) => item.key !== box.key));
+                            if (selectedKey === box.key) setSelectedKey(null);
+                          }}
+                        >
+                          <Trash2 className="size-4" aria-hidden="true" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          ) : null}
           <div className="flex shrink-0 flex-col gap-3 border-t border-line p-4">
             <div className="flex flex-col gap-2">
               <p className="text-sm font-medium">Queue</p>
@@ -891,6 +1013,8 @@ export function Labeler() {
                   [
                     ["all", "All"],
                     ["open", "Open"],
+                    ["incomplete", "Incomplete"],
+                    ["complete", "Complete"],
                     ["mine", "Mine"],
                     ["free", "Free"],
                   ] as const
@@ -912,22 +1036,37 @@ export function Labeler() {
             </div>
             {current ? (
               <div className="flex flex-col gap-2">
-                <p className="text-sm text-muted">
-                  {holder === username
-                    ? "You have this image. Release it when you are done."
-                    : holder
-                      ? `Claimed by ${holder}. Take over to edit.`
-                      : "Free. Saving claims it for you."}
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm text-muted">
+                    {holder === username
+                      ? current.status === "complete"
+                        ? "Completed by you. Held time paused."
+                        : "You have this image."
+                      : holder
+                        ? `Claimed by ${holder}. Take over to edit.`
+                        : "Free. Saving claims it for you."}
+                  </p>
+                  <StatusBadge status={current.status} />
+                </div>
                 {holder === username ? (
-                  <button
-                    type="button"
-                    className={btn}
-                    disabled={busy}
-                    onClick={() => void release()}
-                  >
-                    Release
-                  </button>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <button
+                      type="button"
+                      className={`${btnPrimary} flex-1`}
+                      disabled={busy}
+                      onClick={() => void completeCurrent()}
+                    >
+                      Complete
+                    </button>
+                    <button
+                      type="button"
+                      className={`${btn} flex-1`}
+                      disabled={busy}
+                      onClick={() => void releaseIncompleteAction()}
+                    >
+                      Release incomplete
+                    </button>
+                  </div>
                 ) : holder ? (
                   <button
                     type="button"

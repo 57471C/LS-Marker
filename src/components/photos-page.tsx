@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/app-header";
-import { fetchCatalogue, imageSrc, type ImageRow } from "@/lib/label-client";
+import { fetchCatalogue, imageSrc, type ImageRow, type PhotoStatus } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
 import { useSession } from "@/lib/session";
 
@@ -10,17 +10,19 @@ const field =
   "h-11 w-full rounded-sm border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
 type OwnerFilter = "any" | "mine" | "free" | "taken";
-type StatusFilter = "any" | "open" | "done";
+type StatusFilter = "any" | "open" | "incomplete" | "complete";
 type SortField = "file" | "labels" | "owner" | "held";
 type SortDirection = "asc" | "desc";
 
 const PAGE_SIZE = 40;
 
-function heldFor(iso: string | null): string {
-  if (!iso) return "—";
-  const then = new Date(iso).getTime();
+function heldFor(claimedAt: string | null, completedAt: string | null): string {
+  if (!claimedAt) return "—";
+  const then = new Date(claimedAt).getTime();
   if (Number.isNaN(then)) return "—";
-  const mins = Math.round((Date.now() - then) / 60000);
+  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+  if (Number.isNaN(end) || end < then) return "—";
+  const mins = Math.round((end - then) / 60000);
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m`;
   const hours = Math.round(mins / 60);
@@ -62,8 +64,9 @@ export function PhotosPage() {
     const needle = query.trim().toLowerCase();
     return (images ?? []).filter((image) => {
       if (needle && !image.name.toLowerCase().includes(needle)) return false;
-      if (status === "open" && image.labelled) return false;
-      if (status === "done" && !image.labelled) return false;
+      if (status === "open" && image.status !== "open") return false;
+      if (status === "incomplete" && image.status !== "incomplete") return false;
+      if (status === "complete" && image.status !== "complete") return false;
       if (owner === "mine" && image.claimedBy !== username) return false;
       if (owner === "free" && image.claimedBy) return false;
       if (owner === "taken" && (!image.claimedBy || image.claimedBy === username)) return false;
@@ -78,17 +81,21 @@ export function PhotosPage() {
       if (sortField === "file") {
         cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
       } else if (sortField === "labels") {
-        const aVal = a.labelled ? 1 : 0;
-        const bVal = b.labelled ? 1 : 0;
-        cmp = aVal - bVal;
+        const rank = (s: PhotoStatus) => (s === "complete" ? 2 : s === "incomplete" ? 1 : 0);
+        cmp = rank(a.status) - rank(b.status);
       } else if (sortField === "owner") {
         const aOwner = a.claimedBy ?? "";
         const bOwner = b.claimedBy ?? "";
         cmp = aOwner.localeCompare(bOwner, undefined, { sensitivity: "base" });
       } else if (sortField === "held") {
-        const aTime = a.claimedAt ? new Date(a.claimedAt).getTime() : 0;
-        const bTime = b.claimedAt ? new Date(b.claimedAt).getTime() : 0;
-        cmp = aTime - bTime;
+        const getDuration = (item: ImageRow) => {
+          if (!item.claimedAt) return -1;
+          const then = new Date(item.claimedAt).getTime();
+          if (Number.isNaN(then)) return -1;
+          const end = item.completedAt ? new Date(item.completedAt).getTime() : Date.now();
+          return end - then;
+        };
+        cmp = getDuration(a) - getDuration(b);
       }
       if (cmp === 0) {
         cmp = a.name.localeCompare(b.name, undefined, { numeric: true });
@@ -101,7 +108,9 @@ export function PhotosPage() {
   const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const shown = sorted.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
-  const openCount = (images ?? []).filter((image) => !image.labelled).length;
+  const openCount = (images ?? []).filter((image) => image.status === "open").length;
+  const incompleteCount = (images ?? []).filter((image) => image.status === "incomplete").length;
+  const completeCount = (images ?? []).filter((image) => image.status === "complete").length;
   const mineCount = (images ?? []).filter((image) => image.claimedBy === username).length;
 
   function remember(name: string) {
@@ -130,7 +139,7 @@ export function PhotosPage() {
             <p className="text-sm text-muted">
               {images == null
                 ? "Loading"
-                : `${images.length} scanned · ${openCount} open · ${mineCount} yours`}
+                : `${images.length} scanned · ${completeCount} complete · ${openCount} open · ${incompleteCount} incomplete · ${mineCount} yours`}
             </p>
           </div>
         </div>
@@ -164,7 +173,8 @@ export function PhotosPage() {
                 [
                   ["any", "Any"],
                   ["open", "Open"],
-                  ["done", "Done"],
+                  ["incomplete", "Incomplete"],
+                  ["complete", "Complete"],
                 ] as const
               ).map(([key, label]) => (
                 <FilterButton
@@ -246,14 +256,17 @@ export function PhotosPage() {
             </thead>
             <tbody className="divide-y divide-line">
               {shown.map((image) => {
-                const isOpen = !image.labelled;
+                const isComplete = image.status === "complete";
+                const isIncomplete = image.status === "incomplete";
                 return (
                   <tr
                     key={image.name}
                     className={`transition-colors ${
-                      isOpen
-                        ? "bg-amber-500/5 hover:bg-amber-500/10"
-                        : "bg-emerald-500/5 hover:bg-emerald-500/10"
+                      isComplete
+                        ? "bg-emerald-500/5 hover:bg-emerald-500/10"
+                        : isIncomplete
+                          ? "bg-orange-500/5 hover:bg-orange-500/10"
+                          : "bg-amber-500/5 hover:bg-amber-500/10"
                     }`}
                   >
                     <td className="py-2.5 pl-3 pr-2">
@@ -277,13 +290,17 @@ export function PhotosPage() {
                       </Link>
                     </td>
                     <td className="py-2.5 pr-3">
-                      {isOpen ? (
-                        <span className="inline-flex items-center rounded-sm bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-800">
-                          Open
+                      {isComplete ? (
+                        <span className="inline-flex items-center rounded-sm bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-800">
+                          Complete
+                        </span>
+                      ) : isIncomplete ? (
+                        <span className="inline-flex items-center rounded-sm bg-orange-500/15 px-2 py-0.5 text-xs font-medium text-orange-800">
+                          Incomplete
                         </span>
                       ) : (
-                        <span className="inline-flex items-center rounded-sm bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-800">
-                          Done
+                        <span className="inline-flex items-center rounded-sm bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-800">
+                          Open
                         </span>
                       )}
                     </td>
@@ -301,7 +318,7 @@ export function PhotosPage() {
                       )}
                     </td>
                     <td className="hidden py-2.5 pr-3 text-xs text-muted sm:table-cell">
-                      {heldFor(image.claimedAt)}
+                      {heldFor(image.claimedAt, image.completedAt)}
                     </td>
                   </tr>
                 );
