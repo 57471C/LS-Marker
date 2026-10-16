@@ -1,5 +1,28 @@
+# dependencies
 node_modules/
-.project_id
-.github_repo
+
+# env / secrets
 .env
 .env.*
+
+# local config & data
+labelling.config.json
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# caches / build
+.vite/
+dist/
+.turbo/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+
+# app-builder leftovers (if any remain)
+.grok/
+.vercel/
+artifacts/
