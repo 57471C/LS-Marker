@@ -1,5 +1,7 @@
 import { Link } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { CircleHelp } from "lucide-react";
+import { type ReactNode, useEffect, useState } from "react";
+import { KeyboardShortcutsModal } from "@/components/keyboard-shortcuts-modal";
 import { logout } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
 import { useSession } from "@/lib/session";
@@ -13,6 +15,21 @@ export function AppHeader({
 }) {
   const { username, setUsername } = useSession();
   const { current: project, openPicker } = useProject();
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "?" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        const tag = event.target instanceof HTMLElement ? event.target.tagName : "";
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        event.preventDefault();
+        setHelpOpen((prev) => !prev);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const item = (key: "label" | "photos" | "classes" | "settings") =>
     current === key
       ? "inline-flex h-11 items-center rounded-sm bg-ink px-3 text-sm font-medium text-surface"
@@ -34,7 +51,17 @@ export function AppHeader({
         <Link to="/settings" className={item("settings")}>
           Settings
         </Link>
+        <button
+          type="button"
+          className="press inline-flex size-11 items-center justify-center rounded-sm text-muted hover:bg-surface-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent"
+          aria-label="Keyboard shortcuts"
+          title="Keyboard shortcuts (?)"
+          onClick={() => setHelpOpen(true)}
+        >
+          <CircleHelp className="size-5" aria-hidden="true" />
+        </button>
       </nav>
+      {helpOpen ? <KeyboardShortcutsModal onClose={() => setHelpOpen(false)} /> : null}
       <div className="ml-auto flex min-w-0 flex-wrap items-center gap-3">
         {meta}
         {project ? (

@@ -1052,7 +1052,7 @@ export function Labeler() {
                   <div className="flex flex-col gap-2 sm:flex-row">
                     <button
                       type="button"
-                      className={`${btnPrimary} flex-1`}
+                      className="press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-sm bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-40"
                       disabled={busy}
                       onClick={() => void completeCurrent()}
                     >
@@ -1060,7 +1060,7 @@ export function Labeler() {
                     </button>
                     <button
                       type="button"
-                      className={`${btn} flex-1`}
+                      className="press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-sm border border-yellow-500/20 bg-yellow-400 px-4 text-sm font-medium text-yellow-950 hover:bg-yellow-500 active:bg-yellow-600 disabled:opacity-40"
                       disabled={busy}
                       onClick={() => void releaseIncompleteAction()}
                     >
@@ -1096,12 +1096,6 @@ export function Labeler() {
             ) : null}
             <p className="text-sm text-muted break-all">
               {catalogue?.folderOk ? catalogue.resolvedFolder : (catalogue?.folderError ?? "—")}
-            </p>
-            <p className="text-sm text-muted">
-              Drag the divider to widen this pane. Hold Space and drag to pan. Ctrl with the wheel,
-              or Ctrl and − =, zooms. Ctrl+Z removes the last box. Esc clears the selection. Arrows
-              move a selected box, Shift for a bigger step. Ctrl+D duplicates it. N marks this photo
-              as having no parts.
             </p>
           </div>
         </aside>
