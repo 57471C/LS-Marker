@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronLeft, ChevronRight, Eye, EyeOff, Trash2 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
-import { LabelStage, round6, type StageBox } from "@/components/label-stage";
+import { LabelStage, newId, round6, type StageBox } from "@/components/label-stage";
 import { classFill } from "@/lib/class-color";
 import {
   claimImage,
@@ -44,7 +44,7 @@ function withKeys(
   boxes: { classId: number; x: number; y: number; w: number; h: number }[],
 ): StageBox[] {
   return boxes.map((box) => ({
-    key: crypto.randomUUID(),
+    key: newId(),
     classId: box.classId,
     x: round6(box.x),
     y: round6(box.y),
@@ -385,7 +385,7 @@ export function Labeler() {
     }
     const copy: StageBox = {
       ...source,
-      key: crypto.randomUUID(),
+      key: newId(),
       x: round6(clampUnit(x, source.w / 2, 1 - source.w / 2)),
       y: round6(clampUnit(y, source.h / 2, 1 - source.h / 2)),
     };
