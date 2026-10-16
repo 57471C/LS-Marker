@@ -732,13 +732,16 @@ function listImages(folder) {
  */
 function resolveInside(folder, relName) {
   if (typeof relName !== "string" || !relName) throw new HttpError(400, "Bad image name");
-  const parts = relName.split("/");
+  const normalized = relName.replace(/\\/g, "/").replace(/^\/+/, "");
+  const parts = normalized.split("/");
   if (parts.some((part) => !part || part === "." || part === ".." || part.includes("\0"))) {
     throw new HttpError(400, "Bad image name");
   }
   const full = path.resolve(folder, ...parts);
   const root = path.resolve(folder);
-  if (full !== root && !full.startsWith(root + path.sep)) {
+  const fullNorm = process.platform === "win32" ? full.toLowerCase() : full;
+  const rootNorm = process.platform === "win32" ? root.toLowerCase() : root;
+  if (fullNorm !== rootNorm && !fullNorm.startsWith(rootNorm + path.sep)) {
     throw new HttpError(400, "Bad image name");
   }
   return full;

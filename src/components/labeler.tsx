@@ -253,7 +253,10 @@ export function Labeler() {
         setError(null);
       })
       .catch((err: unknown) => {
-        if (!cancel) setError(err instanceof Error ? err.message : "Could not read labels");
+        if (!cancel) {
+          setError(err instanceof Error ? err.message : "Could not read labels");
+          setStatus("Error");
+        }
       });
     return () => {
       cancel = true;
