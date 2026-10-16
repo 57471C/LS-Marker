@@ -67,7 +67,9 @@ export function ProjectSplash({ canClose, onClose }: { canClose: boolean; onClos
             <h2 id="project-title" className="text-lg font-medium tracking-tight">
               Projects
             </h2>
-            <p className="text-sm text-muted">Each project has its own photo folder and parts list. Users stay shared.</p>
+            <p className="text-sm text-muted">
+              Each project has its own photo folder and parts list. Users stay shared.
+            </p>
           </div>
           {canClose ? (
             <button type="button" className={btn} onClick={onClose}>
@@ -95,7 +97,9 @@ export function ProjectSplash({ canClose, onClose }: { canClose: boolean; onClos
               </button>
             </li>
           ))}
-          {projects && projects.length === 0 ? <li className="text-sm text-muted">No projects yet.</li> : null}
+          {projects && projects.length === 0 ? (
+            <li className="text-sm text-muted">No projects yet.</li>
+          ) : null}
         </ul>
         {creating ? (
           <form
@@ -107,7 +111,12 @@ export function ProjectSplash({ canClose, onClose }: { canClose: boolean; onClos
           >
             <label className="flex flex-col gap-2 text-sm font-medium">
               Name
-              <input className={field} value={name} onChange={(event) => setName(event.target.value)} required />
+              <input
+                className={field}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                required
+              />
             </label>
             <label className="flex flex-col gap-2 text-sm font-medium">
               Photo folder
@@ -120,7 +129,9 @@ export function ProjectSplash({ canClose, onClose }: { canClose: boolean; onClos
                 required
               />
             </label>
-            <p className="text-sm text-muted">The folder must already exist. Parts start empty — import a CSV after.</p>
+            <p className="text-sm text-muted">
+              The folder must already exist. Parts start empty — import a CSV after.
+            </p>
             <div className="flex gap-2">
               <button type="submit" className={btnPrimary} disabled={busy}>
                 Create

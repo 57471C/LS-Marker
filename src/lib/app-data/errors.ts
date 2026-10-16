@@ -40,14 +40,10 @@ const MESSAGE_RULES: readonly MessageRule[] = [
 ];
 
 function matchMessageRule(raw: string): MessageRule | undefined {
-  return MESSAGE_RULES.find((rule) =>
-    rule.needles.some((needle) => raw.includes(needle)),
-  );
+  return MESSAGE_RULES.find((rule) => rule.needles.some((needle) => raw.includes(needle)));
 }
 
-export function classifyCallToolError(
-  result: CallToolResult,
-): CallToolErrorState | null {
+export function classifyCallToolError(result: CallToolResult): CallToolErrorState | null {
   if (result.ok) return null;
   const detail = result.errorMessage || undefined;
   const raw = (result.errorMessage ?? "").toLowerCase();

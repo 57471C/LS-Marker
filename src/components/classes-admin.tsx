@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { AppHeader } from "@/components/app-header";
 import { classFill } from "@/lib/class-color";
-import { createClass, deleteClass, fetchCatalogue, importClasses, updateClass, type ClassRow } from "@/lib/label-client";
+import {
+  createClass,
+  deleteClass,
+  fetchCatalogue,
+  importClasses,
+  updateClass,
+  type ClassRow,
+} from "@/lib/label-client";
 
 const field =
   "h-11 w-full rounded-sm border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent";
@@ -62,7 +69,9 @@ export function ClassesAdmin() {
         <div className="flex flex-col gap-1">
           <h1 className="text-lg font-medium tracking-tight">Classes</h1>
           <p className="max-w-xl text-sm text-muted">
-            The number is the YOLO class id stored in each label file. Ids stay put when you rename a code. A removed id is left blank in classes.txt and is not reused. Each class is given a colour on its own — you don't pick one.
+            The number is the YOLO class id stored in each label file. Ids stay put when you rename
+            a code. A removed id is left blank in classes.txt and is not reused. Each class is given
+            a colour on its own — you don't pick one.
           </p>
         </div>
         {error ? (
@@ -83,11 +92,21 @@ export function ClassesAdmin() {
         >
           <label className="flex flex-col gap-2 text-sm font-medium">
             Item code
-            <input className={field} value={ic} onChange={(event) => setIc(event.target.value)} required />
+            <input
+              className={field}
+              value={ic}
+              onChange={(event) => setIc(event.target.value)}
+              required
+            />
           </label>
           <label className="flex flex-col gap-2 text-sm font-medium">
             Description
-            <input className={field} value={des} onChange={(event) => setDes(event.target.value)} required />
+            <input
+              className={field}
+              value={des}
+              onChange={(event) => setDes(event.target.value)}
+              required
+            />
           </label>
           <div className="flex items-end">
             <button type="submit" className={btnPrimary} disabled={busy}>
@@ -114,10 +133,17 @@ export function ClassesAdmin() {
         >
           <label className="flex flex-col gap-2 text-sm font-medium">
             CSV
-            <input id="classes-csv" name="classes-csv" className={field} type="file" accept=".csv,text/csv,text/plain" />
+            <input
+              id="classes-csv"
+              name="classes-csv"
+              className={field}
+              type="file"
+              accept=".csv,text/csv,text/plain"
+            />
           </label>
           <p className="text-sm text-muted">
-            Columns <span className="font-mono">ic</span> and <span className="font-mono">des</span>. A code already in the list is skipped.
+            Columns <span className="font-mono">ic</span> and <span className="font-mono">des</span>
+            . A code already in the list is skipped.
           </p>
           {importNote ? <p className="text-sm">{importNote}</p> : null}
           <div>
@@ -170,7 +196,8 @@ export function ClassesAdmin() {
           }}
         />
         <p className="max-w-xl text-sm text-muted">
-          Saving a free image claims it for you. Someone else’s claim has to be taken over before you can change it.
+          Saving a free image claims it for you. Someone else’s claim has to be taken over before
+          you can change it.
         </p>
       </main>
     </div>
@@ -245,8 +272,18 @@ function ClassList({
                     />
                     {row.id}
                   </p>
-                  <input className={field} value={editIc} onChange={(event) => onEditIc(event.target.value)} required />
-                  <input className={field} value={editDes} onChange={(event) => onEditDes(event.target.value)} required />
+                  <input
+                    className={field}
+                    value={editIc}
+                    onChange={(event) => onEditIc(event.target.value)}
+                    required
+                  />
+                  <input
+                    className={field}
+                    value={editDes}
+                    onChange={(event) => onEditDes(event.target.value)}
+                    required
+                  />
                   <div className="flex gap-2">
                     <button type="submit" className={btnPrimary} disabled={busy}>
                       Save
@@ -281,7 +318,9 @@ function ClassList({
             </li>
           );
         })}
-        {classes && matched.length === 0 ? <li className="text-sm text-muted">No classes match.</li> : null}
+        {classes && matched.length === 0 ? (
+          <li className="text-sm text-muted">No classes match.</li>
+        ) : null}
       </ul>
     </div>
   );

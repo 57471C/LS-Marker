@@ -322,7 +322,9 @@ function pickColor(db, projectId) {
   const used = usedColors(db, projectId);
   const free = CLASS_PALETTE.filter((color) => !used.has(color));
   if (free.length > 0) return free[Math.floor(Math.random() * free.length)];
-  const next = db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM classes WHERE project_id = ?").get(projectId);
+  const next = db
+    .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM classes WHERE project_id = ?")
+    .get(projectId);
   return spareColor(used, next.id + 1);
 }
 
@@ -396,7 +398,8 @@ function readCookies(req) {
 function writeCookie(res, name, value, maxAge) {
   const cookie = `${name}=${encodeURIComponent(value)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}`;
   const existing = res.getHeader("set-cookie");
-  const list = existing == null ? [] : Array.isArray(existing) ? existing.map(String) : [String(existing)];
+  const list =
+    existing == null ? [] : Array.isArray(existing) ? existing.map(String) : [String(existing)];
   list.push(cookie);
   res.setHeader("set-cookie", list);
 }
@@ -427,7 +430,9 @@ function adminOpen(db, req) {
   const token = readCookies(req).partlab_admin;
   if (!token) return false;
   const now = new Date().toISOString();
-  const row = db.prepare("SELECT token FROM admin_sessions WHERE token = ? AND expires_at > ?").get(token, now);
+  const row = db
+    .prepare("SELECT token FROM admin_sessions WHERE token = ? AND expires_at > ?")
+    .get(token, now);
   return Boolean(row);
 }
 
@@ -457,7 +462,7 @@ function claimForWrite(db, projectId, rel, username) {
     .prepare("SELECT claimed_by FROM image_claims WHERE project_id = ? AND rel_path = ?")
     .get(projectId, rel);
   const now = new Date().toISOString();
-  if (!row || !row.claimed_by) {
+  if (!row?.claimed_by) {
     db.prepare(
       `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at) VALUES (?, ?, ?, ?)
        ON CONFLICT(project_id, rel_path) DO UPDATE SET claimed_by = excluded.claimed_by, claimed_at = excluded.claimed_at`,
@@ -633,8 +638,12 @@ function importClasses(db, projectId, rows) {
   );
   const used = usedColors(db, projectId);
   const free = shuffle(CLASS_PALETTE.filter((color) => !used.has(color)));
-  let nextId = db.prepare("SELECT COALESCE(MAX(id), -1) + 1 AS id FROM classes WHERE project_id = ?").get(projectId).id;
-  const insert = db.prepare("INSERT INTO classes (project_id, id, ic, des, color) VALUES (?, ?, ?, ?, ?)");
+  let nextId = db
+    .prepare("SELECT COALESCE(MAX(id), -1) + 1 AS id FROM classes WHERE project_id = ?")
+    .get(projectId).id;
+  const insert = db.prepare(
+    "INSERT INTO classes (project_id, id, ic, des, color) VALUES (?, ?, ?, ?, ?)",
+  );
   let added = 0;
   let skipped = 0;
   let invalid = 0;
@@ -642,7 +651,14 @@ function importClasses(db, projectId, rows) {
     for (const row of rows) {
       const ic = row.ic.trim();
       const des = row.des.trim();
-      if (!ic || !des || ic.length > 40 || des.length > 120 || /[\r\n]/.test(ic) || /[\r\n]/.test(des)) {
+      if (
+        !ic ||
+        !des ||
+        ic.length > 40 ||
+        des.length > 120 ||
+        /[\r\n]/.test(ic) ||
+        /[\r\n]/.test(des)
+      ) {
         invalid += 1;
         continue;
       }
@@ -741,7 +757,8 @@ function labelFileFor(imageFull) {
  * @param {Date} date
  */
 function dosStamp(date) {
-  const time = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+  const time =
+    (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
   const day = ((date.getFullYear() - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
   return { time, day };
 }
@@ -900,7 +917,9 @@ function cleanBoxes(input) {
  */
 function writeClassesFile(db, projectId, folder) {
   if (folderError(folder)) return;
-  const rows = db.prepare("SELECT id, ic FROM classes WHERE project_id = ? ORDER BY id").all(projectId);
+  const rows = db
+    .prepare("SELECT id, ic FROM classes WHERE project_id = ? ORDER BY id")
+    .all(projectId);
   const max = rows.reduce((acc, row) => Math.max(acc, row.id), -1);
   const byId = new Map(rows.map((row) => [row.id, row.ic]));
   const lines = [];
@@ -920,7 +939,9 @@ function writeClassesFile(db, projectId, folder) {
  * @param {number} projectId
  */
 function listClasses(db, projectId) {
-  return db.prepare("SELECT id, ic, des, color FROM classes WHERE project_id = ? ORDER BY id").all(projectId);
+  return db
+    .prepare("SELECT id, ic, des, color FROM classes WHERE project_id = ? ORDER BY id")
+    .all(projectId);
 }
 
 /**
@@ -980,7 +1001,9 @@ function createProject(db, root, name, folder) {
     .prepare("INSERT INTO projects (name, folder, created_at) VALUES (?, ?, ?)")
     .run(name, folder, new Date().toISOString());
   rememberProjectFolder(resolved);
-  const row = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(Number(info.lastInsertRowid));
+  const row = db
+    .prepare("SELECT id, name, folder FROM projects WHERE id = ?")
+    .get(Number(info.lastInsertRowid));
   return row;
 }
 
@@ -1058,7 +1081,11 @@ async function guard(req, res, url, root, method, pathname) {
     db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now);
     const token = crypto.randomBytes(32).toString("hex");
     const expires = new Date(Date.now() + SESSION_MS).toISOString();
-    db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)").run(token, row.id, expires);
+    db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)").run(
+      token,
+      row.id,
+      expires,
+    );
     writeCookie(res, "partlab", token, Math.floor(SESSION_MS / 1000));
     send(res, 200, { id: row.id, username });
     return true;
@@ -1105,7 +1132,11 @@ async function guard(req, res, url, root, method, pathname) {
     if (!admin) throw new HttpError(401, "Settings locked");
     if (method === "GET") {
       send(res, 200, {
-        users: db.prepare("SELECT id, username, created_at AS createdAt FROM users ORDER BY username COLLATE NOCASE").all(),
+        users: db
+          .prepare(
+            "SELECT id, username, created_at AS createdAt FROM users ORDER BY username COLLATE NOCASE",
+          )
+          .all(),
       });
       return true;
     }
@@ -1119,7 +1150,8 @@ async function guard(req, res, url, root, method, pathname) {
           .run(username, hashPassword(password), now);
         send(res, 200, { id: Number(info.lastInsertRowid), username });
       } catch (err) {
-        if (String(err).includes("UNIQUE")) throw new HttpError(409, "That username already exists");
+        if (String(err).includes("UNIQUE"))
+          throw new HttpError(409, "That username already exists");
         throw err;
       }
       return true;
@@ -1129,7 +1161,9 @@ async function guard(req, res, url, root, method, pathname) {
       const id = Number(body.id);
       if (!Number.isInteger(id)) throw new HttpError(400, "Bad id");
       const password = cleanPassword(body.password);
-      const result = db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(password), id);
+      const result = db
+        .prepare("UPDATE users SET password_hash = ? WHERE id = ?")
+        .run(hashPassword(password), id);
       if (result.changes === 0) throw new HttpError(404, "User not found");
       send(res, 200, { ok: true });
       return true;
@@ -1182,7 +1216,10 @@ async function guard(req, res, url, root, method, pathname) {
       if (row?.claimed_by && row.claimed_by !== user.username) {
         throw new HttpError(403, `Claimed by ${row.claimed_by}`);
       }
-      db.prepare("DELETE FROM image_claims WHERE project_id = ? AND rel_path = ?").run(project.id, name);
+      db.prepare("DELETE FROM image_claims WHERE project_id = ? AND rel_path = ?").run(
+        project.id,
+        name,
+      );
       send(res, 200, { ok: true });
       return true;
     }
@@ -1215,7 +1252,9 @@ async function handle(req, res, url, root) {
 
   if (method === "GET" && pathname === "/api/projects") {
     const db = await getDb(root);
-    const rows = db.prepare("SELECT id, name, folder FROM projects ORDER BY name COLLATE NOCASE").all();
+    const rows = db
+      .prepare("SELECT id, name, folder FROM projects ORDER BY name COLLATE NOCASE")
+      .all();
     send(res, 200, { projects: rows.map((row) => publicProject(root, row)) });
     return;
   }
@@ -1269,7 +1308,9 @@ async function handle(req, res, url, root) {
     const body = await readBody(req);
     const ic = cleanText(body.ic, "Item code", 40);
     const des = cleanText(body.des, "Description", 120);
-    const next = db.prepare("SELECT COALESCE(MAX(id), -1) + 1 AS id FROM classes WHERE project_id = ?").get(project.id);
+    const next = db
+      .prepare("SELECT COALESCE(MAX(id), -1) + 1 AS id FROM classes WHERE project_id = ?")
+      .get(project.id);
     const color = pickColor(db, project.id);
     try {
       db.prepare("INSERT INTO classes (project_id, id, ic, des, color) VALUES (?, ?, ?, ?, ?)").run(
@@ -1296,16 +1337,25 @@ async function handle(req, res, url, root) {
     if (!Number.isInteger(id)) throw new HttpError(400, "Bad id");
     const ic = cleanText(body.ic, "Item code", 40);
     const des = cleanText(body.des, "Description", 120);
-    const existing = db.prepare("SELECT id FROM classes WHERE project_id = ? AND id = ?").get(project.id, id);
+    const existing = db
+      .prepare("SELECT id FROM classes WHERE project_id = ? AND id = ?")
+      .get(project.id, id);
     if (!existing) throw new HttpError(404, "Class not found");
     try {
-      db.prepare("UPDATE classes SET ic = ?, des = ? WHERE project_id = ? AND id = ?").run(ic, des, project.id, id);
+      db.prepare("UPDATE classes SET ic = ?, des = ? WHERE project_id = ? AND id = ?").run(
+        ic,
+        des,
+        project.id,
+        id,
+      );
     } catch (err) {
       if (String(err).includes("UNIQUE")) throw new HttpError(409, "That item code already exists");
       throw err;
     }
     writeClassesFile(db, project.id, path.resolve(root, project.folder));
-    const row = db.prepare("SELECT id, ic, des, color FROM classes WHERE project_id = ? AND id = ?").get(project.id, id);
+    const row = db
+      .prepare("SELECT id, ic, des, color FROM classes WHERE project_id = ? AND id = ?")
+      .get(project.id, id);
     send(res, 200, row);
     return;
   }
@@ -1315,7 +1365,9 @@ async function handle(req, res, url, root) {
     const project = requireProject(db, req);
     const id = Number(url.searchParams.get("id"));
     if (!Number.isInteger(id)) throw new HttpError(400, "Bad id");
-    const result = db.prepare("DELETE FROM classes WHERE project_id = ? AND id = ?").run(project.id, id);
+    const result = db
+      .prepare("DELETE FROM classes WHERE project_id = ? AND id = ?")
+      .run(project.id, id);
     if (result.changes === 0) throw new HttpError(404, "Class not found");
     writeClassesFile(db, project.id, path.resolve(root, project.folder));
     send(res, 200, { ok: true });

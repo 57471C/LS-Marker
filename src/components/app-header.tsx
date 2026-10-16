@@ -37,7 +37,9 @@ export function AppHeader({
       </nav>
       <div className="ml-auto flex min-w-0 flex-wrap items-center gap-3">
         {meta}
-        {project ? <p className="max-w-40 truncate font-mono text-sm text-muted">{project.name}</p> : null}
+        {project ? (
+          <p className="max-w-40 truncate font-mono text-sm text-muted">{project.name}</p>
+        ) : null}
         {username ? (
           <button
             type="button"

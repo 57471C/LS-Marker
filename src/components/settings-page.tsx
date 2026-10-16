@@ -81,7 +81,8 @@ export function SettingsPage() {
         <div className="flex flex-col gap-1">
           <h1 className="text-lg font-medium tracking-tight">Settings</h1>
           <p className="max-w-xl text-sm text-muted">
-            Labellers sign in with a name and password. This page is separate, and it uses the shared settings password.
+            Labellers sign in with a name and password. This page is separate, and it uses the
+            shared settings password.
           </p>
         </div>
         {error ? (
@@ -135,7 +136,12 @@ export function SettingsPage() {
             >
               <label className="flex flex-col gap-2 text-sm font-medium">
                 Username
-                <input className={field} value={username} onChange={(event) => setUsername(event.target.value)} required />
+                <input
+                  className={field}
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  required
+                />
               </label>
               <label className="flex flex-col gap-2 text-sm font-medium">
                 Password
@@ -223,7 +229,9 @@ export function SettingsPage() {
                   )}
                 </li>
               ))}
-              {users && users.length === 0 ? <li className="text-sm text-muted">No labellers yet.</li> : null}
+              {users && users.length === 0 ? (
+                <li className="text-sm text-muted">No labellers yet.</li>
+              ) : null}
             </ul>
             <p className="text-sm text-muted">
               {project

@@ -14,7 +14,6 @@ function newId() {
   return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-
 type Corner = "nw" | "ne" | "sw" | "se";
 
 type Drag =
@@ -87,8 +86,16 @@ function clampView(view: View, fit: Fit, frame: FrameSize): View {
   const maxLeft = frame.w - margin;
   const minTop = margin - height;
   const maxTop = frame.h - margin;
-  const left = clamp(frame.w / 2 + view.x - width / 2, Math.min(minLeft, maxLeft), Math.max(minLeft, maxLeft));
-  const top = clamp(frame.h / 2 + view.y - height / 2, Math.min(minTop, maxTop), Math.max(minTop, maxTop));
+  const left = clamp(
+    frame.w / 2 + view.x - width / 2,
+    Math.min(minLeft, maxLeft),
+    Math.max(minLeft, maxLeft),
+  );
+  const top = clamp(
+    frame.h / 2 + view.y - height / 2,
+    Math.min(minTop, maxTop),
+    Math.max(minTop, maxTop),
+  );
   return {
     zoom,
     x: left - frame.w / 2 + width / 2,
@@ -136,7 +143,13 @@ export function LabelStage({
   const [spaceMode, setSpaceMode] = useState<"off" | "ready" | "dragging">("off");
   const viewRef = useRef(view);
   const spaceRef = useRef(false);
-  const panDrag = useRef<{ pointerId: number; px: number; py: number; x: number; y: number } | null>(null);
+  const panDrag = useRef<{
+    pointerId: number;
+    px: number;
+    py: number;
+    x: number;
+    y: number;
+  } | null>(null);
   viewRef.current = view;
 
   useEffect(() => {
@@ -477,7 +490,9 @@ export function LabelStage({
           const img = event.currentTarget;
           setNatural({ w: img.naturalWidth, h: img.naturalHeight });
         }}
-        className={placed ? "absolute max-w-none select-none" : "h-full w-full object-contain select-none"}
+        className={
+          placed ? "absolute max-w-none select-none" : "h-full w-full object-contain select-none"
+        }
         style={
           placed
             ? { left: placed.left, top: placed.top, width: placed.width, height: placed.height }

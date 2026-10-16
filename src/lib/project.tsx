@@ -11,7 +11,13 @@ type ProjectValue = {
 
 const ProjectContext = createContext<ProjectValue | null>(null);
 
-export function ProjectProvider({ username, children }: { username: string | null; children: ReactNode }) {
+export function ProjectProvider({
+  username,
+  children,
+}: {
+  username: string | null;
+  children: ReactNode;
+}) {
   const [current, setCurrent] = useState<Project | null | undefined>(undefined);
   const [picker, setPicker] = useState(false);
 

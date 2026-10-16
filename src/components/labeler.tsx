@@ -40,7 +40,9 @@ function serialize(boxes: StageBox[]): string {
   );
 }
 
-function withKeys(boxes: { classId: number; x: number; y: number; w: number; h: number }[]): StageBox[] {
+function withKeys(
+  boxes: { classId: number; x: number; y: number; w: number; h: number }[],
+): StageBox[] {
   return boxes.map((box) => ({
     key: crypto.randomUUID(),
     classId: box.classId,
@@ -221,7 +223,9 @@ export function Labeler() {
   }, [picks, classes, drawnClassKey]);
 
   useEffect(() => {
-    setActiveClassId((prev) => (prev != null && options.some((row) => row.id === prev) ? prev : (options[0]?.id ?? null)));
+    setActiveClassId((prev) =>
+      prev != null && options.some((row) => row.id === prev) ? prev : (options[0]?.id ?? null),
+    );
   }, [options]);
 
   useEffect(() => {
@@ -435,7 +439,9 @@ export function Labeler() {
     if (lockedRef.current) return;
     setActiveClassId(id);
     if (!selectedKey) return;
-    setBoxes((prev) => prev.map((box) => (box.key === selectedKey ? { ...box, classId: id } : box)));
+    setBoxes((prev) =>
+      prev.map((box) => (box.key === selectedKey ? { ...box, classId: id } : box)),
+    );
   }
 
   function selectBox(key: string | null) {
@@ -481,7 +487,12 @@ export function Labeler() {
       }
       const tag = event.target instanceof HTMLElement ? event.target.tagName : "";
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
+      if (
+        event.key === "ArrowLeft" ||
+        event.key === "ArrowRight" ||
+        event.key === "ArrowUp" ||
+        event.key === "ArrowDown"
+      ) {
         if (actions.current.nudge(event.key, event.shiftKey)) {
           event.preventDefault();
           return;
@@ -493,19 +504,36 @@ export function Labeler() {
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
         void actions.current.shift(1);
-      } else if ((event.key === "Delete" || event.key === "Backspace") && !event.metaKey && !event.ctrlKey) {
+      } else if (
+        (event.key === "Delete" || event.key === "Backspace") &&
+        !event.metaKey &&
+        !event.ctrlKey
+      ) {
         event.preventDefault();
         actions.current.remove();
-      } else if ((event.key === "z" || event.key === "Z") && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
+      } else if (
+        (event.key === "z" || event.key === "Z") &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey
+      ) {
         event.preventDefault();
         actions.current.undo();
       } else if ((event.key === "s" || event.key === "S") && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         void actions.current.save();
-      } else if ((event.key === "d" || event.key === "D") && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
+      } else if (
+        (event.key === "d" || event.key === "D") &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey
+      ) {
         event.preventDefault();
         actions.current.duplicate();
-      } else if ((event.key === "n" || event.key === "N") && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      } else if (
+        (event.key === "n" || event.key === "N") &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
         event.preventDefault();
         void actions.current.markNone();
       }
@@ -525,7 +553,14 @@ export function Labeler() {
 
   async function refreshClaims(patch: (image: ImageRow) => ImageRow) {
     setCatalogue((prev) =>
-      prev ? { ...prev, images: prev.images.map((image) => (image.name === current?.name ? patch(image) : image)) } : prev,
+      prev
+        ? {
+            ...prev,
+            images: prev.images.map((image) =>
+              image.name === current?.name ? patch(image) : image,
+            ),
+          }
+        : prev,
     );
   }
 
@@ -559,13 +594,15 @@ export function Labeler() {
     }
   }
 
-  const position = images.length === 0 ? "image 0 of 0" : `image ${safeIndex + 1} of ${images.length}`;
+  const position =
+    images.length === 0 ? "image 0 of 0" : `image ${safeIndex + 1} of ${images.length}`;
   const labelledCount = allImages.filter((image) => image.labelled).length;
   const claimLabel = !current ? "" : holder === username ? "Yours" : holder ? holder : "Free";
   const folderAt = current ? allImages.findIndex((image) => image.name === current.name) : -1;
   const previousPhoto = folderAt > 0 ? allImages[folderAt - 1] : null;
   const canDuplicate = !locked && boxes.length > 0;
-  const canCopyPrevious = !locked && !busy && boxes.length === 0 && Boolean(previousPhoto?.labelled);
+  const canCopyPrevious =
+    !locked && !busy && boxes.length === 0 && Boolean(previousPhoto?.labelled);
 
   return (
     <div className="flex h-dvh flex-col bg-bg text-ink">
@@ -573,7 +610,9 @@ export function Labeler() {
         current="label"
         meta={
           <>
-            <p className="max-w-44 truncate font-mono text-sm text-muted tabular-nums sm:max-w-xs">{current?.name ?? "—"}</p>
+            <p className="max-w-44 truncate font-mono text-sm text-muted tabular-nums sm:max-w-xs">
+              {current?.name ?? "—"}
+            </p>
             <p className="font-mono text-sm text-ink tabular-nums">{position}</p>
             {catalogue ? (
               <p className="font-mono text-sm text-muted tabular-nums">
@@ -641,11 +680,21 @@ export function Labeler() {
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2 border-t border-line px-3 py-3">
-            <button type="button" className={btn} onClick={() => void shift(-1)} disabled={!current || safeIndex === 0 || busy}>
+            <button
+              type="button"
+              className={btn}
+              onClick={() => void shift(-1)}
+              disabled={!current || safeIndex === 0 || busy}
+            >
               <ChevronLeft className="size-4" aria-hidden="true" />
               Previous
             </button>
-            <button type="button" className={btnPrimary} onClick={() => void save()} disabled={!current || busy || !dirty || locked}>
+            <button
+              type="button"
+              className={btnPrimary}
+              onClick={() => void save()}
+              disabled={!current || busy || !dirty || locked}
+            >
               Save
             </button>
             <button
@@ -730,16 +779,26 @@ export function Labeler() {
                 {unknownCodes.length > 0 ? ` Missing: ${unknownCodes.join(", ")}` : ""}
               </p>
             ) : options.length > 0 ? (
-              <p className="text-sm text-muted">Classes already on this image are in the menu. Paste codes to add others.</p>
+              <p className="text-sm text-muted">
+                Classes already on this image are in the menu. Paste codes to add others.
+              </p>
             ) : (
-              <p className="text-sm text-muted">Paste item codes. The class menu only lists those.</p>
+              <p className="text-sm text-muted">
+                Paste item codes. The class menu only lists those.
+              </p>
             )}
             <label className="flex flex-col gap-2 text-sm font-medium">
               <span className="flex items-center gap-2">
                 Class
-                <span className="font-normal text-muted">{selectedKey ? "selected box" : "next box"}</span>
+                <span className="font-normal text-muted">
+                  {selectedKey ? "selected box" : "next box"}
+                </span>
                 {activeClassId != null ? (
-                  <span className="size-3 rounded-full" style={{ background: colorFor(activeClassId) }} aria-hidden="true" />
+                  <span
+                    className="size-3 rounded-full"
+                    style={{ background: colorFor(activeClassId) }}
+                    aria-hidden="true"
+                  />
                 ) : null}
               </span>
               <select
@@ -756,7 +815,9 @@ export function Labeler() {
                 ))}
               </select>
               <span className="text-sm font-normal text-muted">
-                {selectedKey ? "Changing this updates the selected box." : "Used for the next box you draw."}
+                {selectedKey
+                  ? "Changing this updates the selected box."
+                  : "Used for the next box you draw."}
               </span>
             </label>
           </div>
@@ -766,9 +827,14 @@ export function Labeler() {
               <span className="font-mono text-muted tabular-nums">{boxes.length}</span>
             </div>
             {boxes.length === 0 ? (
-              <p className="pb-2 text-sm text-muted">Drag on the image. The selected class is written into the YOLO file.</p>
+              <p className="pb-2 text-sm text-muted">
+                Drag on the image. The selected class is written into the YOLO file.
+              </p>
             ) : (
-              <ul ref={boxListRef} className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pb-2">
+              <ul
+                ref={boxListRef}
+                className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pb-2"
+              >
                 {boxes.map((box, boxIndex) => {
                   const hidden = hiddenKeys.has(box.key);
                   return (
@@ -790,7 +856,11 @@ export function Labeler() {
                         aria-label={`${hidden ? "Show" : "Hide"} box ${boxIndex + 1}`}
                         onClick={() => toggleBox(box.key)}
                       >
-                        {hidden ? <EyeOff className="size-4" aria-hidden="true" /> : <Eye className="size-4" aria-hidden="true" />}
+                        {hidden ? (
+                          <EyeOff className="size-4" aria-hidden="true" />
+                        ) : (
+                          <Eye className="size-4" aria-hidden="true" />
+                        )}
                       </button>
                       <button
                         type="button"
@@ -847,7 +917,12 @@ export function Labeler() {
                       : "Free. Saving claims it for you."}
                 </p>
                 {holder === username ? (
-                  <button type="button" className={btn} disabled={busy} onClick={() => void release()}>
+                  <button
+                    type="button"
+                    className={btn}
+                    disabled={busy}
+                    onClick={() => void release()}
+                  >
                     Release
                   </button>
                 ) : holder ? (
@@ -866,7 +941,12 @@ export function Labeler() {
                     {confirmTakeover ? "Confirm takeover" : "Take over"}
                   </button>
                 ) : (
-                  <button type="button" className={btn} disabled={busy} onClick={() => void claim(false)}>
+                  <button
+                    type="button"
+                    className={btn}
+                    disabled={busy}
+                    onClick={() => void claim(false)}
+                  >
                     Claim
                   </button>
                 )}
@@ -876,9 +956,10 @@ export function Labeler() {
               {catalogue?.folderOk ? catalogue.resolvedFolder : (catalogue?.folderError ?? "—")}
             </p>
             <p className="text-sm text-muted">
-              Drag the divider to widen this pane. Hold Space and drag to pan. Ctrl with the wheel, or Ctrl and − =, zooms. Ctrl+Z
-              removes the last box. Esc clears the selection. Arrows move a selected box, Shift for a bigger step. Ctrl+D
-              duplicates it. N marks this photo as having no parts.
+              Drag the divider to widen this pane. Hold Space and drag to pan. Ctrl with the wheel,
+              or Ctrl and − =, zooms. Ctrl+Z removes the last box. Esc clears the selection. Arrows
+              move a selected box, Shift for a bigger step. Ctrl+D duplicates it. N marks this photo
+              as having no parts.
             </p>
           </div>
         </aside>

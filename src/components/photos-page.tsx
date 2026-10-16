@@ -75,7 +75,8 @@ export function PhotosPage() {
 
   function remember(name: string) {
     const index = (images ?? []).findIndex((image) => image.name === name);
-    if (index >= 0 && project) sessionStorage.setItem(`part-lab-index:${project.id}`, String(index));
+    if (index >= 0 && project)
+      sessionStorage.setItem(`part-lab-index:${project.id}`, String(index));
   }
 
   async function runExport() {
@@ -219,13 +220,17 @@ export function PhotosPage() {
                   </td>
                   <td className="py-2 pr-3 text-muted">{image.labelled ? "Done" : "Open"}</td>
                   <td className="truncate py-2 pr-3 font-mono">{image.claimedBy ?? "Free"}</td>
-                  <td className="hidden py-2 text-muted sm:table-cell">{heldFor(image.claimedAt)}</td>
+                  <td className="hidden py-2 text-muted sm:table-cell">
+                    {heldFor(image.claimedAt)}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        {images && filtered.length === 0 ? <p className="text-sm text-muted">No photos match.</p> : null}
+        {images && filtered.length === 0 ? (
+          <p className="text-sm text-muted">No photos match.</p>
+        ) : null}
         {pageCount > 1 ? (
           <div className="flex items-center gap-2">
             <FilterButton pressed={false} onClick={() => setPage(Math.max(0, safePage - 1))}>
@@ -234,7 +239,10 @@ export function PhotosPage() {
             <p className="font-mono text-sm text-muted tabular-nums">
               {safePage + 1} / {pageCount}
             </p>
-            <FilterButton pressed={false} onClick={() => setPage(Math.min(pageCount - 1, safePage + 1))}>
+            <FilterButton
+              pressed={false}
+              onClick={() => setPage(Math.min(pageCount - 1, safePage + 1))}
+            >
               Next
             </FilterButton>
           </div>

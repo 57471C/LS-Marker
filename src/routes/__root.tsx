@@ -1,4 +1,10 @@
-import { createRootRoute, HeadContent, Outlet, Scripts, useRouterState } from "@tanstack/react-router";
+import {
+  createRootRoute,
+  HeadContent,
+  Outlet,
+  Scripts,
+  useRouterState,
+} from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { ProjectSplash } from "@/components/project-splash";
@@ -39,7 +45,9 @@ function Shell() {
   let body = <Outlet />;
   if (!settings && username === undefined) {
     body = (
-      <div className="flex min-h-dvh items-center justify-center bg-bg text-sm text-muted">Loading</div>
+      <div className="flex min-h-dvh items-center justify-center bg-bg text-sm text-muted">
+        Loading
+      </div>
     );
   } else if (!settings && !username) {
     body = <LoginScreen onIn={setUsername} />;
@@ -67,7 +75,11 @@ function GatedBody({
 }) {
   const { current, ready, picker, closePicker } = useProject();
   if (signedIn && !ready) {
-    return <div className="flex min-h-dvh items-center justify-center bg-bg text-sm text-muted">Loading</div>;
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-bg text-sm text-muted">
+        Loading
+      </div>
+    );
   }
   const mustPick = signedIn && !settings && !current;
   return (

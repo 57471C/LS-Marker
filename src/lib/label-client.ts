@@ -138,7 +138,9 @@ export function createClass(ic: string, des: string): Promise<ClassRow> {
   }).then((res) => asJson<ClassRow>(res));
 }
 
-export function importClasses(csv: string): Promise<{ added: number; skipped: number; invalid: number }> {
+export function importClasses(
+  csv: string,
+): Promise<{ added: number; skipped: number; invalid: number }> {
   return fetch(api("/api/classes/import"), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -167,7 +169,10 @@ export function fetchMe(): Promise<{ id: number; username: string } | null> {
     .then((data) => data.user);
 }
 
-export function login(username: string, password: string): Promise<{ id: number; username: string }> {
+export function login(
+  username: string,
+  password: string,
+): Promise<{ id: number; username: string }> {
   return fetch(api("/api/login"), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -205,7 +210,10 @@ export function fetchUsers(): Promise<LabUser[]> {
     .then((data) => data.users);
 }
 
-export function createUser(username: string, password: string): Promise<{ id: number; username: string }> {
+export function createUser(
+  username: string,
+  password: string,
+): Promise<{ id: number; username: string }> {
   return fetch(api("/api/users"), {
     method: "POST",
     headers: { "content-type": "application/json" },
