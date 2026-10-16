@@ -10,6 +10,11 @@ export type StageBox = {
   h: number;
 };
 
+function newId() {
+  return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+
 type Corner = "nw" | "ne" | "sw" | "se";
 
 type Drag =
@@ -296,7 +301,7 @@ export function LabelStage({
       const moved = Math.hypot(drag.x1 - drag.x0, drag.y1 - drag.y0);
       if (moved < 0.01) return;
       const box = fromCorners(
-        { key: crypto.randomUUID(), classId: drag.classId },
+        { key: newId(), classId: drag.classId },
         drag.x0,
         drag.y0,
         drag.x1,
