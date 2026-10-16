@@ -6,10 +6,8 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
-import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { ProjectSplash } from "@/components/project-splash";
 import { LoginScreen } from "@/components/login-screen";
-import { AuthProvider } from "@/lib/auth/provider";
 import { fetchMe } from "@/lib/label-client";
 import { ProjectProvider, useProject } from "@/lib/project";
 import { SessionContext } from "@/lib/session";
@@ -101,8 +99,6 @@ export const Route = createRootRoute({
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
       { rel: "stylesheet", href: appCss },
-      { rel: "manifest", href: "/__grok/manifest.webmanifest" },
-      { rel: "apple-touch-icon", href: "/__grok/icon-180.png" },
     ],
   }),
   component: () => (
@@ -111,10 +107,7 @@ export const Route = createRootRoute({
         <HeadContent />
       </head>
       <body>
-        <PreviewHostBridge />
-        <AuthProvider>
-          <Shell />
-        </AuthProvider>
+        <Shell />
         <Scripts />
       </body>
     </html>

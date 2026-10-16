@@ -1,5 +1,3 @@
-import { previewPathPrefix } from "@/lib/preview-path-prefix";
-
 export type ClassRow = { id: number; ic: string; des: string; color: string };
 export type ImageRow = {
   name: string;
@@ -29,9 +27,7 @@ export type Project = {
 };
 
 function api(path: string): string {
-  if (typeof window === "undefined") return path;
-  const prefix = previewPathPrefix(window.location.hostname, window.location.pathname) ?? "";
-  return `${prefix}${path}`;
+  return path;
 }
 
 async function failMessage(res: Response): Promise<string> {

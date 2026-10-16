@@ -5,17 +5,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": [
-      "**",
-      "!**/node_modules",
-      "!**/dist",
-      "!**/.output",
-      "!**/.nitro",
-      "!**/.vercel",
-      "!**/src/routeTree.gen.ts",
-      "!**/public/__grok",
-      "!**/scripts/install-page.html"
-    ]
+    "includes": ["**", "!**/node_modules", "!**/dist", "!**/.output", "!**/src/routeTree.gen.ts"]
   },
   "formatter": {
     "enabled": true,
@@ -47,25 +37,6 @@
       }
     }
   },
-  "overrides": [
-    {
-      "includes": ["src/lib/**", "server/**"],
-      "linter": {
-        "rules": {
-          "correctness": {
-            "useHookAtTopLevel": "off"
-          },
-          "style": {
-            "noNonNullAssertion": "off"
-          },
-          "complexity": {
-            "useOptionalChain": "off",
-            "noUselessFragments": "off"
-          }
-        }
-      }
-    }
-  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double",
