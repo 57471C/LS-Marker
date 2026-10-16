@@ -56,9 +56,32 @@ async function asJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function downloadYoloExport(projectId?: number): Promise<void> {
-  const query = projectId != null ? `?id=${encodeURIComponent(projectId)}` : "";
-  const res = await fetch(api(`/api/export${query}`));
+export type YoloExportType = "labels_only" | "full_tar";
+
+export type YoloExportOptions = {
+  projectId: number;
+  exportType: YoloExportType;
+  trainSplit?: number;
+  signal?: AbortSignal;
+  onProgress?: (bytesLoaded: number) => void;
+};
+
+export function yoloExportUrl(
+  projectId: number,
+  exportType: YoloExportType,
+  trainSplit = 80,
+): string {
+  const params = new URLSearchParams({
+    id: String(projectId),
+    type: exportType,
+    split: String(Math.round(trainSplit)),
+  });
+  return api(`/api/export?${params.toString()}`);
+}
+
+export async function downloadYoloExport(options: YoloExportOptions): Promise<void> {
+  const { projectId, exportType, trainSplit = 80, signal, onProgress } = options;
+  const res = await fetch(yoloExportUrl(projectId, exportType, trainSplit), { signal });
   if (!res.ok) {
     const message = await failMessage(res);
     if (res.status === 401 && message === "Sign in" && typeof window !== "undefined") {
@@ -66,12 +89,32 @@ export async function downloadYoloExport(projectId?: number): Promise<void> {
     }
     throw new Error(message);
   }
-  const blob = await res.blob();
+
+  let blob: Blob;
+  if (res.body) {
+    const reader = res.body.getReader();
+    const chunks: BlobPart[] = [];
+    let loaded = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(new Uint8Array(value));
+        loaded += value.byteLength;
+        onProgress?.(loaded);
+      }
+    }
+    blob = new Blob(chunks, { type: "application/x-tar" });
+  } else {
+    blob = await res.blob();
+    onProgress?.(blob.size);
+  }
+
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   const disposition = res.headers.get("content-disposition");
-  let filename = "yolo.zip";
+  let filename = exportType === "labels_only" ? "yolo_labels.tar" : "yolo.tar";
   if (disposition) {
     const match = disposition.match(/filename="?([^"]+)"?/);
     if (match?.[1]) filename = match[1];

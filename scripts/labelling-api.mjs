@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import zlib from "node:zlib";
+import tar from "tar-stream";
 
 /**
  * Local labelling API. Vite middleware so `npm run dev` is one process on 8080.
@@ -705,8 +705,9 @@ function folderError(folder) {
 
 /**
  * @param {string} folder
+ * @param {number} [limit]
  */
-function listImages(folder) {
+function listImages(folder, limit = MAX_IMAGES) {
   /** @type {string[]} */
   const out = [];
   /**
@@ -715,7 +716,7 @@ function listImages(folder) {
    * @param {number} depth
    */
   function walk(dir, rel, depth) {
-    if (out.length >= MAX_IMAGES || depth > 8) return;
+    if (out.length >= limit || depth > 8) return;
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -731,7 +732,7 @@ function listImages(folder) {
       } else if (IMAGE_EXT.has(path.extname(ent.name).toLowerCase())) {
         out.push(childRel);
       }
-      if (out.length >= MAX_IMAGES) return;
+      if (out.length >= limit) return;
     }
   }
   walk(folder, "", 0);
@@ -794,112 +795,334 @@ function removeTxtFiles(dir) {
 }
 
 /**
- * @param {Date} date
+ * @param {string} val
  */
-function dosStamp(date) {
-  const time =
-    (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
-  const day = ((date.getFullYear() - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
-  return { time, day };
+function formatYamlValue(val) {
+  const str = String(val);
+  if (!str || /^[\s:#{}[\],&*?|<>!=%@\\'"-]|[\s:#]$/.test(str) || /[:#\r\n]/.test(str)) {
+    return JSON.stringify(str);
+  }
+  return str;
 }
 
 /**
+ * @param {{ id: number, ic: string }[]} classes
+ * @param {"labels_only" | "full_tar"} exportType
+ */
+function buildDataYaml(classes, exportType) {
+  const trainTarget = exportType === "labels_only" ? "train.txt" : "images/train";
+  const valTarget = exportType === "labels_only" ? "val.txt" : "images/val";
+  const lines = ["path: .", `train: ${trainTarget}`, `val: ${valTarget}`];
+  if (classes.length === 0) {
+    lines.push("names: {}");
+  } else {
+    lines.push("names:");
+    for (const cls of classes) {
+      lines.push(`  ${cls.id}: ${formatYamlValue(cls.ic)}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * @param {import("tar-stream").Pack} pack
+ * @param {string} name
+ * @param {Buffer | string} content
+ */
+function addTarBuffer(pack, name, content) {
+  const buf = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
+  return new Promise((resolve, reject) => {
+    pack.entry({ name, size: buf.length, mode: 0o644, mtime: new Date() }, buf, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+/**
+ * @param {import("tar-stream").Pack} pack
  * @param {string} name
  */
-function zipTxtName(name) {
-  const slash = name.lastIndexOf("/");
-  const dir = slash >= 0 ? name.slice(0, slash + 1) : "";
-  const base = name.slice(slash + 1);
-  const dot = base.lastIndexOf(".");
-  const stem = dot > 0 ? base.slice(0, dot) : base;
-  return `${dir}${stem}.txt`;
+function addTarDirectory(pack, name) {
+  const dirName = name.endsWith("/") ? name : `${name}/`;
+  return new Promise((resolve, reject) => {
+    pack.entry({ name: dirName, type: "directory", mode: 0o755, mtime: new Date() }, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
 }
 
 /**
- * Stored (uncompressed) zip. JPEGs are already compressed.
- * @param {string} folder
- * @param {(chunk: Buffer) => void} write
+ * Streams a single file from disk directly into the TAR pack stream with zero full-file RAM buffering.
+ * @param {import("tar-stream").Pack} pack
+ * @param {string} entryName
+ * @param {string} filePath
+ * @param {() => boolean} isAborted
+ * @param {(stream: import("node:fs").ReadStream | null) => void} setActiveStream
  */
-function writeYoloZip(folder, write) {
-  const when = dosStamp(new Date());
-  /** @type {{ name: Buffer, crc: number, size: number, offset: number }[]} */
-  const entries = [];
-  let offset = 0;
-
-  /**
-   * @param {string} name
-   * @param {Buffer} data
-   */
-  function add(name, data) {
-    const nameBuf = Buffer.from(name.replaceAll("\\", "/"), "utf8");
-    const crc = zlib.crc32(data) >>> 0;
-    const header = Buffer.alloc(30);
-    header.writeUInt32LE(0x04034b50, 0);
-    header.writeUInt16LE(20, 4);
-    header.writeUInt16LE(0, 8);
-    header.writeUInt16LE(when.time, 10);
-    header.writeUInt16LE(when.day, 12);
-    header.writeUInt32LE(crc, 14);
-    header.writeUInt32LE(data.length, 18);
-    header.writeUInt32LE(data.length, 22);
-    header.writeUInt16LE(nameBuf.length, 26);
-    entries.push({ name: nameBuf, crc, size: data.length, offset });
-    write(header);
-    write(nameBuf);
-    write(data);
-    offset += header.length + nameBuf.length + data.length;
+async function streamFileIntoTar(pack, entryName, filePath, isAborted, setActiveStream) {
+  if (isAborted()) return;
+  let stat;
+  try {
+    stat = await fs.promises.stat(filePath);
+  } catch {
+    await addTarBuffer(pack, entryName, Buffer.alloc(0));
+    return;
   }
-
-  for (const name of listImages(folder)) {
-    const imageFull = resolveInside(folder, name);
-    let image;
-    try {
-      image = fs.readFileSync(imageFull);
-    } catch {
-      continue;
+  if (!stat.isFile() || stat.size === 0) {
+    await addTarBuffer(pack, entryName, Buffer.alloc(0));
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    if (isAborted()) {
+      resolve();
+      return;
     }
-    add(name, image);
-    const txtPath = labelFileFor(imageFull);
-    if (!fs.existsSync(txtPath)) continue;
-    try {
-      add(zipTxtName(name), fs.readFileSync(txtPath));
-    } catch {
-      /* skip a label that disappeared mid-export */
-    }
-  }
-  const classesPath = path.join(folder, "classes.txt");
-  if (fs.existsSync(classesPath)) {
-    try {
-      add("classes.txt", fs.readFileSync(classesPath));
-    } catch {
-      /* class list is optional in the zip */
+    const entry = pack.entry(
+      { name: entryName, size: stat.size, mode: 0o644, mtime: stat.mtime },
+      (err) => {
+        setActiveStream(null);
+        if (err && !isAborted()) reject(err);
+        else resolve();
+      },
+    );
+    const readStream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
+    setActiveStream(readStream);
+    readStream.on("error", (err) => {
+      setActiveStream(null);
+      entry.destroy(err);
+      if (isAborted()) resolve();
+      else reject(err);
+    });
+    entry.on("error", (err) => {
+      setActiveStream(null);
+      readStream.destroy();
+      if (isAborted()) resolve();
+      else reject(err);
+    });
+    readStream.pipe(entry);
+  });
+}
+
+/**
+ * @param {import("better-sqlite3").Database} db
+ * @param {{ id: number, name: string, folder: string }} project
+ * @param {string} resolvedFolder
+ * @param {"labels_only" | "full_tar"} exportType
+ * @param {number} trainSplitPct
+ */
+function prepareExportPlan(db, project, resolvedFolder, exportType, trainSplitPct) {
+  /** @type {{ id: number, ic: string }[]} */
+  let classes = listClasses(db, project.id).map((c) => ({ id: c.id, ic: c.ic }));
+  if (classes.length === 0) {
+    const classesFile = path.join(resolvedFolder, "classes.txt");
+    if (fs.existsSync(classesFile)) {
+      try {
+        const lines = fs.readFileSync(classesFile, "utf8").split(/\r?\n/);
+        classes = lines
+          .map((line, idx) => ({ id: idx, ic: line.trim() }))
+          .filter((row) => Boolean(row.ic));
+      } catch {
+        /* ignore classes.txt fallback error */
+      }
     }
   }
 
-  const centralStart = offset;
-  for (const entry of entries) {
-    const central = Buffer.alloc(46);
-    central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE(20, 4);
-    central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(when.time, 12);
-    central.writeUInt16LE(when.day, 14);
-    central.writeUInt32LE(entry.crc, 16);
-    central.writeUInt32LE(entry.size, 20);
-    central.writeUInt32LE(entry.size, 24);
-    central.writeUInt16LE(entry.name.length, 28);
-    central.writeUInt32LE(entry.offset, 42);
-    write(central);
-    write(entry.name);
-    offset += central.length + entry.name.length;
+  const claimsMap = new Map(
+    db
+      .prepare("SELECT rel_path, status FROM image_claims WHERE project_id = ?")
+      .all(project.id)
+      .map((r) => [r.rel_path, r.status]),
+  );
+
+  const allRelImages = listImages(resolvedFolder, Infinity);
+  const candidates = [];
+  for (const relName of allRelImages) {
+    const imageFull = resolveInside(resolvedFolder, relName);
+    if (!fs.existsSync(imageFull)) continue;
+    const txtFull = labelFileFor(imageFull);
+    const hasTxt = fs.existsSync(txtFull);
+    const status = claimsMap.get(relName);
+    const completed = status === "complete" || (hasTxt && status !== "incomplete");
+    candidates.push({ relName, imageFull, txtFull, completed });
   }
-  const end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(entries.length, 8);
-  end.writeUInt16LE(entries.length, 10);
-  end.writeUInt32LE(offset - centralStart, 12);
-  end.writeUInt32LE(centralStart, 16);
-  write(end);
+
+  const completedOnly = candidates.filter((c) => c.completed);
+  const selected = completedOnly.length > 0 ? completedOnly : candidates;
+
+  const total = selected.length;
+  let trainCount = Math.round((total * trainSplitPct) / 100);
+  if (total >= 2 && trainSplitPct > 0 && trainSplitPct < 100) {
+    trainCount = Math.max(1, Math.min(total - 1, trainCount));
+  }
+
+  const items = selected.map((entry, index) => {
+    const id = index + 1;
+    const paddedId = String(id).padStart(6, "0");
+    const rawExt = path.extname(entry.imageFull);
+    const ext = rawExt || ".jpg";
+    const baseName = path.basename(entry.imageFull, rawExt);
+    const uniqueStem = `${paddedId}_${baseName}`;
+    const split = index < trainCount ? "train" : "val";
+    return {
+      id,
+      source_image_path: entry.imageFull,
+      export_image_relative: `images/${split}/${uniqueStem}${ext}`,
+      export_label_relative: `labels/${split}/${uniqueStem}.txt`,
+      split,
+      txt_full_path: entry.txtFull,
+    };
+  });
+
+  const manifest = {
+    project_name: project.name,
+    export_type: exportType,
+    exported_at: new Date().toISOString(),
+    total_items: items.length,
+    classes: classes.map((c) => c.ic),
+    items: items.map((item) => ({
+      id: item.id,
+      source_image_path: item.source_image_path,
+      export_image_relative: item.export_image_relative,
+      export_label_relative: item.export_label_relative,
+      split: item.split,
+    })),
+  };
+
+  return { classes, items, manifest };
+}
+
+/**
+ * @param {import("http").IncomingMessage} req
+ * @param {import("http").ServerResponse} res
+ * @param {import("better-sqlite3").Database} db
+ * @param {{ id: number, name: string, folder: string }} project
+ * @param {string} resolvedFolder
+ * @param {"labels_only" | "full_tar"} exportType
+ * @param {number} trainSplitPct
+ */
+async function streamYoloExport(req, res, db, project, resolvedFolder, exportType, trainSplitPct) {
+  const { classes, items, manifest } = prepareExportPlan(
+    db,
+    project,
+    resolvedFolder,
+    exportType,
+    trainSplitPct,
+  );
+  const dataYaml = buildDataYaml(classes, exportType);
+  const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
+
+  const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "yolo";
+  const fileName =
+    exportType === "labels_only" ? `${safeName}_labels_yolo.tar` : `${safeName}_yolo.tar`;
+
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/x-tar");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.setHeader("Cache-Control", "no-store");
+
+  let aborted = false;
+  /** @type {import("node:fs").ReadStream | null} */
+  let activeReadStream = null;
+  const pack = tar.pack();
+
+  const onDisconnect = () => {
+    if (!res.writableEnded) {
+      aborted = true;
+      if (activeReadStream) {
+        activeReadStream.destroy();
+        activeReadStream = null;
+      }
+      pack.destroy();
+    }
+  };
+
+  req.on("aborted", onDisconnect);
+  res.on("close", onDisconnect);
+
+  const streamFinished = new Promise((resolve, reject) => {
+    res.on("finish", resolve);
+    res.on("close", resolve);
+    res.on("error", (err) => {
+      if (aborted) resolve();
+      else reject(err);
+    });
+    pack.on("error", (err) => {
+      if (aborted) resolve();
+      else reject(err);
+    });
+  });
+
+  pack.pipe(res);
+
+  try {
+    await addTarBuffer(pack, "data.yaml", dataYaml);
+    await addTarBuffer(pack, "export_manifest.json", manifestJson);
+
+    if (exportType === "labels_only") {
+      const trainPaths = items
+        .filter((item) => item.split === "train")
+        .map((item) => item.source_image_path);
+      const valPaths = items
+        .filter((item) => item.split === "val")
+        .map((item) => item.source_image_path);
+
+      await addTarBuffer(pack, "train.txt", trainPaths.length ? `${trainPaths.join("\n")}\n` : "");
+      await addTarBuffer(pack, "val.txt", valPaths.length ? `${valPaths.join("\n")}\n` : "");
+      await addTarDirectory(pack, "labels/train/");
+      await addTarDirectory(pack, "labels/val/");
+
+      for (const item of items) {
+        if (aborted) break;
+        await streamFileIntoTar(
+          pack,
+          item.export_label_relative,
+          item.txt_full_path,
+          () => aborted,
+          (s) => {
+            activeReadStream = s;
+          },
+        );
+      }
+    } else {
+      await addTarDirectory(pack, "images/train/");
+      await addTarDirectory(pack, "images/val/");
+      await addTarDirectory(pack, "labels/train/");
+      await addTarDirectory(pack, "labels/val/");
+
+      for (const item of items) {
+        if (aborted) break;
+        await streamFileIntoTar(
+          pack,
+          item.export_image_relative,
+          item.source_image_path,
+          () => aborted,
+          (s) => {
+            activeReadStream = s;
+          },
+        );
+        if (aborted) break;
+        await streamFileIntoTar(
+          pack,
+          item.export_label_relative,
+          item.txt_full_path,
+          () => aborted,
+          (s) => {
+            activeReadStream = s;
+          },
+        );
+      }
+    }
+
+    if (!aborted) {
+      pack.finalize();
+      await streamFinished;
+    }
+  } finally {
+    req.off("aborted", onDisconnect);
+    res.off("close", onDisconnect);
+  }
 }
 
 /**
@@ -1579,20 +1802,46 @@ async function handle(req, res, url, root) {
     const resolvedFolder = path.resolve(root, project.folder);
     const error = folderError(resolvedFolder);
     if (error) throw new HttpError(400, error);
+
+    const rawType = (
+      url.searchParams.get("type") ??
+      url.searchParams.get("export_type") ??
+      url.searchParams.get("mode") ??
+      "full_tar"
+    )
+      .trim()
+      .toLowerCase();
+    /** @type {"labels_only" | "full_tar"} */
+    let exportType;
+    if (rawType === "labels_only" || rawType === "labels") {
+      exportType = "labels_only";
+    } else if (rawType === "full_tar" || rawType === "full" || rawType === "tar") {
+      exportType = "full_tar";
+    } else {
+      throw new HttpError(400, "Invalid export type; expected labels_only or full_tar");
+    }
+
+    const rawSplit =
+      url.searchParams.get("split") ??
+      url.searchParams.get("trainSplit") ??
+      url.searchParams.get("train_split") ??
+      "80";
+    const parsedSplit = Number(rawSplit);
+    if (!Number.isFinite(parsedSplit) || parsedSplit < 0 || parsedSplit > 100) {
+      throw new HttpError(400, "Invalid train/val split; expected 0 to 100");
+    }
+    const trainSplitPct =
+      parsedSplit > 0 && parsedSplit < 1 && String(rawSplit).includes(".")
+        ? Math.round(parsedSplit * 100)
+        : Math.round(parsedSplit);
+
     try {
       writeClassesFile(db, project.id, resolvedFolder);
     } catch (err) {
       console.error("[label-api] classes.txt", err);
     }
-    const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "yolo";
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/zip");
-    res.setHeader("content-disposition", `attachment; filename="${safeName}-yolo.zip"`);
-    res.setHeader("cache-control", "no-store");
-    writeYoloZip(resolvedFolder, (chunk) => {
-      res.write(chunk);
-    });
-    res.end();
+
+    await streamYoloExport(req, res, db, project, resolvedFolder, exportType, trainSplitPct);
     return;
   }
 

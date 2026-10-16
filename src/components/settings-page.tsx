@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Archive, CheckCircle2, Download, FileText, Loader2, X } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import {
   createUser,
@@ -13,6 +14,7 @@ import {
   unlockAdmin,
   type LabUser,
   type Project,
+  type YoloExportType,
 } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
 
@@ -22,6 +24,15 @@ const btn =
   "press inline-flex h-11 items-center justify-center gap-2 rounded-sm border border-line bg-surface px-4 text-sm font-medium text-ink disabled:opacity-40";
 const btnPrimary =
   "press inline-flex h-11 items-center justify-center gap-2 rounded-sm bg-ink px-4 text-sm font-medium text-surface disabled:opacity-40";
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(2)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+}
 
 export function SettingsPage() {
   const [unlocked, setUnlocked] = useState<boolean | null>(null);
@@ -35,7 +46,15 @@ export function SettingsPage() {
   const [pendingDelete, setPendingDelete] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [exportingId, setExportingId] = useState<number | null>(null);
+
+  const [projectToExport, setProjectToExport] = useState<Project | null>(null);
+  const [exportType, setExportType] = useState<YoloExportType>("labels_only");
+  const [trainSplit, setTrainSplit] = useState<number>(80);
+  const [isExporting, setIsExporting] = useState(false);
+  const [bytesExported, setBytesExported] = useState(0);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const exportAbortRef = useRef<AbortController | null>(null);
+
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -85,15 +104,50 @@ export function SettingsPage() {
     }
   }
 
-  async function handleExport(p: Project) {
-    setExportingId(p.id);
-    setError(null);
+  function openExportModal(p: Project) {
+    setProjectToExport(p);
+    setExportType("labels_only");
+    setTrainSplit(80);
+    setExportError(null);
+    setBytesExported(0);
+    setIsExporting(false);
+  }
+
+  function closeExportModal() {
+    if (exportAbortRef.current) {
+      exportAbortRef.current.abort();
+      exportAbortRef.current = null;
+    }
+    setIsExporting(false);
+    setBytesExported(0);
+    setExportError(null);
+    setProjectToExport(null);
+  }
+
+  async function handleStartExport() {
+    if (!projectToExport || isExporting) return;
+    const controller = new AbortController();
+    exportAbortRef.current = controller;
+    setIsExporting(true);
+    setBytesExported(0);
+    setExportError(null);
     try {
-      await downloadYoloExport(p.id);
+      await downloadYoloExport({
+        projectId: projectToExport.id,
+        exportType,
+        trainSplit,
+        signal: controller.signal,
+        onProgress: (loaded) => setBytesExported(loaded),
+      });
+      setProjectToExport(null);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Export failed");
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return;
+      }
+      setExportError(err instanceof Error ? err.message : "Export failed");
     } finally {
-      setExportingId(null);
+      exportAbortRef.current = null;
+      setIsExporting(false);
     }
   }
 
@@ -220,13 +274,11 @@ export function SettingsPage() {
                             <button
                               type="button"
                               className="press inline-flex h-9 items-center rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
-                              disabled={
-                                exportingId === p.id || !p.folderOk || (p.totalPhotos ?? 0) === 0
-                              }
-                              onClick={() => void handleExport(p)}
-                              title="Zip images and txt files"
+                              disabled={!p.folderOk || (p.totalPhotos ?? 0) === 0}
+                              onClick={() => openExportModal(p)}
+                              title="Export YOLO dataset"
                             >
-                              {exportingId === p.id ? "Exporting…" : "Export Yolo"}
+                              Export Yolo
                             </button>
                             <button
                               type="button"
@@ -391,6 +443,240 @@ export function SettingsPage() {
               </button>
             </div>
           </>
+        ) : null}
+
+        {projectToExport ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
+            onClick={(event) => {
+              if (event.target === event.currentTarget && !isExporting) {
+                closeExportModal();
+              }
+            }}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="export-yolo-title"
+              className="flex w-full max-w-xl flex-col gap-5 rounded-xl border border-zinc-800 bg-zinc-950 p-6 text-zinc-100 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-zinc-800/80 pb-4">
+                <div className="flex flex-col gap-1">
+                  <h2
+                    id="export-yolo-title"
+                    className="text-base font-semibold tracking-tight text-zinc-50"
+                  >
+                    Export YOLO Dataset: {projectToExport.name}
+                  </h2>
+                  <p className="font-mono text-xs text-zinc-400">
+                    {projectToExport.resolvedFolder || projectToExport.folder} &middot;{" "}
+                    {projectToExport.completePhotos ?? 0} labeled /{" "}
+                    {projectToExport.totalPhotos ?? 0} total photos
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeExportModal}
+                  aria-label="Close export modal"
+                  className="press inline-flex size-8 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                >
+                  <X className="size-4" aria-hidden="true" />
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-3" role="radiogroup" aria-label="Export Method">
+                <label
+                  className={`flex cursor-pointer items-start gap-3.5 rounded-lg border p-4 transition-colors ${
+                    exportType === "labels_only"
+                      ? "border-blue-500 bg-blue-500/10"
+                      : "border-zinc-800 bg-zinc-900/60 hover:border-zinc-700 hover:bg-zinc-900"
+                  } ${isExporting ? "pointer-events-none opacity-60" : ""}`}
+                >
+                  <input
+                    type="radio"
+                    name="yolo-export-type"
+                    value="labels_only"
+                    checked={exportType === "labels_only"}
+                    disabled={isExporting}
+                    onChange={() => setExportType("labels_only")}
+                    className="sr-only"
+                  />
+                  <div
+                    className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border ${
+                      exportType === "labels_only"
+                        ? "border-blue-500/40 bg-blue-500/20 text-blue-400"
+                        : "border-zinc-700 bg-zinc-800 text-zinc-400"
+                    }`}
+                  >
+                    <FileText className="size-4" aria-hidden="true" />
+                  </div>
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-zinc-100">
+                        Labels Only (Fast / Reference)
+                      </span>
+                      {exportType === "labels_only" ? (
+                        <CheckCircle2
+                          className="size-4 shrink-0 text-blue-400"
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                    </div>
+                    <p className="text-xs leading-relaxed text-zinc-400">
+                      Best if you train on the same machine where images reside. Images remain in
+                      their original folders; exports YOLO label files, train/val path lists, and
+                      data.yaml. Instant download (&lt; 5 MB).
+                    </p>
+                  </div>
+                </label>
+
+                <label
+                  className={`flex cursor-pointer items-start gap-3.5 rounded-lg border p-4 transition-colors ${
+                    exportType === "full_tar"
+                      ? "border-blue-500 bg-blue-500/10"
+                      : "border-zinc-800 bg-zinc-900/60 hover:border-zinc-700 hover:bg-zinc-900"
+                  } ${isExporting ? "pointer-events-none opacity-60" : ""}`}
+                >
+                  <input
+                    type="radio"
+                    name="yolo-export-type"
+                    value="full_tar"
+                    checked={exportType === "full_tar"}
+                    disabled={isExporting}
+                    onChange={() => setExportType("full_tar")}
+                    className="sr-only"
+                  />
+                  <div
+                    className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border ${
+                      exportType === "full_tar"
+                        ? "border-blue-500/40 bg-blue-500/20 text-blue-400"
+                        : "border-zinc-700 bg-zinc-800 text-zinc-400"
+                    }`}
+                  >
+                    <Archive className="size-4" aria-hidden="true" />
+                  </div>
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-zinc-100">
+                        Full Dataset (.tar stream)
+                      </span>
+                      {exportType === "full_tar" ? (
+                        <CheckCircle2
+                          className="size-4 shrink-0 text-blue-400"
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                    </div>
+                    <p className="text-xs leading-relaxed text-zinc-400">
+                      Streams images and label pairs directly as an uncompressed TAR archive. Safe
+                      for huge datasets, collision-proof filenames, with zero memory overhead.
+                    </p>
+                  </div>
+                </label>
+              </div>
+
+              <div className="flex flex-col gap-2.5 rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="train-val-split" className="text-xs font-medium text-zinc-300">
+                    Train / Val Split
+                  </label>
+                  <span className="font-mono text-xs font-semibold text-blue-400">
+                    {trainSplit}% Train / {100 - trainSplit}% Val
+                  </span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="train-val-split"
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    disabled={isExporting}
+                    value={trainSplit}
+                    onChange={(event) => setTrainSplit(Number(event.target.value))}
+                    className="h-2 flex-1 cursor-pointer appearance-none rounded-lg bg-zinc-800 accent-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      disabled={isExporting}
+                      aria-label="Train split percentage"
+                      value={trainSplit}
+                      onChange={(event) => {
+                        const val = Number(event.target.value);
+                        if (Number.isFinite(val)) {
+                          setTrainSplit(Math.max(0, Math.min(100, Math.round(val))));
+                        }
+                      }}
+                      className="h-8 w-16 rounded-sm border border-zinc-700 bg-zinc-900 px-2 text-right font-mono text-xs text-zinc-100 outline-none focus-visible:border-blue-500 disabled:opacity-50"
+                    />
+                    <span className="font-mono text-xs text-zinc-400">%</span>
+                  </div>
+                </div>
+              </div>
+
+              {isExporting ? (
+                <div
+                  className="flex items-center justify-between gap-3 rounded-lg border border-blue-500/30 bg-blue-950/30 px-4 py-3 text-xs text-blue-200"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Loader2 className="size-4 animate-spin text-blue-400" aria-hidden="true" />
+                    <span>
+                      Streaming{" "}
+                      {exportType === "labels_only"
+                        ? "labels-only archive"
+                        : "full TAR dataset archive"}
+                      …
+                    </span>
+                  </div>
+                  <span className="font-mono font-semibold text-blue-300">
+                    {formatBytes(bytesExported)}
+                  </span>
+                </div>
+              ) : null}
+
+              {exportError ? (
+                <p
+                  className="rounded-md border border-red-500/40 bg-red-950/40 px-3.5 py-2.5 text-xs text-red-300"
+                  role="alert"
+                >
+                  {exportError}
+                </p>
+              ) : null}
+
+              <div className="flex items-center justify-end gap-2.5 border-t border-zinc-800/80 pt-4">
+                <button
+                  type="button"
+                  onClick={closeExportModal}
+                  className="press inline-flex h-10 items-center justify-center rounded-sm border border-zinc-700 bg-zinc-900 px-4 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isExporting}
+                  onClick={() => void handleStartExport()}
+                  className="press inline-flex h-10 items-center justify-center gap-2 rounded-sm bg-blue-600 px-5 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
+                >
+                  {isExporting ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                      Streaming Export…
+                    </>
+                  ) : (
+                    <>
+                      <Download className="size-4" aria-hidden="true" />
+                      Download Export
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
         ) : null}
 
         {projectToDelete ? (
