@@ -757,6 +757,31 @@ function labelFileFor(imageFull) {
 }
 
 /**
+ * Recursively remove all .txt files in a folder, leaving all other files (photos) and folder structure alone.
+ * @param {string} dir
+ */
+function removeTxtFiles(dir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const ent of entries) {
+    const full = path.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      removeTxtFiles(full);
+    } else if (ent.isFile() && ent.name.toLowerCase().endsWith(".txt")) {
+      try {
+        fs.unlinkSync(full);
+      } catch (err) {
+        console.error(`[label-api] Failed to delete ${full}:`, err);
+      }
+    }
+  }
+}
+
+/**
  * @param {Date} date
  */
 function dosStamp(date) {
@@ -954,6 +979,22 @@ function listClasses(db, projectId) {
 function publicProject(root, project) {
   const resolvedFolder = path.resolve(root, project.folder);
   const error = folderError(resolvedFolder);
+  let totalPhotos = 0;
+  let completePhotos = 0;
+  if (!error) {
+    try {
+      const images = listImages(resolvedFolder);
+      totalPhotos = images.length;
+      for (const name of images) {
+        const full = resolveInside(resolvedFolder, name);
+        if (fs.existsSync(labelFileFor(full))) {
+          completePhotos++;
+        }
+      }
+    } catch {
+      /* ignore file reading errors */
+    }
+  }
   return {
     id: project.id,
     name: project.name,
@@ -961,6 +1002,8 @@ function publicProject(root, project) {
     resolvedFolder,
     folderOk: !error,
     folderError: error,
+    totalPhotos,
+    completePhotos,
   };
 }
 
@@ -1229,7 +1272,10 @@ async function guard(req, res, url, root, method, pathname) {
     throw new HttpError(404, "Not found");
   }
 
-  if (method === "GET" && pathname === "/api/catalogue" && admin) return false;
+  if (admin) return false;
+  if (method === "GET" && pathname === "/api/projects") return false;
+  if (method === "DELETE" && pathname === "/api/projects") return false;
+  if (method === "GET" && pathname === "/api/export") return false;
 
   if (!user) throw new HttpError(401, "Sign in");
   return false;
@@ -1282,6 +1328,42 @@ async function handle(req, res, url, root) {
     if (!project) throw new HttpError(404, "Project not found");
     writeCookie(res, "partlab_project", String(project.id), Math.floor(SESSION_MS / 1000));
     send(res, 200, { project: publicProject(root, project) });
+    return;
+  }
+
+  if (method === "DELETE" && pathname === "/api/projects") {
+    const db = await getDb(root);
+    let body = {};
+    try {
+      body = await readBody(req);
+    } catch {
+      /* body optional if params provided */
+    }
+    const id = Number(body.id ?? url.searchParams.get("id"));
+    if (!Number.isInteger(id)) throw new HttpError(400, "Bad id");
+    const password =
+      typeof body.password === "string" ? body.password : url.searchParams.get("password") || "";
+    if (!sameSecret(password, ADMIN_PASSWORD)) throw new HttpError(401, "Wrong admin password");
+    const project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(id);
+    if (!project) throw new HttpError(404, "Project not found");
+
+    const resolvedFolder = path.resolve(root, project.folder);
+    if (!folderError(resolvedFolder)) {
+      removeTxtFiles(resolvedFolder);
+    }
+
+    db.transaction(() => {
+      db.prepare("DELETE FROM image_claims WHERE project_id = ?").run(id);
+      db.prepare("DELETE FROM classes WHERE project_id = ?").run(id);
+      db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+    })();
+
+    projectFolders.delete(resolvedFolder);
+    const curId = Number(readCookies(req).partlab_project);
+    if (curId === id) {
+      writeCookie(res, "partlab_project", "", 0);
+    }
+    send(res, 200, { ok: true, id });
     return;
   }
 
@@ -1379,7 +1461,16 @@ async function handle(req, res, url, root) {
 
   if (method === "GET" && pathname === "/api/export") {
     const db = await getDb(root);
-    const project = requireProject(db, req);
+    const idParam = url.searchParams.get("id");
+    let project;
+    if (idParam) {
+      const id = Number(idParam);
+      if (!Number.isInteger(id)) throw new HttpError(400, "Bad id");
+      project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(id);
+      if (!project) throw new HttpError(404, "Project not found");
+    } else {
+      project = requireProject(db, req);
+    }
     const resolvedFolder = path.resolve(root, project.folder);
     const error = folderError(resolvedFolder);
     if (error) throw new HttpError(400, error);
@@ -1388,9 +1479,10 @@ async function handle(req, res, url, root) {
     } catch (err) {
       console.error("[label-api] classes.txt", err);
     }
+    const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "yolo";
     res.statusCode = 200;
     res.setHeader("content-type", "application/zip");
-    res.setHeader("content-disposition", 'attachment; filename="yolo.zip"');
+    res.setHeader("content-disposition", `attachment; filename="${safeName}-yolo.zip"`);
     res.setHeader("cache-control", "no-store");
     writeYoloZip(resolvedFolder, (chunk) => {
       res.write(chunk);

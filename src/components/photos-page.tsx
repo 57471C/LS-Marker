@@ -1,15 +1,18 @@
 import { Link } from "@tanstack/react-router";
+import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/app-header";
-import { fetchCatalogue, downloadYoloExport, imageSrc, type ImageRow } from "@/lib/label-client";
-import { useSession } from "@/lib/session";
+import { fetchCatalogue, imageSrc, type ImageRow } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
+import { useSession } from "@/lib/session";
 
 const field =
   "h-11 w-full rounded-sm border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
 type OwnerFilter = "any" | "mine" | "free" | "taken";
 type StatusFilter = "any" | "open" | "done";
+type SortField = "file" | "labels" | "owner" | "held";
+type SortDirection = "asc" | "desc";
 
 const PAGE_SIZE = 40;
 
@@ -34,8 +37,9 @@ export function PhotosPage() {
   const [query, setQuery] = useState("");
   const [owner, setOwner] = useState<OwnerFilter>("any");
   const [status, setStatus] = useState<StatusFilter>("any");
+  const [sortField, setSortField] = useState<SortField>("file");
+  const [sortDir, setSortDir] = useState<SortDirection>("asc");
   const [page, setPage] = useState(0);
-  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     let cancel = false;
@@ -67,9 +71,36 @@ export function PhotosPage() {
     });
   }, [images, query, owner, status, username]);
 
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const sorted = useMemo(() => {
+    const list = [...filtered];
+    list.sort((a, b) => {
+      let cmp = 0;
+      if (sortField === "file") {
+        cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+      } else if (sortField === "labels") {
+        const aVal = a.labelled ? 1 : 0;
+        const bVal = b.labelled ? 1 : 0;
+        cmp = aVal - bVal;
+      } else if (sortField === "owner") {
+        const aOwner = a.claimedBy ?? "";
+        const bOwner = b.claimedBy ?? "";
+        cmp = aOwner.localeCompare(bOwner, undefined, { sensitivity: "base" });
+      } else if (sortField === "held") {
+        const aTime = a.claimedAt ? new Date(a.claimedAt).getTime() : 0;
+        const bTime = b.claimedAt ? new Date(b.claimedAt).getTime() : 0;
+        cmp = aTime - bTime;
+      }
+      if (cmp === 0) {
+        cmp = a.name.localeCompare(b.name, undefined, { numeric: true });
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return list;
+  }, [filtered, sortField, sortDir]);
+
+  const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
-  const shown = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  const shown = sorted.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
   const openCount = (images ?? []).filter((image) => !image.labelled).length;
   const mineCount = (images ?? []).filter((image) => image.claimedBy === username).length;
 
@@ -79,16 +110,14 @@ export function PhotosPage() {
       sessionStorage.setItem(`part-lab-index:${project.id}`, String(index));
   }
 
-  async function runExport() {
-    setExporting(true);
-    setError(null);
-    try {
-      await downloadYoloExport();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Export failed");
-    } finally {
-      setExporting(false);
+  function toggleSort(field: SortField) {
+    if (sortField === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir("asc");
     }
+    setPage(0);
   }
 
   return (
@@ -104,14 +133,6 @@ export function PhotosPage() {
                 : `${images.length} scanned · ${openCount} open · ${mineCount} yours`}
             </p>
           </div>
-          <button
-            type="button"
-            className="btn-blue press inline-flex h-11 items-center rounded-sm px-4 text-sm font-medium disabled:opacity-40"
-            disabled={exporting || images == null || images.length === 0 || Boolean(folderError)}
-            onClick={() => void runExport()}
-          >
-            {exporting ? "Exporting" : "Export YOLO"}
-          </button>
         </div>
         {error ? (
           <p className="rounded-sm border border-line bg-surface px-3 py-2 text-sm" role="alert">
@@ -184,47 +205,107 @@ export function PhotosPage() {
             </div>
           </div>
         </div>
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto rounded-xl border border-line bg-surface">
           <table className="w-full table-fixed text-left text-sm">
             <thead>
               <tr className="border-b border-line text-muted">
-                <th className="w-16 py-2 pr-2 font-medium"> </th>
-                <th className="py-2 pr-3 font-medium">File</th>
-                <th className="w-20 py-2 pr-3 font-medium">Labels</th>
-                <th className="w-24 py-2 pr-3 font-medium">Owner</th>
-                <th className="hidden w-20 py-2 font-medium sm:table-cell">Held</th>
+                <th className="w-16 py-3 pl-3 pr-2 font-medium"> </th>
+                <SortHeader
+                  field="file"
+                  label="File"
+                  currentField={sortField}
+                  currentDir={sortDir}
+                  onSort={toggleSort}
+                  className="py-3 pr-3 font-medium"
+                />
+                <SortHeader
+                  field="labels"
+                  label="Labels"
+                  currentField={sortField}
+                  currentDir={sortDir}
+                  onSort={toggleSort}
+                  className="w-24 py-3 pr-3 font-medium"
+                />
+                <SortHeader
+                  field="owner"
+                  label="Owner"
+                  currentField={sortField}
+                  currentDir={sortDir}
+                  onSort={toggleSort}
+                  className="w-28 py-3 pr-3 font-medium"
+                />
+                <SortHeader
+                  field="held"
+                  label="Held"
+                  currentField={sortField}
+                  currentDir={sortDir}
+                  onSort={toggleSort}
+                  className="hidden w-24 py-3 pr-3 font-medium sm:table-cell"
+                />
               </tr>
             </thead>
-            <tbody>
-              {shown.map((image) => (
-                <tr key={image.name} className="border-b border-line">
-                  <td className="py-2 pr-2">
-                    <Link to="/" onClick={() => remember(image.name)} className="block">
-                      <img
-                        src={imageSrc(image.name)}
-                        alt=""
-                        loading="lazy"
-                        decoding="async"
-                        className="size-12 rounded-sm bg-ink object-cover"
-                      />
-                    </Link>
-                  </td>
-                  <td className="py-2 pr-3">
-                    <Link
-                      to="/"
-                      onClick={() => remember(image.name)}
-                      className="block truncate font-mono text-sm text-ink"
-                    >
-                      {image.name}
-                    </Link>
-                  </td>
-                  <td className="py-2 pr-3 text-muted">{image.labelled ? "Done" : "Open"}</td>
-                  <td className="truncate py-2 pr-3 font-mono">{image.claimedBy ?? "Free"}</td>
-                  <td className="hidden py-2 text-muted sm:table-cell">
-                    {heldFor(image.claimedAt)}
-                  </td>
-                </tr>
-              ))}
+            <tbody className="divide-y divide-line">
+              {shown.map((image) => {
+                const isOpen = !image.labelled;
+                return (
+                  <tr
+                    key={image.name}
+                    className={`transition-colors ${
+                      isOpen
+                        ? "bg-amber-500/5 hover:bg-amber-500/10"
+                        : "bg-emerald-500/5 hover:bg-emerald-500/10"
+                    }`}
+                  >
+                    <td className="py-2.5 pl-3 pr-2">
+                      <Link to="/" onClick={() => remember(image.name)} className="block">
+                        <img
+                          src={imageSrc(image.name)}
+                          alt=""
+                          loading="lazy"
+                          decoding="async"
+                          className="size-12 rounded-sm bg-ink object-cover"
+                        />
+                      </Link>
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <Link
+                        to="/"
+                        onClick={() => remember(image.name)}
+                        className="block truncate font-mono text-sm text-ink hover:underline"
+                      >
+                        {image.name}
+                      </Link>
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      {isOpen ? (
+                        <span className="inline-flex items-center rounded-sm bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-800">
+                          Open
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center rounded-sm bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-800">
+                          Done
+                        </span>
+                      )}
+                    </td>
+                    <td className="truncate py-2.5 pr-3 font-mono text-xs">
+                      {image.claimedBy ? (
+                        image.claimedBy === username ? (
+                          <span className="inline-flex items-center rounded-sm bg-ink/10 px-1.5 py-0.5 font-medium text-ink">
+                            {image.claimedBy} (you)
+                          </span>
+                        ) : (
+                          <span className="text-ink">{image.claimedBy}</span>
+                        )
+                      ) : (
+                        <span className="text-muted">Free</span>
+                      )}
+                    </td>
+                    <td className="hidden py-2.5 pr-3 text-xs text-muted sm:table-cell">
+                      {heldFor(image.claimedAt)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -249,6 +330,51 @@ export function PhotosPage() {
         ) : null}
       </main>
     </div>
+  );
+}
+
+function SortHeader({
+  field,
+  label,
+  currentField,
+  currentDir,
+  onSort,
+  className,
+}: {
+  field: SortField;
+  label: string;
+  currentField: SortField;
+  currentDir: SortDirection;
+  onSort: (field: SortField) => void;
+  className?: string;
+}) {
+  const active = currentField === field;
+  return (
+    <th className={className}>
+      <button
+        type="button"
+        className="group inline-flex items-center gap-1 font-medium text-muted hover:text-ink focus-visible:outline-none"
+        onClick={() => onSort(field)}
+        title={`Sort by ${label} (${active ? (currentDir === "asc" ? "ascending" : "descending") : "click to sort"})`}
+      >
+        <span>{label}</span>
+        <span
+          className={`inline-flex transition-colors ${
+            active ? "text-ink" : "text-muted/40 group-hover:text-muted"
+          }`}
+        >
+          {active ? (
+            currentDir === "asc" ? (
+              <ChevronUp className="size-3.5" />
+            ) : (
+              <ChevronDown className="size-3.5" />
+            )
+          ) : (
+            <ChevronsUpDown className="size-3.5" />
+          )}
+        </span>
+      </button>
+    </th>
   );
 }
 

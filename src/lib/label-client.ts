@@ -24,6 +24,8 @@ export type Project = {
   resolvedFolder: string;
   folderOk: boolean;
   folderError: string | null;
+  totalPhotos?: number;
+  completePhotos?: number;
 };
 
 function api(path: string): string {
@@ -51,8 +53,9 @@ async function asJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function downloadYoloExport(): Promise<void> {
-  const res = await fetch(api("/api/export"));
+export async function downloadYoloExport(projectId?: number): Promise<void> {
+  const query = projectId != null ? `?id=${encodeURIComponent(projectId)}` : "";
+  const res = await fetch(api(`/api/export${query}`));
   if (!res.ok) {
     const message = await failMessage(res);
     if (res.status === 401 && message === "Sign in" && typeof window !== "undefined") {
@@ -64,7 +67,13 @@ export async function downloadYoloExport(): Promise<void> {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = "yolo.zip";
+  const disposition = res.headers.get("content-disposition");
+  let filename = "yolo.zip";
+  if (disposition) {
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    if (match?.[1]) filename = match[1];
+  }
+  link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -109,6 +118,15 @@ export function openProject(id: number): Promise<Project> {
   })
     .then((res) => asJson<{ project: Project }>(res))
     .then((data) => data.project);
+}
+
+export async function deleteProject(id: number, password: string): Promise<void> {
+  const res = await fetch(api("/api/projects"), {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id, password }),
+  });
+  await asJson(res);
 }
 
 export function fetchLabel(name: string): Promise<Box[]> {
