@@ -97,7 +97,7 @@ let dbPromise = null;
 /**
  * @param {string} root
  */
-function getDb(root) {
+export function getDb(root) {
   if (!dbPromise) {
     dbPromise = import("better-sqlite3")
       .then((mod) => {
@@ -155,6 +155,17 @@ function getDb(root) {
               completed_at TEXT,
               PRIMARY KEY (project_id, rel_path)
             );
+            CREATE TABLE IF NOT EXISTS images (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              project_id INTEGER NOT NULL DEFAULT 1,
+              file_path TEXT NOT NULL,
+              name TEXT NOT NULL,
+              status TEXT DEFAULT 'unlabeled',
+              locked_by TEXT DEFAULT NULL,
+              locked_at DATETIME DEFAULT NULL,
+              completed_at DATETIME DEFAULT NULL,
+              UNIQUE (project_id, file_path)
+            );
           `);
           const claimCols = db.prepare("PRAGMA table_info(image_claims)").all();
           if (claimCols.length && !claimCols.some((col) => col.name === "status")) {
@@ -163,13 +174,38 @@ function getDb(root) {
           if (claimCols.length && !claimCols.some((col) => col.name === "completed_at")) {
             db.exec("ALTER TABLE image_claims ADD COLUMN completed_at TEXT");
           }
+          const imgCols = db.prepare("PRAGMA table_info(images)").all();
+          if (imgCols.length && !imgCols.some((col) => col.name === "locked_by")) {
+            db.exec("ALTER TABLE images ADD COLUMN locked_by TEXT DEFAULT NULL");
+          }
+          if (imgCols.length && !imgCols.some((col) => col.name === "locked_at")) {
+            db.exec("ALTER TABLE images ADD COLUMN locked_at DATETIME DEFAULT NULL");
+          }
+          if (imgCols.length && !imgCols.some((col) => col.name === "name")) {
+            db.exec("ALTER TABLE images ADD COLUMN name TEXT");
+          }
+          if (imgCols.length && !imgCols.some((col) => col.name === "file_path")) {
+            db.exec("ALTER TABLE images ADD COLUMN file_path TEXT");
+          }
+          if (imgCols.length && !imgCols.some((col) => col.name === "project_id")) {
+            db.exec("ALTER TABLE images ADD COLUMN project_id INTEGER NOT NULL DEFAULT 1");
+          }
+          if (imgCols.length && !imgCols.some((col) => col.name === "status")) {
+            db.exec("ALTER TABLE images ADD COLUMN status TEXT DEFAULT 'unlabeled'");
+          }
+          if (imgCols.length && !imgCols.some((col) => col.name === "completed_at")) {
+            db.exec("ALTER TABLE images ADD COLUMN completed_at DATETIME DEFAULT NULL");
+          }
           ensureDefaultProject(db, root);
         }
-        for (const project of db.prepare("SELECT id FROM projects").all()) {
+        for (const project of db.prepare("SELECT id, folder FROM projects").all()) {
           assignMissingColors(db, project.id);
-        }
-        for (const project of db.prepare("SELECT folder FROM projects").all()) {
           rememberProjectFolder(path.resolve(root, project.folder));
+          try {
+            syncProjectImages(db, root, project);
+          } catch {
+            /* folder may not be ready */
+          }
         }
         return db;
       })
@@ -267,6 +303,69 @@ function ensureDefaultProject(db, root) {
     .prepare("INSERT INTO projects (name, folder, created_at) VALUES (?, ?, ?)")
     .run(name, folder, new Date().toISOString());
   if (name === "Samples") seedProject(db, Number(info.lastInsertRowid));
+}
+
+/**
+ * Synchronize images from the project folder into the SQLite images table.
+ * @param {import("better-sqlite3").Database} db
+ * @param {string} root
+ * @param {{ id: number, folder: string }} project
+ */
+export function syncProjectImages(db, root, project) {
+  const resolvedFolder = path.resolve(root, project.folder);
+  if (folderError(resolvedFolder)) return [];
+  const fileNames = listImages(resolvedFolder);
+  const existing = new Map(
+    db
+      .prepare("SELECT * FROM images WHERE project_id = ?")
+      .all(project.id)
+      .map((r) => [r.file_path, r]),
+  );
+  const claims = new Map(
+    db
+      .prepare("SELECT * FROM image_claims WHERE project_id = ?")
+      .all(project.id)
+      .map((r) => [r.rel_path, r]),
+  );
+
+  const insert = db.prepare(`
+    INSERT INTO images (project_id, file_path, name, status, locked_by, locked_at, completed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const tx = db.transaction(() => {
+    for (const name of fileNames) {
+      const full = resolveInside(resolvedFolder, name);
+      const labelled = fs.existsSync(labelFileFor(full));
+      const claim = claims.get(name);
+      const isComplete = labelled || claim?.status === "complete";
+      const status = isComplete
+        ? "completed"
+        : claim?.status === "incomplete"
+          ? "incomplete"
+          : "unlabeled";
+      const existingRow = existing.get(name);
+      if (!existingRow) {
+        insert.run(
+          project.id,
+          name,
+          name,
+          status,
+          claim?.claimed_by || null,
+          claim?.claimed_at || null,
+          claim?.completed_at || (isComplete ? new Date().toISOString() : null),
+        );
+      } else {
+        if (isComplete && existingRow.status !== "completed") {
+          db.prepare(
+            "UPDATE images SET status = 'completed', locked_by = NULL, locked_at = NULL WHERE id = ?",
+          ).run(existingRow.id);
+        }
+      }
+    }
+  });
+  tx();
+  return fileNames;
 }
 
 function isHexColor(value) {
@@ -468,20 +567,27 @@ function cleanPassword(value) {
  */
 function claimForWrite(db, projectId, rel, username) {
   const row = db
-    .prepare("SELECT claimed_by FROM image_claims WHERE project_id = ? AND rel_path = ?")
+    .prepare(
+      "SELECT claimed_by, claimed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
+    )
     .get(projectId, rel);
   const now = new Date().toISOString();
-  if (!row?.claimed_by) {
+  const isExpired =
+    row?.claimed_at && new Date(row.claimed_at).getTime() < Date.now() - 15 * 60 * 1000;
+  if (!row?.claimed_by || isExpired || row.claimed_by === username) {
     db.prepare(
       `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status) VALUES (?, ?, ?, ?, 'open')
        ON CONFLICT(project_id, rel_path) DO UPDATE SET
          claimed_by = excluded.claimed_by,
-         claimed_at = COALESCE(image_claims.claimed_at, excluded.claimed_at),
+         claimed_at = excluded.claimed_at,
          status = CASE WHEN image_claims.status = 'incomplete' THEN 'open' ELSE COALESCE(image_claims.status, 'open') END`,
     ).run(projectId, rel, username, now);
+    db.prepare(
+      "UPDATE images SET locked_by = ?, locked_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
+    ).run(username, projectId, rel);
     return;
   }
-  if (row.claimed_by !== username) throw new HttpError(409, `Claimed by ${row.claimed_by}`);
+  throw new HttpError(409, `Claimed by ${row.claimed_by}`);
 }
 
 /**
@@ -825,6 +931,189 @@ function buildDataYaml(classes, exportType) {
 }
 
 /**
+ * Fast synchronous dimension extractor for JPEG, PNG, WebP, BMP.
+ * Reads only the required header bytes from disk without loading full multi-MB files.
+ * @param {string} filePath
+ * @returns {{ width: number, height: number }}
+ */
+function getImageDimensions(filePath) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(65536);
+    const bytesRead = fs.readSync(fd, buf, 0, 65536, 0);
+    fs.closeSync(fd);
+    fd = undefined;
+
+    // PNG
+    if (
+      bytesRead >= 24 &&
+      buf[0] === 0x89 &&
+      buf[1] === 0x50 &&
+      buf[2] === 0x4e &&
+      buf[3] === 0x47
+    ) {
+      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    }
+
+    // BMP
+    if (bytesRead >= 26 && buf[0] === 0x42 && buf[1] === 0x4d) {
+      return { width: buf.readInt32LE(18), height: Math.abs(buf.readInt32LE(22)) };
+    }
+
+    // WebP
+    if (
+      bytesRead >= 30 &&
+      buf.toString("ascii", 0, 4) === "RIFF" &&
+      buf.toString("ascii", 8, 12) === "WEBP"
+    ) {
+      const tag = buf.toString("ascii", 12, 16);
+      if (tag === "VP8 " && bytesRead >= 30) {
+        return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+      }
+      if (tag === "VP8L" && bytesRead >= 25 && buf[20] === 0x2f) {
+        const b0 = buf[21];
+        const b1 = buf[22];
+        const b2 = buf[23];
+        const b3 = buf[24];
+        const width = 1 + (((b1 & 0x3f) << 8) | b0);
+        const height = 1 + (((b3 & 0x0f) << 10) | (b2 << 2) | ((b1 & 0xc0) >> 6));
+        return { width, height };
+      }
+      if (tag === "VP8X" && bytesRead >= 30) {
+        const width = 1 + buf.readUIntLE(24, 3);
+        const height = 1 + buf.readUIntLE(27, 3);
+        return { width, height };
+      }
+    }
+
+    // JPEG
+    if (bytesRead >= 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+      let offset = 2;
+      while (offset + 9 < bytesRead) {
+        if (buf[offset] !== 0xff) {
+          offset += 1;
+          continue;
+        }
+        const marker = buf[offset + 1];
+        if (
+          (marker >= 0xc0 && marker <= 0xc3) ||
+          (marker >= 0xc5 && marker <= 0xc7) ||
+          (marker >= 0xc9 && marker <= 0xcb) ||
+          (marker >= 0xcd && marker <= 0xcf)
+        ) {
+          const height = buf.readUInt16BE(offset + 5);
+          const width = buf.readUInt16BE(offset + 7);
+          return { width, height };
+        }
+        const segmentLength = buf.readUInt16BE(offset + 2);
+        offset += 2 + segmentLength;
+      }
+    }
+  } catch {
+    /* fallback to default */
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return { width: 1920, height: 1080 };
+}
+
+/**
+ * @param {{ name: string }} project
+ * @param {{ id: number, ic: string }[]} classes
+ * @param {Array<{ id: number, relName: string, source_image_path: string, export_image_relative: string, split: string, txt_full_path: string }>} items
+ * @param {"labels_only" | "full_tar"} exportType
+ */
+function buildCocoDatasets(project, classes, items, exportType) {
+  const categories = classes.map((cls) => ({
+    id: cls.id,
+    name: cls.ic,
+    supercategory: "part",
+  }));
+
+  const createdDate = new Date().toISOString();
+  const year = new Date().getFullYear();
+
+  function makeSplitJson(splitName) {
+    const splitItems = items.filter((item) => item.split === splitName);
+    const images = [];
+    const annotations = [];
+    let annotationId = 1;
+
+    for (const item of splitItems) {
+      const dimensions = getImageDimensions(item.source_image_path);
+      const W = dimensions.width;
+      const H = dimensions.height;
+      const fileName =
+        exportType === "full_tar" ? path.basename(item.export_image_relative) : item.relName;
+
+      images.push({
+        id: item.id,
+        file_name: fileName,
+        width: W,
+        height: H,
+      });
+
+      const boxes = readBoxes(item.txt_full_path);
+      for (const box of boxes) {
+        let x_min = (box.x - box.w / 2) * W;
+        let y_min = (box.y - box.h / 2) * H;
+        let bbox_w = box.w * W;
+        let bbox_h = box.h * H;
+
+        // Clamp to image dimensions
+        x_min = Math.max(0, Math.min(W, x_min));
+        y_min = Math.max(0, Math.min(H, y_min));
+        bbox_w = Math.max(0, Math.min(W - x_min, bbox_w));
+        bbox_h = Math.max(0, Math.min(H - y_min, bbox_h));
+
+        x_min = Math.round(x_min * 100) / 100;
+        y_min = Math.round(y_min * 100) / 100;
+        bbox_w = Math.round(bbox_w * 100) / 100;
+        bbox_h = Math.round(bbox_h * 100) / 100;
+        const area = Math.round(bbox_w * bbox_h * 100) / 100;
+
+        annotations.push({
+          id: annotationId++,
+          image_id: item.id,
+          category_id: box.classId,
+          bbox: [x_min, y_min, bbox_w, bbox_h],
+          area,
+          segmentation: [],
+          iscrowd: 0,
+        });
+      }
+    }
+
+    const data = {
+      info: {
+        description: `${project.name} LS-Marker Dataset Export`,
+        version: "1.0",
+        year,
+        date_created: createdDate,
+      },
+      licenses: [],
+      images,
+      annotations,
+      categories,
+    };
+
+    return `${JSON.stringify(data, null, 2)}\n`;
+  }
+
+  return {
+    trainJson: makeSplitJson("train"),
+    valJson: makeSplitJson("val"),
+  };
+}
+
+/**
  * @param {import("tar-stream").Pack} pack
  * @param {string} name
  * @param {Buffer | string} content
@@ -911,8 +1200,16 @@ async function streamFileIntoTar(pack, entryName, filePath, isAborted, setActive
  * @param {string} resolvedFolder
  * @param {"labels_only" | "full_tar"} exportType
  * @param {number} trainSplitPct
+ * @param {"yolo" | "coco"} [exportFormat]
  */
-function prepareExportPlan(db, project, resolvedFolder, exportType, trainSplitPct) {
+function prepareExportPlan(
+  db,
+  project,
+  resolvedFolder,
+  exportType,
+  trainSplitPct,
+  exportFormat = "yolo",
+) {
   /** @type {{ id: number, ic: string }[]} */
   let classes = listClasses(db, project.id).map((c) => ({ id: c.id, ic: c.ic }));
   if (classes.length === 0) {
@@ -967,6 +1264,7 @@ function prepareExportPlan(db, project, resolvedFolder, exportType, trainSplitPc
     const split = index < trainCount ? "train" : "val";
     return {
       id,
+      relName: entry.relName,
       source_image_path: entry.imageFull,
       export_image_relative: `images/${split}/${uniqueStem}${ext}`,
       export_label_relative: `labels/${split}/${uniqueStem}.txt`,
@@ -977,10 +1275,18 @@ function prepareExportPlan(db, project, resolvedFolder, exportType, trainSplitPc
 
   const manifest = {
     project_name: project.name,
+    export_format: exportFormat,
     export_type: exportType,
     exported_at: new Date().toISOString(),
     total_items: items.length,
     classes: classes.map((c) => c.ic),
+    categories: classes.map((c) => ({
+      id: c.id,
+      name: c.ic,
+      supercategory: "part",
+    })),
+    class_to_id: Object.fromEntries(classes.map((c) => [c.ic, c.id])),
+    id_to_class: Object.fromEntries(classes.map((c) => [c.id, c.ic])),
     items: items.map((item) => ({
       id: item.id,
       source_image_path: item.source_image_path,
@@ -1107,6 +1413,105 @@ async function streamYoloExport(req, res, db, project, resolvedFolder, exportTyp
           pack,
           item.export_label_relative,
           item.txt_full_path,
+          () => aborted,
+          (s) => {
+            activeReadStream = s;
+          },
+        );
+      }
+    }
+
+    if (!aborted) {
+      pack.finalize();
+      await streamFinished;
+    }
+  } finally {
+    req.off("aborted", onDisconnect);
+    res.off("close", onDisconnect);
+  }
+}
+
+/**
+ * Streams COCO dataset export directly to response.
+ * @param {import("http").IncomingMessage} req
+ * @param {import("http").ServerResponse} res
+ * @param {import("better-sqlite3").Database} db
+ * @param {{ id: number, name: string, folder: string }} project
+ * @param {string} resolvedFolder
+ * @param {"labels_only" | "full_tar"} exportType
+ * @param {number} trainSplitPct
+ */
+async function streamCocoExport(req, res, db, project, resolvedFolder, exportType, trainSplitPct) {
+  const { classes, items, manifest } = prepareExportPlan(
+    db,
+    project,
+    resolvedFolder,
+    exportType,
+    trainSplitPct,
+    "coco",
+  );
+  const { trainJson, valJson } = buildCocoDatasets(project, classes, items, exportType);
+  const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
+
+  const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "coco";
+  const fileName =
+    exportType === "labels_only" ? `${safeName}_coco_annotations.tar` : `${safeName}_coco.tar`;
+
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/x-tar");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.setHeader("Cache-Control", "no-store");
+
+  let aborted = false;
+  /** @type {import("node:fs").ReadStream | null} */
+  let activeReadStream = null;
+  const pack = tar.pack();
+
+  const onDisconnect = () => {
+    if (!res.writableEnded) {
+      aborted = true;
+      if (activeReadStream) {
+        activeReadStream.destroy();
+        activeReadStream = null;
+      }
+      pack.destroy();
+    }
+  };
+
+  req.on("aborted", onDisconnect);
+  res.on("close", onDisconnect);
+
+  const streamFinished = new Promise((resolve, reject) => {
+    res.on("finish", resolve);
+    res.on("close", resolve);
+    res.on("error", (err) => {
+      if (aborted) resolve();
+      else reject(err);
+    });
+    pack.on("error", (err) => {
+      if (aborted) resolve();
+      else reject(err);
+    });
+  });
+
+  pack.pipe(res);
+
+  try {
+    await addTarBuffer(pack, "export_manifest.json", manifestJson);
+    await addTarDirectory(pack, "annotations/");
+    await addTarBuffer(pack, "annotations/instances_train.json", trainJson);
+    await addTarBuffer(pack, "annotations/instances_val.json", valJson);
+
+    if (exportType === "full_tar") {
+      await addTarDirectory(pack, "images/train/");
+      await addTarDirectory(pack, "images/val/");
+
+      for (const item of items) {
+        if (aborted) break;
+        await streamFileIntoTar(
+          pack,
+          item.export_image_relative,
+          item.source_image_path,
           () => aborted,
           (s) => {
             activeReadStream = s;
@@ -1271,8 +1676,10 @@ function currentProject(db, req) {
  */
 function requireProject(db, req) {
   const project = currentProject(db, req);
-  if (!project) throw new HttpError(409, "Open a project");
-  return project;
+  if (project) return project;
+  const all = db.prepare("SELECT id, name, folder FROM projects").all();
+  if (all.length === 1) return all[0];
+  throw new HttpError(409, "Open a project");
 }
 
 /**
@@ -1304,11 +1711,11 @@ function createProject(db, root, name, folder) {
  * @param {string} root
  * @param {{ id: number, name: string, folder: string }} project
  */
-async function catalogue(root, project) {
+export async function catalogue(root, project) {
   const db = await getDb(root);
   const resolvedFolder = path.resolve(root, project.folder);
   const error = folderError(resolvedFolder);
-  /** @type {{ name: string, labelled: boolean, claimedBy: string | null, claimedAt: string | null, status: string, completedAt: string | null }[]} */
+  /** @type {{ id: number, name: string, labelled: boolean, claimedBy: string | null, claimedAt: string | null, status: string, completedAt: string | null, lockedBy: string | null, lockedAt: string | null }[]} */
   let images = [];
   if (!error) {
     try {
@@ -1316,25 +1723,34 @@ async function catalogue(root, project) {
     } catch (err) {
       console.error("[label-api] classes.txt", err);
     }
-    const claims = new Map(
-      db
-        .prepare(
-          "SELECT rel_path, claimed_by, claimed_at, status, completed_at FROM image_claims WHERE project_id = ?",
-        )
-        .all(project.id)
-        .map((row) => [row.rel_path, row]),
-    );
-    images = listImages(resolvedFolder).map((name) => {
-      const claim = claims.get(name);
-      const labelled = fs.existsSync(labelFileFor(resolveInside(resolvedFolder, name)));
-      const status = claim?.status || (labelled ? "complete" : "open");
+    syncProjectImages(db, root, project);
+    const dbImages = db
+      .prepare(
+        "SELECT id, project_id, file_path, name, status, locked_by, locked_at, completed_at FROM images WHERE project_id = ? ORDER BY id ASC",
+      )
+      .all(project.id);
+    const nowTime = Date.now();
+    images = dbImages.map((row) => {
+      const isComplete =
+        row.status === "completed" ||
+        fs.existsSync(labelFileFor(resolveInside(resolvedFolder, row.file_path)));
+      const isLocked =
+        !isComplete &&
+        Boolean(row.locked_by) &&
+        new Date(row.locked_at).getTime() > nowTime - 15 * 60 * 1000;
+      const activeHolder = isLocked ? row.locked_by : null;
+      const activeLockedAt = isLocked ? row.locked_at : null;
+      const status = isComplete ? "complete" : row.status === "incomplete" ? "incomplete" : "open";
       return {
-        name,
-        labelled,
-        claimedBy: claim?.claimed_by || null,
-        claimedAt: claim?.claimed_at || null,
+        id: row.id,
+        name: row.file_path,
+        labelled: isComplete,
+        claimedBy: activeHolder,
+        claimedAt: activeLockedAt,
         status,
-        completedAt: claim?.completed_at || null,
+        completedAt: row.completed_at || null,
+        lockedBy: activeHolder,
+        lockedAt: activeLockedAt,
       };
     });
   }
@@ -1480,6 +1896,190 @@ async function guard(req, res, url, root, method, pathname) {
     throw new HttpError(404, "Not found");
   }
 
+  if (pathname === "/api/images/next" || (pathname === "/api/claim/next" && method === "POST")) {
+    if (!user) throw new HttpError(401, "Sign in");
+    const project = requireProject(db, req);
+    syncProjectImages(db, root, project);
+
+    const claimQuery = `
+      UPDATE images
+      SET 
+        locked_by = :userId,
+        locked_at = CURRENT_TIMESTAMP
+      WHERE id = (
+        SELECT id FROM images
+        WHERE project_id = :projectId
+          AND (status = 'unlabeled' OR status IS NULL)
+          AND (locked_by IS NULL OR locked_at < datetime('now', '-15 minutes'))
+        ORDER BY id ASC
+        LIMIT 1
+      )
+      RETURNING *;
+    `;
+    const claimed = db.prepare(claimQuery).get({ userId: user.username, projectId: project.id });
+    if (!claimed) {
+      send(res, 200, { image: null, message: "No unlabeled photos available" });
+      return true;
+    }
+    db.prepare(`
+      INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+      VALUES (?, ?, ?, ?, 'open', NULL)
+      ON CONFLICT(project_id, rel_path) DO UPDATE SET
+        claimed_by = excluded.claimed_by,
+        claimed_at = excluded.claimed_at,
+        status = 'open',
+        completed_at = NULL
+    `).run(project.id, claimed.file_path, user.username, claimed.locked_at);
+
+    send(res, 200, {
+      ok: true,
+      image: claimed,
+      id: claimed.id,
+      name: claimed.file_path,
+      claimedBy: claimed.locked_by,
+      claimedAt: claimed.locked_at,
+      status: claimed.status,
+    });
+    return true;
+  }
+
+  if (pathname === "/api/images/lock" && method === "POST") {
+    if (!user) throw new HttpError(401, "Sign in");
+    const project = requireProject(db, req);
+    syncProjectImages(db, root, project);
+    const body = await readBody(req);
+    const imageId = Number(body.id);
+    const name = typeof body.name === "string" ? body.name : "";
+
+    const lockQuery = `
+      UPDATE images
+      SET 
+        locked_by = :userId,
+        locked_at = CURRENT_TIMESTAMP
+      WHERE id = (
+        SELECT id FROM images
+        WHERE project_id = :projectId
+          AND (id = :imageId OR file_path = :name)
+          AND (locked_by IS NULL OR locked_by = :userId OR locked_at < datetime('now', '-15 minutes'))
+        LIMIT 1
+      )
+      RETURNING *;
+    `;
+    const locked = db.prepare(lockQuery).get({
+      userId: user.username,
+      projectId: project.id,
+      imageId: Number.isInteger(imageId) ? imageId : -1,
+      name,
+    });
+    if (!locked) {
+      const existing = db
+        .prepare(
+          "SELECT locked_by, locked_at FROM images WHERE project_id = ? AND (id = ? OR file_path = ?)",
+        )
+        .get(project.id, Number.isInteger(imageId) ? imageId : -1, name);
+      if (existing?.locked_by && existing.locked_by !== user.username) {
+        throw new HttpError(409, `Locked by ${existing.locked_by}`);
+      }
+      throw new HttpError(404, "Image not found");
+    }
+    db.prepare(`
+      INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+      VALUES (?, ?, ?, ?, 'open', NULL)
+      ON CONFLICT(project_id, rel_path) DO UPDATE SET
+        claimed_by = excluded.claimed_by,
+        claimed_at = excluded.claimed_at,
+        status = 'open',
+        completed_at = NULL
+    `).run(project.id, locked.file_path, user.username, locked.locked_at);
+
+    send(res, 200, {
+      ok: true,
+      image: locked,
+      id: locked.id,
+      name: locked.file_path,
+      claimedBy: locked.locked_by,
+      claimedAt: locked.locked_at,
+    });
+    return true;
+  }
+
+  if ((pathname === "/api/images/unlock" || pathname === "/api/unlock") && method === "POST") {
+    if (!user) throw new HttpError(401, "Sign in");
+    const project = requireProject(db, req);
+    const body = await readBody(req);
+    const imageId = Number(body.id);
+    const name = typeof body.name === "string" ? body.name : "";
+
+    const unlockQuery = `
+      UPDATE images
+      SET 
+        locked_by = NULL,
+        locked_at = NULL
+      WHERE project_id = :projectId
+        AND (id = :imageId OR file_path = :name)
+        AND (locked_by = :userId OR :admin = 1);
+    `;
+    db.prepare(unlockQuery).run({
+      userId: user.username,
+      projectId: project.id,
+      imageId: Number.isInteger(imageId) ? imageId : -1,
+      name,
+      admin: admin ? 1 : 0,
+    });
+
+    if (name) {
+      db.prepare(`
+        UPDATE image_claims
+        SET claimed_by = NULL, claimed_at = NULL
+        WHERE project_id = ? AND rel_path = ? AND (claimed_by = ? OR ? = 1)
+      `).run(project.id, name, user.username, admin ? 1 : 0);
+    }
+
+    send(res, 200, { ok: true });
+    return true;
+  }
+
+  if (pathname === "/api/images/skip" && method === "POST") {
+    if (!user) throw new HttpError(401, "Sign in");
+    const project = requireProject(db, req);
+    const body = await readBody(req);
+    const imageId = Number(body.id);
+    const name = typeof body.name === "string" ? body.name : "";
+
+    const skipQuery = `
+      UPDATE images
+      SET 
+        status = 'incomplete',
+        locked_by = NULL,
+        locked_at = NULL
+      WHERE project_id = :projectId
+        AND (id = :imageId OR file_path = :name)
+        AND (locked_by = :userId OR locked_by IS NULL OR :admin = 1);
+    `;
+    db.prepare(skipQuery).run({
+      userId: user.username,
+      projectId: project.id,
+      imageId: Number.isInteger(imageId) ? imageId : -1,
+      name,
+      admin: admin ? 1 : 0,
+    });
+
+    if (name) {
+      db.prepare(`
+        INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+        VALUES (?, ?, NULL, NULL, 'incomplete', NULL)
+        ON CONFLICT(project_id, rel_path) DO UPDATE SET
+          claimed_by = NULL,
+          claimed_at = NULL,
+          status = 'incomplete',
+          completed_at = NULL
+      `).run(project.id, name);
+    }
+
+    send(res, 200, { ok: true, status: "incomplete" });
+    return true;
+  }
+
   if (pathname === "/api/claim") {
     if (!user) throw new HttpError(401, "Sign in");
     const project = requireProject(db, req);
@@ -1501,7 +2101,15 @@ async function guard(req, res, url, root, method, pathname) {
       const action = typeof body.action === "string" ? body.action : "claim";
 
       if (action === "release-incomplete") {
-        if (row?.claimed_by && row.claimed_by !== user.username && !body.takeover && !admin) {
+        const isExpired =
+          row?.claimed_at && new Date(row.claimed_at).getTime() < Date.now() - 15 * 60 * 1000;
+        if (
+          row?.claimed_by &&
+          row.claimed_by !== user.username &&
+          !body.takeover &&
+          !admin &&
+          !isExpired
+        ) {
           throw new HttpError(403, `Claimed by ${row.claimed_by}`);
         }
         db.prepare(
@@ -1512,6 +2120,9 @@ async function guard(req, res, url, root, method, pathname) {
              claimed_at = NULL,
              status = 'incomplete',
              completed_at = NULL`,
+        ).run(project.id, name);
+        db.prepare(
+          "UPDATE images SET status = 'incomplete', locked_by = NULL, locked_at = NULL WHERE project_id = ? AND file_path = ?",
         ).run(project.id, name);
         send(res, 200, {
           name,
@@ -1524,7 +2135,9 @@ async function guard(req, res, url, root, method, pathname) {
       }
 
       if (action === "complete") {
-        if (row?.claimed_by && row.claimed_by !== user.username && !body.takeover) {
+        const isExpired =
+          row?.claimed_at && new Date(row.claimed_at).getTime() < Date.now() - 15 * 60 * 1000;
+        if (row?.claimed_by && row.claimed_by !== user.username && !body.takeover && !isExpired) {
           throw new HttpError(409, `Claimed by ${row.claimed_by}`);
         }
         if (body.boxes !== undefined) {
@@ -1545,6 +2158,9 @@ async function guard(req, res, url, root, method, pathname) {
              status = 'complete',
              completed_at = excluded.completed_at`,
         ).run(project.id, name, user.username, claimedAt, now);
+        db.prepare(
+          "UPDATE images SET status = 'completed', locked_by = NULL, locked_at = NULL, completed_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
+        ).run(project.id, name);
         send(res, 200, {
           name,
           claimedBy: user.username,
@@ -1555,7 +2171,9 @@ async function guard(req, res, url, root, method, pathname) {
         return true;
       }
 
-      if (row?.claimed_by && row.claimed_by !== user.username && !body.takeover) {
+      const isExpired =
+        row?.claimed_at && new Date(row.claimed_at).getTime() < Date.now() - 15 * 60 * 1000;
+      if (row?.claimed_by && row.claimed_by !== user.username && !body.takeover && !isExpired) {
         throw new HttpError(409, `Claimed by ${row.claimed_by}`);
       }
       db.prepare(
@@ -1567,6 +2185,9 @@ async function guard(req, res, url, root, method, pathname) {
            status = 'open',
            completed_at = NULL`,
       ).run(project.id, name, user.username, now);
+      db.prepare(
+        "UPDATE images SET locked_by = ?, locked_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
+      ).run(user.username, project.id, name);
       send(res, 200, {
         name,
         claimedBy: user.username,
@@ -1580,9 +2201,13 @@ async function guard(req, res, url, root, method, pathname) {
       const name = url.searchParams.get("name") || "";
       resolveInside(resolvedFolder, name);
       const row = db
-        .prepare("SELECT claimed_by FROM image_claims WHERE project_id = ? AND rel_path = ?")
+        .prepare(
+          "SELECT claimed_by, claimed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
+        )
         .get(project.id, name);
-      if (row?.claimed_by && row.claimed_by !== user.username && !admin) {
+      const isExpired =
+        row?.claimed_at && new Date(row.claimed_at).getTime() < Date.now() - 15 * 60 * 1000;
+      if (row?.claimed_by && row.claimed_by !== user.username && !admin && !isExpired) {
         throw new HttpError(403, `Claimed by ${row.claimed_by}`);
       }
       db.prepare(
@@ -1593,6 +2218,9 @@ async function guard(req, res, url, root, method, pathname) {
            claimed_at = NULL,
            status = 'incomplete',
            completed_at = NULL`,
+      ).run(project.id, name);
+      db.prepare(
+        "UPDATE images SET status = 'incomplete', locked_by = NULL, locked_at = NULL WHERE project_id = ? AND file_path = ?",
       ).run(project.id, name);
       send(res, 200, { ok: true, status: "incomplete" });
       return true;
@@ -1682,6 +2310,7 @@ async function handle(req, res, url, root) {
 
     db.transaction(() => {
       db.prepare("DELETE FROM image_claims WHERE project_id = ?").run(id);
+      db.prepare("DELETE FROM images WHERE project_id = ?").run(id);
       db.prepare("DELETE FROM classes WHERE project_id = ?").run(id);
       db.prepare("DELETE FROM projects WHERE id = ?").run(id);
     })();
@@ -1835,13 +2464,27 @@ async function handle(req, res, url, root) {
         ? Math.round(parsedSplit * 100)
         : Math.round(parsedSplit);
 
+    const rawFormat = (
+      url.searchParams.get("format") ??
+      url.searchParams.get("export_format") ??
+      "yolo"
+    )
+      .trim()
+      .toLowerCase();
+    /** @type {"yolo" | "coco"} */
+    const exportFormat = rawFormat === "coco" ? "coco" : "yolo";
+
     try {
       writeClassesFile(db, project.id, resolvedFolder);
     } catch (err) {
       console.error("[label-api] classes.txt", err);
     }
 
-    await streamYoloExport(req, res, db, project, resolvedFolder, exportType, trainSplitPct);
+    if (exportFormat === "coco") {
+      await streamCocoExport(req, res, db, project, resolvedFolder, exportType, trainSplitPct);
+    } else {
+      await streamYoloExport(req, res, db, project, resolvedFolder, exportType, trainSplitPct);
+    }
     return;
   }
 
@@ -1876,6 +2519,23 @@ async function handle(req, res, url, root) {
           `${box.classId} ${box.x.toFixed(6)} ${box.y.toFixed(6)} ${box.w.toFixed(6)} ${box.h.toFixed(6)}`,
       );
       fs.writeFileSync(labelFileFor(imageFull), lines.length ? `${lines.join("\n")}\n` : "");
+      db.prepare(`
+        UPDATE images
+        SET 
+          status = 'completed',
+          locked_by = NULL,
+          locked_at = NULL,
+          completed_at = CURRENT_TIMESTAMP
+        WHERE project_id = ? AND file_path = ?
+      `).run(project.id, name);
+      db.prepare(`
+        INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'complete', CURRENT_TIMESTAMP)
+        ON CONFLICT(project_id, rel_path) DO UPDATE SET
+          claimed_by = excluded.claimed_by,
+          status = 'complete',
+          completed_at = excluded.completed_at
+      `).run(project.id, name, user.username);
       send(res, 200, { ok: true, boxes });
       return;
     }

@@ -16,9 +16,12 @@ import {
   completeImage,
   fetchCatalogue,
   fetchLabel,
+  fetchNextImage,
   imageSrc,
+  lockImage,
   releaseIncomplete,
   saveLabel,
+  unlockImage,
   type Catalogue,
   type ClassRow,
   type ImageRow,
@@ -286,6 +289,57 @@ export function Labeler() {
     setSaved("[]");
     setSelectedKey(null);
     setStatus("Loading");
+
+    const currentStatus = current?.status;
+    if (imageName && currentStatus !== "complete") {
+      lockImage(imageName)
+        .then((locked) => {
+          if (cancel) return;
+          setCatalogue((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  images: prev.images.map((img) =>
+                    img.name === imageName
+                      ? {
+                          ...img,
+                          claimedBy: locked.claimedBy,
+                          claimedAt: locked.claimedAt,
+                          lockedBy: locked.claimedBy,
+                          lockedAt: locked.claimedAt,
+                        }
+                      : img,
+                  ),
+                }
+              : prev,
+          );
+        })
+        .catch((err: unknown) => {
+          if (cancel) return;
+          const msg = err instanceof Error ? err.message : "";
+          if (msg.includes("Locked by") || msg.includes("Claimed by")) {
+            const match = msg.match(/(?:Locked|Claimed) by ([^\s]+)/);
+            const otherUser = match ? match[1] : "another user";
+            setCatalogue((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    images: prev.images.map((img) =>
+                      img.name === imageName
+                        ? {
+                            ...img,
+                            claimedBy: otherUser,
+                            lockedBy: otherUser,
+                          }
+                        : img,
+                    ),
+                  }
+                : prev,
+            );
+          }
+        });
+    }
+
     fetchLabel(imageName)
       .then((loaded) => {
         if (cancel) return;
@@ -305,7 +359,24 @@ export function Labeler() {
     return () => {
       cancel = true;
     };
-  }, [ready, folderOk, imageName, folderKey]);
+  }, [ready, folderOk, imageName, folderKey, current?.status]);
+
+  useEffect(() => {
+    if (!current?.name || current.status === "complete") return;
+    const name = current.name;
+    const onExit = () => {
+      const body = JSON.stringify({ name });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon("/api/images/unlock", new Blob([body], { type: "application/json" }));
+      }
+    };
+    window.addEventListener("beforeunload", onExit);
+    window.addEventListener("pagehide", onExit);
+    return () => {
+      window.removeEventListener("beforeunload", onExit);
+      window.removeEventListener("pagehide", onExit);
+    };
+  }, [current?.name, current?.status]);
 
   function labelFor(classId: number): string {
     const row = classes.find((item) => item.id === classId);
@@ -376,6 +447,8 @@ export function Labeler() {
     if (dirty) {
       const ok = await save();
       if (!ok) return;
+    } else if (current && current.status !== "complete" && current.claimedBy === username) {
+      unlockImage(current.name).catch(() => {});
     }
     setIndex((value) => {
       const currentIndex = Math.min(value, images.length - 1);
@@ -467,10 +540,28 @@ export function Labeler() {
   async function markNone() {
     if (!current || lockedRef.current || boxes.length > 0) return;
     const name = current.name;
-    const at = allImages.findIndex((image) => image.name === name);
-    const next = allImages.slice(at + 1).find((image) => !image.labelled);
     const ok = await save();
     if (!ok) return;
+
+    try {
+      const claimed = await fetchNextImage();
+      if (claimed) {
+        const cat = await fetchCatalogue();
+        setCatalogue(cat);
+        const nextIdx = cat.images.findIndex((image) => image.name === claimed.name);
+        if (nextIdx >= 0) {
+          setQueue("open");
+          setIndex(nextIdx);
+          setStatus("Saved");
+          return;
+        }
+      }
+    } catch {
+      /* fallback */
+    }
+
+    const at = allImages.findIndex((image) => image.name === name);
+    const next = allImages.slice(at + 1).find((image) => !image.labelled);
     const open = allImages.filter((image) => image.name !== name && !image.labelled);
     setQueue("open");
     if (open.length === 0) {

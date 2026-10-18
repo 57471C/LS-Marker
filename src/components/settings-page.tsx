@@ -5,16 +5,17 @@ import {
   createUser,
   deleteProject,
   deleteUser,
-  downloadYoloExport,
+  downloadDatasetExport,
   fetchAdmin,
   fetchProjects,
   fetchUsers,
   lockAdmin,
   resetUserPassword,
   unlockAdmin,
+  type DatasetExportType,
+  type ExportFormat,
   type LabUser,
   type Project,
-  type YoloExportType,
 } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
 
@@ -48,7 +49,8 @@ export function SettingsPage() {
   const [busy, setBusy] = useState(false);
 
   const [projectToExport, setProjectToExport] = useState<Project | null>(null);
-  const [exportType, setExportType] = useState<YoloExportType>("labels_only");
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("yolo");
+  const [exportType, setExportType] = useState<DatasetExportType>("labels_only");
   const [trainSplit, setTrainSplit] = useState<number>(80);
   const [isExporting, setIsExporting] = useState(false);
   const [bytesExported, setBytesExported] = useState(0);
@@ -104,8 +106,9 @@ export function SettingsPage() {
     }
   }
 
-  function openExportModal(p: Project) {
+  function openExportModal(p: Project, format: ExportFormat = "yolo") {
     setProjectToExport(p);
+    setExportFormat(format);
     setExportType("labels_only");
     setTrainSplit(80);
     setExportError(null);
@@ -132,8 +135,9 @@ export function SettingsPage() {
     setBytesExported(0);
     setExportError(null);
     try {
-      await downloadYoloExport({
+      await downloadDatasetExport({
         projectId: projectToExport.id,
+        format: exportFormat,
         exportType,
         trainSplit,
         signal: controller.signal,
@@ -275,10 +279,19 @@ export function SettingsPage() {
                               type="button"
                               className="press inline-flex h-9 items-center rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
                               disabled={!p.folderOk || (p.totalPhotos ?? 0) === 0}
-                              onClick={() => openExportModal(p)}
+                              onClick={() => openExportModal(p, "yolo")}
                               title="Export YOLO dataset"
                             >
-                              Export Yolo
+                              Export YOLO
+                            </button>
+                            <button
+                              type="button"
+                              className="press inline-flex h-9 items-center rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
+                              disabled={!p.folderOk || (p.totalPhotos ?? 0) === 0}
+                              onClick={() => openExportModal(p, "coco")}
+                              title="Export COCO JSON dataset"
+                            >
+                              Export COCO
                             </button>
                             <button
                               type="button"
@@ -457,16 +470,17 @@ export function SettingsPage() {
             <div
               role="dialog"
               aria-modal="true"
-              aria-labelledby="export-yolo-title"
+              aria-labelledby="export-dialog-title"
               className="flex w-full max-w-xl flex-col gap-5 rounded-xl border border-zinc-800 bg-zinc-950 p-6 text-zinc-100 shadow-2xl"
             >
               <div className="flex items-start justify-between gap-4 border-b border-zinc-800/80 pb-4">
                 <div className="flex flex-col gap-1">
                   <h2
-                    id="export-yolo-title"
+                    id="export-dialog-title"
                     className="text-base font-semibold tracking-tight text-zinc-50"
                   >
-                    Export YOLO Dataset: {projectToExport.name}
+                    Export {exportFormat === "coco" ? "COCO JSON" : "YOLO"} Dataset:{" "}
+                    {projectToExport.name}
                   </h2>
                   <p className="font-mono text-xs text-zinc-400">
                     {projectToExport.resolvedFolder || projectToExport.folder} &middot;{" "}
@@ -484,6 +498,37 @@ export function SettingsPage() {
                 </button>
               </div>
 
+              {/* Format selector */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-zinc-300">Format</label>
+                <div className="grid grid-cols-2 gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-1">
+                  <button
+                    type="button"
+                    disabled={isExporting}
+                    onClick={() => setExportFormat("yolo")}
+                    className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
+                      exportFormat === "yolo"
+                        ? "bg-zinc-800 text-white shadow-xs"
+                        : "text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    YOLO
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isExporting}
+                    onClick={() => setExportFormat("coco")}
+                    className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
+                      exportFormat === "coco"
+                        ? "bg-blue-600 text-white shadow-xs"
+                        : "text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    COCO JSON
+                  </button>
+                </div>
+              </div>
+
               <div className="flex flex-col gap-3" role="radiogroup" aria-label="Export Method">
                 <label
                   className={`flex cursor-pointer items-start gap-3.5 rounded-lg border p-4 transition-colors ${
@@ -494,7 +539,7 @@ export function SettingsPage() {
                 >
                   <input
                     type="radio"
-                    name="yolo-export-type"
+                    name="dataset-export-type"
                     value="labels_only"
                     checked={exportType === "labels_only"}
                     disabled={isExporting}
@@ -513,7 +558,9 @@ export function SettingsPage() {
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-semibold text-zinc-100">
-                        Labels Only (Fast / Reference)
+                        {exportFormat === "coco"
+                          ? "Reference / Annotations Only"
+                          : "Labels Only (Fast / Reference)"}
                       </span>
                       {exportType === "labels_only" ? (
                         <CheckCircle2
@@ -523,9 +570,9 @@ export function SettingsPage() {
                       ) : null}
                     </div>
                     <p className="text-xs leading-relaxed text-zinc-400">
-                      Best if you train on the same machine where images reside. Images remain in
-                      their original folders; exports YOLO label files, train/val path lists, and
-                      data.yaml. Instant download (&lt; 5 MB).
+                      {exportFormat === "coco"
+                        ? "Best for Detectron2 / MMDetection on local storage. Exports annotations/instances_train.json and instances_val.json referencing existing image filenames, plus export_manifest.json. Instant download (< 5 MB)."
+                        : "Best if you train on the same machine where images reside. Images remain in their original folders; exports YOLO label files, train/val path lists, and data.yaml. Instant download (< 5 MB)."}
                     </p>
                   </div>
                 </label>
@@ -539,7 +586,7 @@ export function SettingsPage() {
                 >
                   <input
                     type="radio"
-                    name="yolo-export-type"
+                    name="dataset-export-type"
                     value="full_tar"
                     checked={exportType === "full_tar"}
                     disabled={isExporting}
@@ -568,8 +615,9 @@ export function SettingsPage() {
                       ) : null}
                     </div>
                     <p className="text-xs leading-relaxed text-zinc-400">
-                      Streams images and label pairs directly as an uncompressed TAR archive. Safe
-                      for huge datasets, collision-proof filenames, with zero memory overhead.
+                      {exportFormat === "coco"
+                        ? "Streams images/train/, images/val/, and annotations/instances_train.json, instances_val.json directly as an uncompressed TAR archive. Ready for immediate remote training runs."
+                        : "Streams images and label pairs directly as an uncompressed TAR archive. Safe for huge datasets, collision-proof filenames, with zero memory overhead."}
                     </p>
                   </div>
                 </label>
@@ -627,9 +675,13 @@ export function SettingsPage() {
                     <Loader2 className="size-4 animate-spin text-blue-400" aria-hidden="true" />
                     <span>
                       Streaming{" "}
-                      {exportType === "labels_only"
-                        ? "labels-only archive"
-                        : "full TAR dataset archive"}
+                      {exportFormat === "coco"
+                        ? exportType === "labels_only"
+                          ? "COCO annotations archive"
+                          : "full COCO dataset archive"
+                        : exportType === "labels_only"
+                          ? "YOLO labels-only archive"
+                          : "full YOLO dataset archive"}
                       …
                     </span>
                   </div>

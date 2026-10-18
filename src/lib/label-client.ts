@@ -1,12 +1,15 @@
 export type ClassRow = { id: number; ic: string; des: string; color: string };
 export type PhotoStatus = "open" | "incomplete" | "complete";
 export type ImageRow = {
+  id?: number;
   name: string;
   labelled: boolean;
   claimedBy: string | null;
   claimedAt: string | null;
   status: PhotoStatus;
   completedAt: string | null;
+  lockedBy?: string | null;
+  lockedAt?: string | null;
 };
 export type Box = { classId: number; x: number; y: number; w: number; h: number };
 
@@ -56,32 +59,56 @@ async function asJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export type YoloExportType = "labels_only" | "full_tar";
+export type ExportFormat = "yolo" | "coco";
 
-export type YoloExportOptions = {
+export type DatasetExportType = "labels_only" | "full_tar";
+export type YoloExportType = DatasetExportType;
+
+export type DatasetExportOptions = {
   projectId: number;
-  exportType: YoloExportType;
+  exportType: DatasetExportType;
+  format?: ExportFormat;
   trainSplit?: number;
   signal?: AbortSignal;
   onProgress?: (bytesLoaded: number) => void;
 };
+
+export type YoloExportOptions = DatasetExportOptions;
+
+export function datasetExportUrl(
+  projectId: number,
+  exportType: DatasetExportType,
+  trainSplit = 80,
+  format: ExportFormat = "yolo",
+): string {
+  const params = new URLSearchParams({
+    id: String(projectId),
+    type: exportType,
+    split: String(Math.round(trainSplit)),
+    format,
+  });
+  return api(`/api/export?${params.toString()}`);
+}
 
 export function yoloExportUrl(
   projectId: number,
   exportType: YoloExportType,
   trainSplit = 80,
 ): string {
-  const params = new URLSearchParams({
-    id: String(projectId),
-    type: exportType,
-    split: String(Math.round(trainSplit)),
-  });
-  return api(`/api/export?${params.toString()}`);
+  return datasetExportUrl(projectId, exportType, trainSplit, "yolo");
 }
 
-export async function downloadYoloExport(options: YoloExportOptions): Promise<void> {
-  const { projectId, exportType, trainSplit = 80, signal, onProgress } = options;
-  const res = await fetch(yoloExportUrl(projectId, exportType, trainSplit), { signal });
+export function cocoExportUrl(
+  projectId: number,
+  exportType: DatasetExportType,
+  trainSplit = 80,
+): string {
+  return datasetExportUrl(projectId, exportType, trainSplit, "coco");
+}
+
+export async function downloadDatasetExport(options: DatasetExportOptions): Promise<void> {
+  const { projectId, exportType, format = "yolo", trainSplit = 80, signal, onProgress } = options;
+  const res = await fetch(datasetExportUrl(projectId, exportType, trainSplit, format), { signal });
   if (!res.ok) {
     const message = await failMessage(res);
     if (res.status === 401 && message === "Sign in" && typeof window !== "undefined") {
@@ -114,7 +141,14 @@ export async function downloadYoloExport(options: YoloExportOptions): Promise<vo
   const link = document.createElement("a");
   link.href = url;
   const disposition = res.headers.get("content-disposition");
-  let filename = exportType === "labels_only" ? "yolo_labels.tar" : "yolo.tar";
+  let filename =
+    format === "coco"
+      ? exportType === "labels_only"
+        ? "coco_annotations.tar"
+        : "coco.tar"
+      : exportType === "labels_only"
+        ? "yolo_labels.tar"
+        : "yolo.tar";
   if (disposition) {
     const match = disposition.match(/filename="?([^"]+)"?/);
     if (match?.[1]) filename = match[1];
@@ -124,6 +158,10 @@ export async function downloadYoloExport(options: YoloExportOptions): Promise<vo
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+export async function downloadYoloExport(options: YoloExportOptions): Promise<void> {
+  return downloadDatasetExport({ ...options, format: options.format ?? "yolo" });
 }
 
 export function imageSrc(name: string): string {
@@ -348,5 +386,79 @@ export async function completeImage(
 
 export async function releaseImage(name: string): Promise<void> {
   const res = await fetch(api(`/api/claim?name=${encodeURIComponent(name)}`), { method: "DELETE" });
+  await asJson(res);
+}
+
+export async function fetchNextImage(): Promise<{
+  id: number;
+  name: string;
+  claimedBy: string | null;
+  claimedAt: string | null;
+  status: PhotoStatus;
+} | null> {
+  const res = await fetch(api("/api/images/next"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
+  const data = await asJson<{
+    image: {
+      id: number;
+      file_path: string;
+      locked_by: string;
+      locked_at: string;
+      status: string;
+    } | null;
+    id?: number;
+    name?: string;
+    claimedBy?: string;
+    claimedAt?: string;
+    status?: string;
+  }>(res);
+  if (!data.image && !data.id) return null;
+  const name = data.name ?? data.image?.file_path ?? "";
+  const rawStatus = data.status ?? data.image?.status ?? "open";
+  const status: PhotoStatus =
+    rawStatus === "completed" ? "complete" : rawStatus === "incomplete" ? "incomplete" : "open";
+  return {
+    id: data.id ?? data.image?.id ?? 0,
+    name,
+    claimedBy: data.claimedBy ?? data.image?.locked_by ?? null,
+    claimedAt: data.claimedAt ?? data.image?.locked_at ?? null,
+    status,
+  };
+}
+
+export async function lockImage(nameOrId: string | number): Promise<{
+  id: number;
+  name: string;
+  claimedBy: string;
+  claimedAt: string;
+}> {
+  const body = typeof nameOrId === "number" ? { id: nameOrId } : { name: nameOrId };
+  const res = await fetch(api("/api/images/lock"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return asJson(res);
+}
+
+export async function unlockImage(nameOrId: string | number): Promise<void> {
+  const body = typeof nameOrId === "number" ? { id: nameOrId } : { name: nameOrId };
+  const res = await fetch(api("/api/images/unlock"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  await asJson(res);
+}
+
+export async function skipImage(nameOrId: string | number): Promise<void> {
+  const body = typeof nameOrId === "number" ? { id: nameOrId } : { name: nameOrId };
+  const res = await fetch(api("/api/images/skip"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
   await asJson(res);
 }

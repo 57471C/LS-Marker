@@ -155,4 +155,3 @@ export function KeyboardShortcutsModal({ onClose }: { onClose: () => void }) {
     </div>
   );
 }
-
