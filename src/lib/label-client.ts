@@ -462,3 +462,19 @@ export async function skipImage(nameOrId: string | number): Promise<void> {
   });
   await asJson(res);
 }
+
+export type ExifCheckResult = {
+  projectName: string;
+  totalImages: number;
+  flaggedCount: number;
+  flaggedFiles: string[];
+};
+
+export async function checkProjectExif(projectId: number): Promise<ExifCheckResult> {
+  const res = await fetch(api("/api/project/check-exif"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: projectId }),
+  });
+  return asJson<ExifCheckResult>(res);
+}

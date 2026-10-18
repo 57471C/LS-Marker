@@ -1025,6 +1025,136 @@ function getImageDimensions(filePath) {
 }
 
 /**
+ * Fast synchronous check for EXIF orientation tag (0x0112) !== 1.
+ * Reads up to 64KB from image file header.
+ * @param {string} filePath
+ * @returns {number} orientation (1 if normal/unspecified, 2-8 if rotated/flipped)
+ */
+function getImageExifOrientation(filePath) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(65536);
+    const bytesRead = fs.readSync(fd, buf, 0, 65536, 0);
+    fs.closeSync(fd);
+    fd = undefined;
+
+    // JPEG
+    if (bytesRead >= 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+      let offset = 2;
+      while (offset + 4 <= bytesRead) {
+        if (buf[offset] !== 0xff) {
+          offset += 1;
+          continue;
+        }
+        const marker = buf[offset + 1];
+        if (marker === 0xd8) {
+          offset += 2;
+          continue;
+        }
+        if (marker >= 0xd0 && marker <= 0xd7) {
+          offset += 2;
+          continue;
+        }
+        if (marker === 0xd9 || marker === 0xda) break;
+        const segmentLength = buf.readUInt16BE(offset + 2);
+        if (segmentLength < 2) break;
+        if (
+          marker === 0xe1 &&
+          offset + 10 <= bytesRead &&
+          buf[offset + 4] === 0x45 && // 'E'
+          buf[offset + 5] === 0x78 && // 'x'
+          buf[offset + 6] === 0x69 && // 'i'
+          buf[offset + 7] === 0x66 && // 'f'
+          buf[offset + 8] === 0x00 &&
+          buf[offset + 9] === 0x00
+        ) {
+          const tiffStart = offset + 10;
+          const maxBytes = Math.min(bytesRead, offset + 2 + segmentLength);
+          const orientation = parseTiffOrientation(buf, tiffStart, maxBytes);
+          if (orientation !== null) return orientation;
+        }
+        offset += 2 + segmentLength;
+      }
+    }
+
+    // PNG
+    if (
+      bytesRead >= 8 &&
+      buf[0] === 0x89 &&
+      buf[1] === 0x50 &&
+      buf[2] === 0x4e &&
+      buf[3] === 0x47
+    ) {
+      let offset = 8;
+      while (offset + 8 <= bytesRead) {
+        const chunkLen = buf.readUInt32BE(offset);
+        const chunkType = buf.toString("ascii", offset + 4, offset + 8);
+        if (chunkType === "eXIf") {
+          const tiffStart = offset + 8;
+          const maxBytes = Math.min(bytesRead, tiffStart + chunkLen);
+          const orientation = parseTiffOrientation(buf, tiffStart, maxBytes);
+          if (orientation !== null) return orientation;
+        }
+        if (chunkType === "IEND") break;
+        offset += 12 + chunkLen;
+      }
+    }
+  } catch {
+    /* fallback to default */
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return 1;
+}
+
+/**
+ * @param {Buffer} buf
+ * @param {number} tiffStart
+ * @param {number} maxBytes
+ * @returns {number | null}
+ */
+function parseTiffOrientation(buf, tiffStart, maxBytes) {
+  if (tiffStart + 8 > maxBytes) return null;
+  const b0 = buf[tiffStart];
+  const b1 = buf[tiffStart + 1];
+  let littleEndian = false;
+  if (b0 === 0x49 && b1 === 0x49) {
+    littleEndian = true;
+  } else if (b0 === 0x4d && b1 === 0x4d) {
+    littleEndian = false;
+  } else {
+    return null;
+  }
+
+  const magic = littleEndian ? buf.readUInt16LE(tiffStart + 2) : buf.readUInt16BE(tiffStart + 2);
+  if (magic !== 42) return null;
+
+  const ifdOffset = littleEndian
+    ? buf.readUInt32LE(tiffStart + 4)
+    : buf.readUInt32BE(tiffStart + 4);
+  const ifdStart = tiffStart + ifdOffset;
+  if (ifdStart + 2 > maxBytes) return null;
+
+  const entryCount = littleEndian ? buf.readUInt16LE(ifdStart) : buf.readUInt16BE(ifdStart);
+  for (let i = 0; i < entryCount; i++) {
+    const entryStart = ifdStart + 2 + i * 12;
+    if (entryStart + 12 > maxBytes) break;
+    const tag = littleEndian ? buf.readUInt16LE(entryStart) : buf.readUInt16BE(entryStart);
+    if (tag === 0x0112) {
+      return littleEndian ? buf.readUInt16LE(entryStart + 8) : buf.readUInt16BE(entryStart + 8);
+    }
+  }
+  return 1;
+}
+
+/**
  * @param {{ name: string }} project
  * @param {{ id: number, ic: string }[]} classes
  * @param {Array<{ id: number, relName: string, source_image_path: string, export_image_relative: string, split: string, txt_full_path: string }>} items
@@ -2232,6 +2362,12 @@ async function guard(req, res, url, root, method, pathname) {
   if (method === "GET" && pathname === "/api/projects") return false;
   if (method === "DELETE" && pathname === "/api/projects") return false;
   if (method === "GET" && pathname === "/api/export") return false;
+  if (
+    (method === "POST" || method === "GET") &&
+    (pathname === "/api/project/check-exif" || pathname === "/api/projects/check-exif")
+  ) {
+    return false;
+  }
 
   if (!user) throw new HttpError(401, "Sign in");
   return false;
@@ -2252,6 +2388,62 @@ async function handle(req, res, url, root) {
     const db = await getDb(root);
     const project = currentProject(db, req);
     send(res, 200, { project: project ? publicProject(root, project, db) : null });
+    return;
+  }
+
+  if (
+    (pathname === "/api/project/check-exif" || pathname === "/api/projects/check-exif") &&
+    (method === "POST" || method === "GET")
+  ) {
+    const db = await getDb(root);
+    let projectId = null;
+    let projectName = null;
+    if (method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      if (body.id !== undefined && body.id !== null) projectId = Number(body.id);
+      if (typeof body.name === "string") projectName = body.name.trim();
+    }
+    if (projectId === null && url.searchParams.has("id")) {
+      projectId = Number(url.searchParams.get("id"));
+    }
+    if (!projectName && url.searchParams.has("name")) {
+      projectName = url.searchParams.get("name")?.trim();
+    }
+
+    let project = null;
+    if (Number.isInteger(projectId)) {
+      project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId);
+    } else if (projectName) {
+      project = db
+        .prepare("SELECT id, name, folder FROM projects WHERE name = ? COLLATE NOCASE")
+        .get(projectName);
+    } else {
+      project = currentProject(db, req);
+    }
+
+    if (!project) throw new HttpError(404, "Project not found");
+    const resolvedFolder = path.resolve(root, project.folder);
+    const error = folderError(resolvedFolder);
+    if (error) throw new HttpError(400, error);
+
+    const relImages = listImages(resolvedFolder, Infinity);
+    const flaggedFiles = [];
+
+    for (const relName of relImages) {
+      const fullPath = resolveInside(resolvedFolder, relName);
+      if (!fs.existsSync(fullPath)) continue;
+      const orientation = getImageExifOrientation(fullPath);
+      if (orientation !== 1) {
+        flaggedFiles.push(relName);
+      }
+    }
+
+    send(res, 200, {
+      projectName: project.name,
+      totalImages: relImages.length,
+      flaggedCount: flaggedFiles.length,
+      flaggedFiles,
+    });
     return;
   }
 

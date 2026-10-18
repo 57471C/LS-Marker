@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Archive, CheckCircle2, Download, FileText, Loader2, X } from "lucide-react";
+import { AlertTriangle, Archive, CheckCircle2, Download, FileText, Loader2, X } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import {
+  checkProjectExif,
   createUser,
   deleteProject,
   deleteUser,
@@ -13,6 +14,7 @@ import {
   resetUserPassword,
   unlockAdmin,
   type DatasetExportType,
+  type ExifCheckResult,
   type ExportFormat,
   type LabUser,
   type Project,
@@ -56,6 +58,9 @@ export function SettingsPage() {
   const [bytesExported, setBytesExported] = useState(0);
   const [exportError, setExportError] = useState<string | null>(null);
   const exportAbortRef = useRef<AbortController | null>(null);
+
+  const [checkingExifProjectId, setCheckingExifProjectId] = useState<number | null>(null);
+  const [exifResult, setExifResult] = useState<ExifCheckResult | null>(null);
 
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
@@ -172,6 +177,19 @@ export function SettingsPage() {
       setDeleteError(err instanceof Error ? err.message : "Could not delete project");
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function handleCheckExif(p: Project) {
+    setCheckingExifProjectId(p.id);
+    setError(null);
+    try {
+      const result = await checkProjectExif(p.id);
+      setExifResult(result);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to check EXIF");
+    } finally {
+      setCheckingExifProjectId(null);
     }
   }
 
@@ -292,6 +310,26 @@ export function SettingsPage() {
                               title="Export COCO JSON dataset"
                             >
                               Export COCO
+                            </button>
+                            <button
+                              type="button"
+                              className="press inline-flex h-9 items-center gap-1.5 rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
+                              disabled={
+                                !p.folderOk ||
+                                (p.totalPhotos ?? 0) === 0 ||
+                                checkingExifProjectId === p.id
+                              }
+                              onClick={() => void handleCheckExif(p)}
+                              title="Check images for EXIF orientation tags"
+                            >
+                              {checkingExifProjectId === p.id ? (
+                                <>
+                                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                                  <span>Checking…</span>
+                                </>
+                              ) : (
+                                "Check EXIF"
+                              )}
                             </button>
                             <button
                               type="button"
@@ -805,6 +843,99 @@ export function SettingsPage() {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        ) : null}
+
+        {exifResult ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) {
+                setExifResult(null);
+              }
+            }}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="exif-dialog-title"
+              className="flex w-full max-w-lg flex-col gap-4 rounded-xl border border-zinc-800 bg-zinc-950 p-6 text-zinc-100 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-zinc-800/80 pb-3">
+                <div className="flex items-center gap-3">
+                  {exifResult.flaggedCount === 0 ? (
+                    <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400">
+                      <CheckCircle2 className="size-5" aria-hidden="true" />
+                    </div>
+                  ) : (
+                    <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-amber-400">
+                      <AlertTriangle className="size-5" aria-hidden="true" />
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-0.5">
+                    <h2
+                      id="exif-dialog-title"
+                      className="text-base font-semibold tracking-tight text-zinc-50"
+                    >
+                      EXIF Orientation Diagnostic: {exifResult.projectName}
+                    </h2>
+                    <p className="font-mono text-xs text-zinc-400">
+                      {exifResult.totalImages} images scanned &middot; {exifResult.flaggedCount}{" "}
+                      flagged
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setExifResult(null)}
+                  aria-label="Close modal"
+                  className="press inline-flex size-8 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                >
+                  <X className="size-4" aria-hidden="true" />
+                </button>
+              </div>
+
+              {exifResult.flaggedCount === 0 ? (
+                <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/20 p-4">
+                  <p className="text-sm font-medium text-emerald-300">
+                    All clear: Checked {exifResult.totalImages} images in &ldquo;
+                    {exifResult.projectName}&rdquo;. 0 EXIF orientation tags detected. Coordinates
+                    will align 1:1.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-4">
+                    <p className="text-sm font-medium text-amber-300">
+                      Warning: Found {exifResult.flaggedCount} of {exifResult.totalImages} images
+                      with EXIF orientation tags. These images may render rotated in browsers while
+                      reading unrotated dimensions during model training.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium text-zinc-400">Flagged image files:</span>
+                    <div className="max-h-60 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900 p-2 font-mono text-xs text-amber-200/90 divide-y divide-zinc-800/60">
+                      {exifResult.flaggedFiles.map((file) => (
+                        <div key={file} className="py-1.5 px-2 break-all">
+                          {file}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end border-t border-zinc-800/80 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setExifResult(null)}
+                  className="press inline-flex h-9 items-center justify-center rounded-sm bg-zinc-800 px-4 text-xs font-semibold text-zinc-100 hover:bg-zinc-700"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         ) : null}
