@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Archive, CheckCircle2, Download, FileText, Loader2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Archive,
+  CheckCircle2,
+  Database,
+  Download,
+  FileText,
+  Loader2,
+  X,
+} from "lucide-react";
 import { AppHeader } from "@/components/app-header";
+import { BackupModal } from "@/components/backup-modal";
 import { DatasetHealthModal } from "@/components/dataset-health-modal";
 import { RescanModal } from "@/components/rescan-modal";
 import {
@@ -75,6 +85,8 @@ export function SettingsPage() {
 
   const [syncingProjectId, setSyncingProjectId] = useState<number | null>(null);
   const [syncResult, setSyncResult] = useState<SyncImagesResult | null>(null);
+
+  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
 
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
@@ -549,7 +561,17 @@ export function SettingsPage() {
               </ul>
             </section>
 
-            <div>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
+              <button
+                type="button"
+                className={btn}
+                onClick={() => setIsBackupModalOpen(true)}
+                title="Download safe SQLite snapshot"
+              >
+                <Database className="size-4 text-muted" aria-hidden="true" />
+                <span>Backup Database</span>
+              </button>
+
               <button
                 type="button"
                 className={btn}
@@ -1055,6 +1077,8 @@ export function SettingsPage() {
         {syncResult ? (
           <RescanModal result={syncResult} onClose={() => setSyncResult(null)} />
         ) : null}
+
+        <BackupModal isOpen={isBackupModalOpen} onClose={() => setIsBackupModalOpen(false)} />
       </main>
     </div>
   );

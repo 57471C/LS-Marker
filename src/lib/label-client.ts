@@ -600,3 +600,60 @@ export async function syncProjectImages(projectId: number): Promise<SyncImagesRe
 }
 
 export const rescanProjectImages = syncProjectImages;
+
+export type BackupStatusResult = {
+  activeCount: number;
+  activeUsers: string[];
+};
+
+export async function fetchBackupStatus(): Promise<BackupStatusResult> {
+  const res = await fetch(api("/api/system/backup-status"));
+  return asJson<BackupStatusResult>(res);
+}
+
+export function getBackupDownloadUrl(): string {
+  return api("/api/system/backup-download");
+}
+
+export async function downloadDatabaseBackup(onProgress?: (bytes: number) => void): Promise<void> {
+  const res = await fetch(getBackupDownloadUrl());
+  if (!res.ok) {
+    const message = await failMessage(res);
+    throw new Error(message || "Failed to download database backup");
+  }
+
+  let blob: Blob;
+  if (res.body) {
+    const reader = res.body.getReader();
+    const chunks: BlobPart[] = [];
+    let loaded = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(new Uint8Array(value));
+        loaded += value.byteLength;
+        onProgress?.(loaded);
+      }
+    }
+    blob = new Blob(chunks, { type: "application/vnd.sqlite3" });
+  } else {
+    blob = await res.blob();
+    onProgress?.(blob.size);
+  }
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  const disposition = res.headers.get("content-disposition");
+  let filename = "ls-marker-backup.sqlite";
+  if (disposition) {
+    const match = disposition.match(/filename="?([^";]+)"?/);
+    if (match?.[1]) filename = match[1];
+  }
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}

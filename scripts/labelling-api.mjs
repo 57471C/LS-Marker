@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import tar from "tar-stream";
 
@@ -2080,6 +2081,42 @@ export function computeProjectHealth(root, project, db) {
 
 /**
  * @param {import("better-sqlite3").Database} db
+ */
+export function getBackupStatus(db) {
+  const row = db
+    .prepare(`
+      SELECT COUNT(*) AS activeCount, GROUP_CONCAT(DISTINCT locked_by) AS activeUsers
+      FROM images
+      WHERE locked_by IS NOT NULL 
+        AND locked_at > datetime('now', '-15 minutes')
+    `)
+    .get();
+
+  const activeUsers = row?.activeUsers
+    ? row.activeUsers
+        .split(",")
+        .map((u) => u.trim())
+        .filter(Boolean)
+    : [];
+  const activeCount = Number(row?.activeCount || 0);
+
+  return {
+    activeCount,
+    activeUsers,
+  };
+}
+
+/**
+ * @param {import("better-sqlite3").Database} db
+ * @param {string} destPath
+ */
+export async function createDatabaseBackup(db, destPath) {
+  await db.backup(destPath);
+  return destPath;
+}
+
+/**
+ * @param {import("better-sqlite3").Database} db
  * @param {import("http").IncomingMessage} req
  */
 function currentProject(db, req) {
@@ -2822,6 +2859,12 @@ async function guard(req, res, url, root, method, pathname) {
   if (method === "DELETE" && pathname === "/api/projects") return false;
   if (method === "GET" && pathname === "/api/export") return false;
   if (
+    method === "GET" &&
+    (pathname === "/api/system/backup-status" || pathname === "/api/system/backup-download")
+  ) {
+    return false;
+  }
+  if (
     (method === "POST" || method === "GET") &&
     (pathname === "/api/project/check-exif" ||
       pathname === "/api/projects/check-exif" ||
@@ -3085,6 +3128,66 @@ export async function handle(req, res, url, root) {
     }
     send(res, 200, { ok: true, id });
     return;
+  }
+
+  if (method === "GET" && pathname === "/api/system/backup-status") {
+    const db = await getDb(root);
+    const status = getBackupStatus(db);
+    send(res, 200, status);
+    return;
+  }
+
+  if (method === "GET" && pathname === "/api/system/backup-download") {
+    const db = await getDb(root);
+    const backupDir = os.tmpdir();
+    const tempFileName = `ls-marker-backup-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.sqlite`;
+    const backupPath = path.join(backupDir, tempFileName);
+
+    try {
+      await createDatabaseBackup(db, backupPath);
+      const pad = (n) => String(n).padStart(2, "0");
+      const now = new Date();
+      const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+      const filename = `ls-marker-backup-${timestamp}.sqlite`;
+      const stat = fs.statSync(backupPath);
+
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/vnd.sqlite3");
+      res.setHeader("content-disposition", `attachment; filename="${filename}"`);
+      res.setHeader("content-length", stat.size);
+      res.setHeader("cache-control", "no-store");
+
+      const stream = fs.createReadStream(backupPath);
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        try {
+          if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+        } catch {}
+      };
+
+      stream.on("error", () => {
+        cleanup();
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: "Failed to stream backup" }));
+        } else {
+          res.end();
+        }
+      });
+
+      res.on("close", cleanup);
+      res.on("finish", cleanup);
+
+      stream.pipe(res);
+      return;
+    } catch (err) {
+      try {
+        if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+      } catch {}
+      throw err;
+    }
   }
 
   if (method === "GET" && pathname === "/api/catalogue") {
