@@ -12,6 +12,7 @@ export type ImageRow = {
   lockedAt?: string | null;
   reviewedBy?: string | null;
   reviewedAt?: string | null;
+  owner?: string | null;
 };
 export type Box = { classId: number; x: number; y: number; w: number; h: number };
 
@@ -280,9 +281,9 @@ export async function deleteClass(id: number): Promise<void> {
 
 export type LabUser = { id: number; username: string; createdAt: string };
 
-export function fetchMe(): Promise<{ id: number; username: string } | null> {
+export function fetchMe(): Promise<{ id: number; username: string; admin?: boolean } | null> {
   return fetch(api("/api/me"))
-    .then((res) => asJson<{ user: { id: number; username: string } | null }>(res))
+    .then((res) => asJson<{ user: { id: number; username: string; admin?: boolean } | null }>(res))
     .then((data) => data.user);
 }
 
@@ -350,6 +351,11 @@ export async function resetUserPassword(id: number, password: string): Promise<v
 export async function deleteUser(id: number): Promise<void> {
   const res = await fetch(api(`/api/users?id=${id}`), { method: "DELETE" });
   await asJson(res);
+}
+
+export async function deleteImage(id: number): Promise<{ success: boolean; deletedId: number }> {
+  const res = await fetch(api(`/api/images/${id}`), { method: "DELETE" });
+  return asJson<{ success: boolean; deletedId: number }>(res);
 }
 
 export async function claimImage(

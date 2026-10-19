@@ -18,16 +18,23 @@ const APP_NAME = "LS-Marker";
 function Shell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [username, setUsername] = useState<string | null | undefined>(undefined);
+  const [admin, setAdmin] = useState(false);
   const settings = pathname === "/settings";
 
   useEffect(() => {
     let cancel = false;
     fetchMe()
       .then((user) => {
-        if (!cancel) setUsername(user?.username ?? null);
+        if (!cancel) {
+          setUsername(user?.username ?? null);
+          setAdmin(Boolean(user?.admin));
+        }
       })
       .catch(() => {
-        if (!cancel) setUsername(null);
+        if (!cancel) {
+          setUsername(null);
+          setAdmin(false);
+        }
       });
     return () => {
       cancel = true;
@@ -35,7 +42,10 @@ function Shell() {
   }, []);
 
   useEffect(() => {
-    const onSignedOut = () => setUsername(null);
+    const onSignedOut = () => {
+      setUsername(null);
+      setAdmin(false);
+    };
     window.addEventListener("partlab-signed-out", onSignedOut);
     return () => window.removeEventListener("partlab-signed-out", onSignedOut);
   }, []);
@@ -52,7 +62,7 @@ function Shell() {
   }
 
   return (
-    <SessionContext.Provider value={{ username: username ?? null, setUsername }}>
+    <SessionContext.Provider value={{ username: username ?? null, admin, setUsername, setAdmin }}>
       <ProjectProvider username={username ?? null}>
         <GatedBody settings={settings} signedIn={Boolean(username)}>
           {body}

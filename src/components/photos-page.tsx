@@ -1,7 +1,14 @@
-import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronsUpDown, Loader2, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/app-header";
-import { fetchCatalogue, imageSrc, type ImageRow, type PhotoStatus } from "@/lib/label-client";
+import {
+  deleteImage,
+  fetchAdmin,
+  fetchCatalogue,
+  imageSrc,
+  type ImageRow,
+  type PhotoStatus,
+} from "@/lib/label-client";
 import { useProject } from "@/lib/project";
 import { useSession } from "@/lib/session";
 
@@ -30,7 +37,8 @@ function heldFor(claimedAt: string | null, completedAt: string | null): string {
 }
 
 export function PhotosPage() {
-  const { username } = useSession();
+  const { username, admin: sessionAdmin } = useSession();
+  const [isAdmin, setIsAdmin] = useState(sessionAdmin);
   const { current: project } = useProject();
   const [images, setImages] = useState<ImageRow[] | null>(null);
   const [folderError, setFolderError] = useState<string | null>(null);
@@ -41,6 +49,26 @@ export function PhotosPage() {
   const [sortField, setSortField] = useState<SortField>("file");
   const [sortDir, setSortDir] = useState<SortDirection>("asc");
   const [page, setPage] = useState(0);
+
+  const [photoToDelete, setPhotoToDelete] = useState<ImageRow | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setIsAdmin(sessionAdmin);
+  }, [sessionAdmin]);
+
+  useEffect(() => {
+    let cancel = false;
+    fetchAdmin()
+      .then((unlocked) => {
+        if (!cancel && unlocked) setIsAdmin(true);
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancel = false;
@@ -85,8 +113,8 @@ export function PhotosPage() {
           s === "approved" ? 3 : s === "complete" ? 2 : s === "incomplete" ? 1 : 0;
         cmp = rank(a.status) - rank(b.status);
       } else if (sortField === "owner") {
-        const aOwner = a.claimedBy ?? "";
-        const bOwner = b.claimedBy ?? "";
+        const aOwner = a.owner ?? "";
+        const bOwner = b.owner ?? "";
         cmp = aOwner.localeCompare(bOwner, undefined, { sensitivity: "base" });
       } else if (sortField === "held") {
         const getDuration = (item: ImageRow) => {
@@ -114,6 +142,23 @@ export function PhotosPage() {
   const completeCount = (images ?? []).filter((image) => image.status === "complete").length;
   const approvedCount = (images ?? []).filter((image) => image.status === "approved").length;
   const mineCount = (images ?? []).filter((image) => image.claimedBy === username).length;
+
+  async function handleDeletePhoto(item: ImageRow) {
+    if (!item.id) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteImage(item.id);
+      setImages((prev) =>
+        prev ? prev.filter((img) => img.id !== item.id && img.name !== item.name) : null,
+      );
+      setPhotoToDelete(null);
+    } catch (err: unknown) {
+      setDeleteError(err instanceof Error ? err.message : "Failed to delete photo");
+    } finally {
+      setIsDeleting(false);
+    }
+  }
 
   function remember(name: string) {
     const index = (images ?? []).findIndex((image) => image.name === name);
@@ -200,7 +245,7 @@ export function PhotosPage() {
             </div>
           </div>
           <div className="flex flex-col gap-2">
-            <p className="text-sm font-medium">Owner</p>
+            <p className="text-sm font-medium">Claim</p>
             <div className="flex flex-wrap gap-1">
               {(
                 [
@@ -253,6 +298,7 @@ export function PhotosPage() {
                   onSort={toggleSort}
                   className="w-28 py-3 pr-3 font-medium"
                 />
+                <th className="w-28 py-3 pr-3 font-medium">Claim</th>
                 <SortHeader
                   field="held"
                   label="Held"
@@ -261,6 +307,7 @@ export function PhotosPage() {
                   onSort={toggleSort}
                   className="hidden w-24 py-3 pr-3 font-medium sm:table-cell"
                 />
+                {isAdmin ? <th className="w-12 py-3 pr-3 text-right font-medium"> </th> : null}
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -322,6 +369,20 @@ export function PhotosPage() {
                       )}
                     </td>
                     <td className="truncate py-2.5 pr-3 font-mono text-xs">
+                      {image.owner ? (
+                        <span
+                          className="inline-flex items-center rounded-sm bg-ink/10 px-1.5 py-0.5 font-medium text-ink"
+                          title={`Owner: ${image.owner}`}
+                        >
+                          Owner: {image.owner}
+                        </span>
+                      ) : (
+                        <span className="text-muted" title="Unassigned">
+                          -
+                        </span>
+                      )}
+                    </td>
+                    <td className="truncate py-2.5 pr-3 font-mono text-xs">
                       {image.claimedBy ? (
                         image.claimedBy === username ? (
                           <span className="inline-flex items-center rounded-sm bg-ink/10 px-1.5 py-0.5 font-medium text-ink">
@@ -337,6 +398,22 @@ export function PhotosPage() {
                     <td className="hidden py-2.5 pr-3 text-xs text-muted sm:table-cell">
                       {heldFor(image.claimedAt, image.completedAt)}
                     </td>
+                    {isAdmin ? (
+                      <td className="py-2.5 pr-3 text-right">
+                        <button
+                          type="button"
+                          aria-label={`Delete ${image.name}`}
+                          title={`Delete ${image.name}`}
+                          className="press inline-flex size-8 items-center justify-center rounded-sm text-red-600 hover:bg-red-500/15 focus-visible:ring-2 focus-visible:ring-red-500"
+                          onClick={() => {
+                            setPhotoToDelete(image);
+                            setDeleteError(null);
+                          }}
+                        >
+                          <Trash2 className="size-4" aria-hidden="true" />
+                        </button>
+                      </td>
+                    ) : null}
                   </tr>
                 );
               })}
@@ -360,6 +437,89 @@ export function PhotosPage() {
             >
               Next
             </FilterButton>
+          </div>
+        ) : null}
+
+        {photoToDelete ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
+            onClick={(event) => {
+              if (event.target === event.currentTarget && !isDeleting) {
+                setPhotoToDelete(null);
+              }
+            }}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="delete-photo-dialog-title"
+              className="flex w-full max-w-md flex-col gap-4 rounded-xl border border-line bg-bg p-6 text-ink shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-line pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-red-500/15 text-red-600">
+                    <Trash2 className="size-4.5" aria-hidden="true" />
+                  </div>
+                  <h2
+                    id="delete-photo-dialog-title"
+                    className="text-base font-semibold tracking-tight text-ink"
+                  >
+                    Delete Photo
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPhotoToDelete(null)}
+                  disabled={isDeleting}
+                  aria-label="Close dialog"
+                  className="press inline-flex size-8 items-center justify-center rounded-md text-muted hover:bg-surface-raised hover:text-ink disabled:opacity-40"
+                >
+                  <X className="size-4" aria-hidden="true" />
+                </button>
+              </div>
+
+              <p className="text-sm leading-relaxed text-ink/80">
+                Permanently delete{" "}
+                <span className="font-mono font-semibold text-ink">{photoToDelete.name}</span>? This
+                will remove the image, its .txt label file, and all annotations from the database.
+                This action cannot be undone.
+              </p>
+
+              {deleteError ? (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600">
+                  {deleteError}
+                </div>
+              ) : null}
+
+              <div className="flex items-center justify-end gap-2.5 border-t border-line pt-3">
+                <button
+                  type="button"
+                  onClick={() => setPhotoToDelete(null)}
+                  disabled={isDeleting}
+                  className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-semibold text-ink hover:bg-surface-raised disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={() => void handleDeletePhoto(photoToDelete)}
+                  className="press inline-flex h-9 items-center justify-center gap-1.5 rounded-sm bg-red-600 px-4 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-40"
+                >
+                  {isDeleting ? (
+                    <>
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                      <span>Deleting…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="size-3.5" aria-hidden="true" />
+                      <span>Delete Photo</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         ) : null}
       </main>

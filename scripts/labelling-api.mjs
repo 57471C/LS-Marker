@@ -167,6 +167,7 @@ export function getDb(root) {
               completed_at DATETIME DEFAULT NULL,
               reviewed_by TEXT DEFAULT NULL,
               reviewed_at DATETIME DEFAULT NULL,
+              owner TEXT DEFAULT NULL,
               UNIQUE (project_id, file_path)
             );
           `);
@@ -204,6 +205,9 @@ export function getDb(root) {
           }
           if (imgCols.length && !imgCols.some((col) => col.name === "reviewed_at")) {
             db.exec("ALTER TABLE images ADD COLUMN reviewed_at DATETIME DEFAULT NULL");
+          }
+          if (imgCols.length && !imgCols.some((col) => col.name === "owner")) {
+            db.exec("ALTER TABLE images ADD COLUMN owner TEXT DEFAULT NULL");
           }
           ensureDefaultProject(db, root);
         }
@@ -618,7 +622,9 @@ function currentUser(db, req) {
        WHERE sessions.token = ? AND sessions.expires_at > ?`,
     )
     .get(token, now);
-  return row && typeof row.username === "string" ? { id: row.id, username: row.username } : null;
+  if (!row || typeof row.username !== "string") return null;
+  const admin = adminOpen(db, req) || row.username.toLowerCase() === "admin";
+  return { id: row.id, username: row.username, admin };
 }
 
 /**
@@ -2117,6 +2123,48 @@ export async function createDatabaseBackup(db, destPath) {
 
 /**
  * @param {import("better-sqlite3").Database} db
+ * @param {string} root
+ * @param {number} imageId
+ */
+export function deleteProjectImage(db, root, imageId) {
+  const imageRow = db.prepare("SELECT * FROM images WHERE id = ?").get(imageId);
+  if (!imageRow) throw new HttpError(404, "Image not found");
+
+  const project = db.prepare("SELECT * FROM projects WHERE id = ?").get(imageRow.project_id);
+  if (!project) throw new HttpError(404, "Project not found");
+
+  const projectFolder = path.resolve(root, project.folder);
+  const imagePath = resolveInside(projectFolder, imageRow.file_path);
+  const labelPath = labelFileFor(imagePath);
+
+  if (fs.existsSync(imagePath)) {
+    try {
+      fs.unlinkSync(imagePath);
+    } catch (err) {
+      console.error("[delete-image] Failed to unlink image file:", err);
+    }
+  }
+  if (fs.existsSync(labelPath)) {
+    try {
+      fs.unlinkSync(labelPath);
+    } catch (err) {
+      console.error("[delete-image] Failed to unlink label file:", err);
+    }
+  }
+
+  db.transaction(() => {
+    db.prepare("DELETE FROM image_claims WHERE project_id = ? AND rel_path = ?").run(
+      imageRow.project_id,
+      imageRow.file_path,
+    );
+    db.prepare("DELETE FROM images WHERE id = ?").run(imageRow.id);
+  })();
+
+  return { success: true, deletedId: imageRow.id };
+}
+
+/**
+ * @param {import("better-sqlite3").Database} db
  * @param {import("http").IncomingMessage} req
  */
 function currentProject(db, req) {
@@ -2182,7 +2230,7 @@ export async function catalogue(root, project) {
     syncProjectImages(db, root, project);
     const dbImages = db
       .prepare(
-        "SELECT id, project_id, file_path, name, status, locked_by, locked_at, completed_at, reviewed_by, reviewed_at FROM images WHERE project_id = ? ORDER BY id ASC",
+        "SELECT id, project_id, file_path, name, status, locked_by, locked_at, completed_at, reviewed_by, reviewed_at, owner FROM images WHERE project_id = ? ORDER BY id ASC",
       )
       .all(project.id);
     const nowTime = Date.now();
@@ -2217,6 +2265,7 @@ export async function catalogue(root, project) {
         lockedAt: activeLockedAt,
         reviewedBy: row.reviewed_by || null,
         reviewedAt: row.reviewed_at || null,
+        owner: row.owner || null,
       };
     });
   }
@@ -2245,7 +2294,12 @@ async function guard(req, res, url, root, method, pathname) {
   const now = new Date().toISOString();
 
   if (method === "GET" && pathname === "/api/me") {
-    send(res, 200, { user: currentUser(db, req) });
+    const user = currentUser(db, req);
+    if (!user && adminOpen(db, req)) {
+      send(res, 200, { user: { id: 0, username: "admin", admin: true } });
+      return true;
+    }
+    send(res, 200, { user });
     return true;
   }
 
@@ -2547,7 +2601,8 @@ async function guard(req, res, url, root, method, pathname) {
   }
 
   if (pathname === "/api/images/review/next" && method === "GET") {
-    if (!user) throw new HttpError(401, "Sign in");
+    const reviewer = user || (admin ? { id: 0, username: "admin", admin: true } : null);
+    if (!reviewer) throw new HttpError(401, "Sign in");
     const project = requireProject(db, req);
     syncProjectImages(db, root, project);
 
@@ -2610,7 +2665,8 @@ async function guard(req, res, url, root, method, pathname) {
   }
 
   if (pathname === "/api/images/review/action" && method === "POST") {
-    if (!user) throw new HttpError(401, "Sign in");
+    const reviewer = user || (admin ? { id: 0, username: "admin", admin: true } : null);
+    if (!reviewer) throw new HttpError(401, "Sign in");
     const project = requireProject(db, req);
     const body = await readBody(req);
     const action = typeof body.action === "string" ? body.action.trim().toLowerCase() : "";
@@ -2653,11 +2709,12 @@ async function guard(req, res, url, root, method, pathname) {
       db.prepare(
         `UPDATE images
          SET status = 'approved',
-             reviewed_by = :userId,
+             owner = :reviewerId,
+             reviewed_by = :reviewerId,
              reviewed_at = CURRENT_TIMESTAMP
          WHERE id = :id`,
       ).run({
-        userId: user.username,
+        reviewerId: reviewer.username,
         id: imageRow.id,
       });
       db.prepare(
@@ -2785,8 +2842,8 @@ async function guard(req, res, url, root, method, pathname) {
              completed_at = excluded.completed_at`,
         ).run(project.id, name, user.username, claimedAt, now);
         db.prepare(
-          "UPDATE images SET status = 'completed', locked_by = NULL, locked_at = NULL, completed_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
-        ).run(project.id, name);
+          "UPDATE images SET status = 'completed', owner = ?, locked_by = NULL, locked_at = NULL, completed_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
+        ).run(user.username, project.id, name);
         send(res, 200, {
           name,
           claimedBy: user.username,
@@ -2861,6 +2918,13 @@ async function guard(req, res, url, root, method, pathname) {
   if (
     method === "GET" &&
     (pathname === "/api/system/backup-status" || pathname === "/api/system/backup-download")
+  ) {
+    return false;
+  }
+  if (
+    (method === "DELETE" &&
+      (/^\/api\/images\/\d+$/.test(pathname) || pathname === "/api/images")) ||
+    (method === "POST" && pathname === "/api/images/delete")
   ) {
     return false;
   }
@@ -3190,6 +3254,36 @@ export async function handle(req, res, url, root) {
     }
   }
 
+  const imgDeleteMatch = pathname.match(/^\/api\/images\/(\d+)$/);
+  if (
+    (Boolean(imgDeleteMatch) && method === "DELETE") ||
+    (pathname === "/api/images" && method === "DELETE") ||
+    (pathname === "/api/images/delete" && method === "POST")
+  ) {
+    const db = await getDb(root);
+    const user = currentUser(db, req);
+    const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
+    if (!admin) {
+      throw new HttpError(403, "Forbidden: Admin access required");
+    }
+
+    let imageId = null;
+    if (imgDeleteMatch) {
+      imageId = Number(imgDeleteMatch[1]);
+    } else if (method === "POST" || method === "DELETE") {
+      const body = await readBody(req).catch(() => ({}));
+      if (body.id !== undefined && body.id !== null) imageId = Number(body.id);
+      if (imageId === null && url.searchParams.has("id")) {
+        imageId = Number(url.searchParams.get("id"));
+      }
+    }
+
+    if (!Number.isInteger(imageId)) throw new HttpError(400, "Bad image id");
+    const result = deleteProjectImage(db, root, imageId);
+    send(res, 200, result);
+    return;
+  }
+
   if (method === "GET" && pathname === "/api/catalogue") {
     const db = await getDb(root);
     send(res, 200, await catalogue(root, requireProject(db, req)));
@@ -3417,11 +3511,12 @@ export async function handle(req, res, url, root) {
         UPDATE images
         SET 
           status = 'completed',
+          owner = ?,
           locked_by = NULL,
           locked_at = NULL,
           completed_at = CURRENT_TIMESTAMP
         WHERE project_id = ? AND file_path = ?
-      `).run(project.id, name);
+      `).run(user.username, project.id, name);
       db.prepare(`
         INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
         VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'complete', CURRENT_TIMESTAMP)
