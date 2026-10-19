@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Archive, CheckCircle2, Download, FileText, Loader2, X } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { DatasetHealthModal } from "@/components/dataset-health-modal";
+import { RescanModal } from "@/components/rescan-modal";
 import {
   checkProjectExif,
   createUser,
@@ -14,6 +15,7 @@ import {
   fetchUsers,
   lockAdmin,
   resetUserPassword,
+  syncProjectImages,
   unlockAdmin,
   type DatasetExportType,
   type ExifCheckResult,
@@ -22,6 +24,7 @@ import {
   type LabUser,
   type Project,
   type ProjectHealthResult,
+  type SyncImagesResult,
 } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
 
@@ -69,6 +72,9 @@ export function SettingsPage() {
 
   const [checkingHealthProjectId, setCheckingHealthProjectId] = useState<number | null>(null);
   const [healthResult, setHealthResult] = useState<ProjectHealthResult | null>(null);
+
+  const [syncingProjectId, setSyncingProjectId] = useState<number | null>(null);
+  const [syncResult, setSyncResult] = useState<SyncImagesResult | null>(null);
 
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
@@ -213,6 +219,21 @@ export function SettingsPage() {
       setError(err instanceof Error ? err.message : "Failed to load project health");
     } finally {
       setCheckingHealthProjectId(null);
+    }
+  }
+
+  async function handleRescan(p: Project) {
+    setSyncingProjectId(p.id);
+    setError(null);
+    try {
+      const result = await syncProjectImages(p.id);
+      setSyncResult(result);
+      const nextProjects = await fetchProjects();
+      setProjects(nextProjects);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Rescan failed");
+    } finally {
+      setSyncingProjectId(null);
     }
   }
 
@@ -364,6 +385,22 @@ export function SettingsPage() {
                                 </>
                               ) : (
                                 "Health"
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              className="press inline-flex h-9 items-center gap-1.5 rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
+                              disabled={!p.folderOk || syncingProjectId === p.id}
+                              onClick={() => void handleRescan(p)}
+                              title="Rescan and synchronize photos from disk folder"
+                            >
+                              {syncingProjectId === p.id ? (
+                                <>
+                                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                                  <span>Rescanning…</span>
+                                </>
+                              ) : (
+                                "Rescan"
                               )}
                             </button>
                             <button
@@ -1013,6 +1050,10 @@ export function SettingsPage() {
 
         {healthResult ? (
           <DatasetHealthModal health={healthResult} onClose={() => setHealthResult(null)} />
+        ) : null}
+
+        {syncResult ? (
+          <RescanModal result={syncResult} onClose={() => setSyncResult(null)} />
         ) : null}
       </main>
     </div>

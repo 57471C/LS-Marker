@@ -314,66 +314,148 @@ function ensureDefaultProject(db, root) {
 }
 
 /**
+ * Standardize file path separators to POSIX forward slashes.
+ * @param {string} p
+ */
+export const normalizePath = (p) => {
+  if (!p || typeof p !== "string") return "";
+  return path.normalize(p).replace(/\\/g, "/");
+};
+
+/**
+ * Safe, zero-risk rescan and synchronization of project images.
+ * @param {import("better-sqlite3").Database} db
+ * @param {string} root
+ * @param {{ id: number, name?: string, folder: string }} project
+ */
+export function rescanProjectImages(db, root, project) {
+  const resolvedFolder = path.resolve(root, project.folder);
+  const error = folderError(resolvedFolder);
+  if (error) {
+    throw new HttpError(400, `Sync aborted: Folder error (${error}). No changes made.`);
+  }
+
+  const rawDiskFiles = listImages(resolvedFolder, Infinity);
+  const diskNormalized = rawDiskFiles.map((p) => normalizePath(p));
+  const diskSet = new Set(diskNormalized);
+
+  const existingRows = db
+    .prepare(
+      "SELECT id, project_id, file_path, name, status, reviewed_at FROM images WHERE project_id = ?",
+    )
+    .all(project.id);
+
+  // Circuit breaker: Never modify database if disk returns 0 images but DB has >0 images
+  if (diskNormalized.length === 0 && existingRows.length > 0) {
+    throw new HttpError(
+      400,
+      "Sync aborted: Disk directory appears empty or unmounted. No changes made.",
+    );
+  }
+
+  const existingMap = new Map();
+  for (const row of existingRows) {
+    existingMap.set(normalizePath(row.file_path), row);
+  }
+
+  let newlyAdded = 0;
+  let prunedUnlabeled = 0;
+  let missingCompleted = 0;
+  let restored = 0;
+
+  const insertStmt = db.prepare(`
+    INSERT OR IGNORE INTO images (project_id, file_path, name, status)
+    VALUES (?, ?, ?, 'unlabeled')
+  `);
+
+  const deleteStmt = db.prepare("DELETE FROM images WHERE id = ?");
+  const deleteClaimStmt = db.prepare(
+    "DELETE FROM image_claims WHERE project_id = ? AND rel_path = ?",
+  );
+  const updateStatusStmt = db.prepare("UPDATE images SET status = ? WHERE id = ?");
+  const updatePathStmt = db.prepare("UPDATE images SET file_path = ?, name = ? WHERE id = ?");
+
+  const tx = db.transaction(() => {
+    // 1. Add New Files
+    for (const diskPath of diskNormalized) {
+      if (!existingMap.has(diskPath)) {
+        const info = insertStmt.run(project.id, diskPath, diskPath);
+        if (info.changes > 0) {
+          newlyAdded++;
+        }
+      }
+    }
+
+    // 2. Handle Removed Unlabeled & 3. Protect Completed / Approved
+    for (const row of existingRows) {
+      const normPath = normalizePath(row.file_path);
+      const onDisk = diskSet.has(normPath);
+
+      // Standardize Windows path separators if needed
+      if (row.file_path !== normPath) {
+        try {
+          updatePathStmt.run(normPath, normPath, row.id);
+        } catch {
+          /* ignore duplicate constraint if already normalized */
+        }
+      }
+
+      if (!onDisk) {
+        if (row.status === "unlabeled") {
+          deleteStmt.run(row.id);
+          deleteClaimStmt.run(project.id, row.file_path);
+          deleteClaimStmt.run(project.id, normPath);
+          prunedUnlabeled++;
+        } else if (row.status === "completed" || row.status === "approved") {
+          updateStatusStmt.run("missing", row.id);
+          missingCompleted++;
+        } else if (row.status === "missing") {
+          missingCompleted++;
+        }
+      } else {
+        if (row.status === "missing") {
+          const restoredStatus = row.reviewed_at ? "approved" : "completed";
+          updateStatusStmt.run(restoredStatus, row.id);
+          restored++;
+        }
+      }
+    }
+  });
+
+  tx();
+
+  const totalActive = db
+    .prepare("SELECT COUNT(*) AS count FROM images WHERE project_id = ? AND status != 'missing'")
+    .get(project.id).count;
+
+  return {
+    ok: true,
+    projectName: project.name || "Project",
+    projectId: project.id,
+    newlyAdded,
+    pruned: prunedUnlabeled,
+    prunedUnlabeled,
+    missingCompleted,
+    restored,
+    totalInProject: totalActive,
+  };
+}
+
+/**
  * Synchronize images from the project folder into the SQLite images table.
  * @param {import("better-sqlite3").Database} db
  * @param {string} root
  * @param {{ id: number, folder: string }} project
  */
 export function syncProjectImages(db, root, project) {
+  try {
+    rescanProjectImages(db, root, project);
+  } catch (err) {
+    if (err instanceof HttpError) return [];
+    throw err;
+  }
   const resolvedFolder = path.resolve(root, project.folder);
-  if (folderError(resolvedFolder)) return [];
-  const fileNames = listImages(resolvedFolder);
-  const existing = new Map(
-    db
-      .prepare("SELECT * FROM images WHERE project_id = ?")
-      .all(project.id)
-      .map((r) => [r.file_path, r]),
-  );
-  const claims = new Map(
-    db
-      .prepare("SELECT * FROM image_claims WHERE project_id = ?")
-      .all(project.id)
-      .map((r) => [r.rel_path, r]),
-  );
-
-  const insert = db.prepare(`
-    INSERT INTO images (project_id, file_path, name, status, locked_by, locked_at, completed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const tx = db.transaction(() => {
-    for (const name of fileNames) {
-      const full = resolveInside(resolvedFolder, name);
-      const labelled = fs.existsSync(labelFileFor(full));
-      const claim = claims.get(name);
-      const isComplete = labelled || claim?.status === "complete";
-      const status = isComplete
-        ? "completed"
-        : claim?.status === "incomplete"
-          ? "incomplete"
-          : "unlabeled";
-      const existingRow = existing.get(name);
-      if (!existingRow) {
-        insert.run(
-          project.id,
-          name,
-          name,
-          status,
-          claim?.claimed_by || null,
-          claim?.claimed_at || null,
-          claim?.completed_at || (isComplete ? new Date().toISOString() : null),
-        );
-      } else {
-        if (isComplete && existingRow.status !== "completed" && existingRow.status !== "approved") {
-          db.prepare(
-            "UPDATE images SET status = 'completed', locked_by = NULL, locked_at = NULL WHERE id = ?",
-          ).run(existingRow.id);
-        }
-      }
-    }
-  });
-  tx();
-  return fileNames;
+  return listImages(resolvedFolder);
 }
 
 function isHexColor(value) {
@@ -2745,7 +2827,13 @@ async function guard(req, res, url, root, method, pathname) {
       pathname === "/api/projects/check-exif" ||
       pathname === "/api/project/health" ||
       pathname === "/api/projects/health" ||
-      /^\/api\/projects\/\d+\/health$/.test(pathname))
+      pathname === "/api/project/sync-images" ||
+      pathname === "/api/projects/sync-images" ||
+      pathname === "/api/project/sync" ||
+      pathname === "/api/projects/sync" ||
+      /^\/api\/projects\/\d+\/health$/.test(pathname) ||
+      /^\/api\/projects\/\d+\/sync-images$/.test(pathname) ||
+      /^\/api\/projects\/\d+\/sync$/.test(pathname))
   ) {
     return false;
   }
@@ -2873,6 +2961,60 @@ export async function handle(req, res, url, root) {
       flaggedCount: flaggedFiles.length,
       flaggedFiles,
     });
+    return;
+  }
+
+  const syncMatch = pathname.match(/^\/api\/projects\/(\d+)\/(?:sync-images|sync)$/);
+  if (
+    (pathname === "/api/project/sync-images" ||
+      pathname === "/api/projects/sync-images" ||
+      pathname === "/api/project/sync" ||
+      pathname === "/api/projects/sync" ||
+      Boolean(syncMatch)) &&
+    (method === "POST" || method === "GET")
+  ) {
+    const db = await getDb(root);
+    let projectId = null;
+    let projectName = null;
+    if (syncMatch) {
+      projectId = Number(syncMatch[1]);
+    }
+    if (method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      if (body.id !== undefined && body.id !== null) projectId = Number(body.id);
+      if (body.projectId !== undefined && body.projectId !== null)
+        projectId = Number(body.projectId);
+      if (body.project_id !== undefined && body.project_id !== null)
+        projectId = Number(body.project_id);
+      if (typeof body.name === "string") projectName = body.name.trim();
+    }
+    if (projectId === null) {
+      if (url.searchParams.has("id")) {
+        projectId = Number(url.searchParams.get("id"));
+      } else if (url.searchParams.has("project_id")) {
+        projectId = Number(url.searchParams.get("project_id"));
+      } else if (url.searchParams.has("projectId")) {
+        projectId = Number(url.searchParams.get("projectId"));
+      }
+    }
+    if (!projectName && url.searchParams.has("name")) {
+      projectName = url.searchParams.get("name")?.trim();
+    }
+
+    let project = null;
+    if (Number.isInteger(projectId)) {
+      project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId);
+    } else if (projectName) {
+      project = db
+        .prepare("SELECT id, name, folder FROM projects WHERE name = ? COLLATE NOCASE")
+        .get(projectName);
+    } else {
+      project = currentProject(db, req);
+    }
+
+    if (!project) throw new HttpError(404, "Project not found");
+    const result = rescanProjectImages(db, root, project);
+    send(res, 200, result);
     return;
   }
 

@@ -577,3 +577,26 @@ export async function fetchProjectHealth(projectId?: number): Promise<ProjectHea
   const res = await fetch(api(`/api/project/health${qs}`));
   return asJson<ProjectHealthResult>(res);
 }
+
+export type SyncImagesResult = {
+  ok: boolean;
+  projectName: string;
+  projectId: number;
+  newlyAdded: number;
+  pruned: number;
+  prunedUnlabeled: number;
+  missingCompleted: number;
+  restored: number;
+  totalInProject: number;
+};
+
+export async function syncProjectImages(projectId: number): Promise<SyncImagesResult> {
+  const res = await fetch(api(`/api/projects/${projectId}/sync-images`), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ projectId }),
+  });
+  return asJson<SyncImagesResult>(res);
+}
+
+export const rescanProjectImages = syncProjectImages;
