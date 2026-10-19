@@ -49,6 +49,13 @@ const SHORTCUT_SECTIONS: ShortcutSection[] = [
       { keys: ["?"], description: "Open this keyboard shortcuts guide" },
     ],
   },
+  {
+    title: "Review & QA Mode",
+    items: [
+      { keys: ["A", "/ Enter"], description: "Approve current photo & load next pending" },
+      { keys: ["X"], description: "Reject photo back to annotator pool" },
+    ],
+  },
 ];
 
 function KeyCap({ label }: { label: string }) {

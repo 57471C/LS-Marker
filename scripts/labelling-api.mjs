@@ -164,6 +164,8 @@ export function getDb(root) {
               locked_by TEXT DEFAULT NULL,
               locked_at DATETIME DEFAULT NULL,
               completed_at DATETIME DEFAULT NULL,
+              reviewed_by TEXT DEFAULT NULL,
+              reviewed_at DATETIME DEFAULT NULL,
               UNIQUE (project_id, file_path)
             );
           `);
@@ -195,6 +197,12 @@ export function getDb(root) {
           }
           if (imgCols.length && !imgCols.some((col) => col.name === "completed_at")) {
             db.exec("ALTER TABLE images ADD COLUMN completed_at DATETIME DEFAULT NULL");
+          }
+          if (imgCols.length && !imgCols.some((col) => col.name === "reviewed_by")) {
+            db.exec("ALTER TABLE images ADD COLUMN reviewed_by TEXT DEFAULT NULL");
+          }
+          if (imgCols.length && !imgCols.some((col) => col.name === "reviewed_at")) {
+            db.exec("ALTER TABLE images ADD COLUMN reviewed_at DATETIME DEFAULT NULL");
           }
           ensureDefaultProject(db, root);
         }
@@ -356,7 +364,7 @@ export function syncProjectImages(db, root, project) {
           claim?.completed_at || (isComplete ? new Date().toISOString() : null),
         );
       } else {
-        if (isComplete && existingRow.status !== "completed") {
+        if (isComplete && existingRow.status !== "completed" && existingRow.status !== "approved") {
           db.prepare(
             "UPDATE images SET status = 'completed', locked_by = NULL, locked_at = NULL WHERE id = ?",
           ).run(existingRow.id);
@@ -1331,14 +1339,16 @@ async function streamFileIntoTar(pack, entryName, filePath, isAborted, setActive
  * @param {"labels_only" | "full_tar"} exportType
  * @param {number} trainSplitPct
  * @param {"yolo" | "coco"} [exportFormat]
+ * @param {"all" | "approved"} [exportScope]
  */
-function prepareExportPlan(
+export function prepareExportPlan(
   db,
   project,
   resolvedFolder,
   exportType,
   trainSplitPct,
   exportFormat = "yolo",
+  exportScope = "all",
 ) {
   /** @type {{ id: number, ic: string }[]} */
   let classes = listClasses(db, project.id).map((c) => ({ id: c.id, ic: c.ic }));
@@ -1363,6 +1373,13 @@ function prepareExportPlan(
       .map((r) => [r.rel_path, r.status]),
   );
 
+  const imagesMap = new Map(
+    db
+      .prepare("SELECT file_path, status FROM images WHERE project_id = ?")
+      .all(project.id)
+      .map((r) => [r.file_path, r.status]),
+  );
+
   const allRelImages = listImages(resolvedFolder, Infinity);
   const candidates = [];
   for (const relName of allRelImages) {
@@ -1370,13 +1387,21 @@ function prepareExportPlan(
     if (!fs.existsSync(imageFull)) continue;
     const txtFull = labelFileFor(imageFull);
     const hasTxt = fs.existsSync(txtFull);
-    const status = claimsMap.get(relName);
-    const completed = status === "complete" || (hasTxt && status !== "incomplete");
-    candidates.push({ relName, imageFull, txtFull, completed });
+    const claimStatus = claimsMap.get(relName);
+    const dbStatus = imagesMap.get(relName);
+    const isApproved = dbStatus === "approved" || claimStatus === "approved";
+    const isCompleted =
+      isApproved ||
+      dbStatus === "completed" ||
+      claimStatus === "complete" ||
+      (hasTxt && claimStatus !== "incomplete");
+    const eligible = exportScope === "approved" ? isApproved : isCompleted;
+    candidates.push({ relName, imageFull, txtFull, completed: eligible });
   }
 
-  const completedOnly = candidates.filter((c) => c.completed);
-  const selected = completedOnly.length > 0 ? completedOnly : candidates;
+  const eligibleOnly = candidates.filter((c) => c.completed);
+  const selected =
+    exportScope === "approved" ? eligibleOnly : eligibleOnly.length > 0 ? eligibleOnly : candidates;
 
   const total = selected.length;
   let trainCount = Math.round((total * trainSplitPct) / 100);
@@ -1407,6 +1432,7 @@ function prepareExportPlan(
     project_name: project.name,
     export_format: exportFormat,
     export_type: exportType,
+    export_scope: exportScope,
     exported_at: new Date().toISOString(),
     total_items: items.length,
     classes: classes.map((c) => c.ic),
@@ -1438,13 +1464,24 @@ function prepareExportPlan(
  * @param {"labels_only" | "full_tar"} exportType
  * @param {number} trainSplitPct
  */
-async function streamYoloExport(req, res, db, project, resolvedFolder, exportType, trainSplitPct) {
+async function streamYoloExport(
+  req,
+  res,
+  db,
+  project,
+  resolvedFolder,
+  exportType,
+  trainSplitPct,
+  exportScope = "all",
+) {
   const { classes, items, manifest } = prepareExportPlan(
     db,
     project,
     resolvedFolder,
     exportType,
     trainSplitPct,
+    "yolo",
+    exportScope,
   );
   const dataYaml = buildDataYaml(classes, exportType);
   const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
@@ -1571,7 +1608,16 @@ async function streamYoloExport(req, res, db, project, resolvedFolder, exportTyp
  * @param {"labels_only" | "full_tar"} exportType
  * @param {number} trainSplitPct
  */
-async function streamCocoExport(req, res, db, project, resolvedFolder, exportType, trainSplitPct) {
+async function streamCocoExport(
+  req,
+  res,
+  db,
+  project,
+  resolvedFolder,
+  exportType,
+  trainSplitPct,
+  exportScope = "all",
+) {
   const { classes, items, manifest } = prepareExportPlan(
     db,
     project,
@@ -1579,6 +1625,7 @@ async function streamCocoExport(req, res, db, project, resolvedFolder, exportTyp
     exportType,
     trainSplitPct,
     "coco",
+    exportScope,
   );
   const { trainJson, valJson } = buildCocoDatasets(project, classes, items, exportType);
   const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
@@ -1752,11 +1799,13 @@ function publicProject(root, project, db) {
   const error = folderError(resolvedFolder);
   let totalPhotos = 0;
   let completePhotos = 0;
+  let approvedPhotos = 0;
   if (!error) {
     try {
       const images = listImages(resolvedFolder);
       totalPhotos = images.length;
       let claimsMap = null;
+      let dbImagesMap = null;
       if (db) {
         claimsMap = new Map(
           db
@@ -1764,12 +1813,22 @@ function publicProject(root, project, db) {
             .all(project.id)
             .map((r) => [r.rel_path, r.status]),
         );
+        dbImagesMap = new Map(
+          db
+            .prepare("SELECT file_path, status FROM images WHERE project_id = ?")
+            .all(project.id)
+            .map((r) => [r.file_path, r.status]),
+        );
       }
       for (const name of images) {
         const full = resolveInside(resolvedFolder, name);
         const hasTxt = fs.existsSync(labelFileFor(full));
         const status = claimsMap?.get(name);
-        if (status === "complete" || (!status && hasTxt)) {
+        const dbStatus = dbImagesMap?.get(name);
+        if (dbStatus === "approved") {
+          approvedPhotos++;
+          completePhotos++;
+        } else if (status === "complete" || (!status && hasTxt) || dbStatus === "completed") {
           completePhotos++;
         }
       }
@@ -1786,6 +1845,154 @@ function publicProject(root, project, db) {
     folderError: error,
     totalPhotos,
     completePhotos,
+    approvedPhotos,
+  };
+}
+
+/**
+ * @param {string} root
+ * @param {{ id: number, name: string, folder: string }} project
+ * @param {import("better-sqlite3").Database} db
+ */
+export function computeProjectHealth(root, project, db) {
+  const resolvedFolder = path.resolve(root, project.folder);
+  const error = folderError(resolvedFolder);
+  if (error) throw new HttpError(400, error);
+
+  try {
+    syncProjectImages(db, root, project);
+  } catch {
+    /* ignore sync error */
+  }
+
+  /** @type {{ id: number, ic: string, des?: string, color?: string }[]} */
+  let classes = listClasses(db, project.id);
+  if (classes.length === 0) {
+    const classesFile = path.join(resolvedFolder, "classes.txt");
+    if (fs.existsSync(classesFile)) {
+      try {
+        const lines = fs.readFileSync(classesFile, "utf8").split(/\r?\n/);
+        classes = lines
+          .map((line, idx) => ({ id: idx, ic: line.trim(), des: "", color: "#0e7490" }))
+          .filter((row) => Boolean(row.ic));
+      } catch {
+        /* ignore classes.txt fallback error */
+      }
+    }
+  }
+
+  const claimsMap = new Map(
+    db
+      .prepare("SELECT rel_path, status FROM image_claims WHERE project_id = ?")
+      .all(project.id)
+      .map((r) => [r.rel_path, r.status]),
+  );
+
+  const imagesMap = new Map(
+    db
+      .prepare("SELECT file_path, status FROM images WHERE project_id = ?")
+      .all(project.id)
+      .map((r) => [r.file_path, r.status]),
+  );
+
+  const allRelImages = listImages(resolvedFolder, Infinity);
+  const totalImages = allRelImages.length;
+  let completedImages = 0;
+  let cleanImages = 0;
+  let totalBoxes = 0;
+  const classBoxCounts = new Map();
+
+  for (const c of classes) {
+    classBoxCounts.set(c.id, 0);
+  }
+
+  for (const relName of allRelImages) {
+    const imageFull = resolveInside(resolvedFolder, relName);
+    if (!fs.existsSync(imageFull)) continue;
+    const txtFull = labelFileFor(imageFull);
+    const hasTxt = fs.existsSync(txtFull);
+    const claimStatus = claimsMap.get(relName);
+    const dbStatus = imagesMap.get(relName);
+
+    const isApproved = dbStatus === "approved" || claimStatus === "approved";
+    const isCompleted =
+      isApproved ||
+      dbStatus === "completed" ||
+      claimStatus === "complete" ||
+      (hasTxt && claimStatus !== "incomplete");
+
+    if (isCompleted) {
+      completedImages++;
+      const boxes = hasTxt ? readBoxes(txtFull) : [];
+      if (boxes.length === 0) {
+        cleanImages++;
+      } else {
+        totalBoxes += boxes.length;
+        for (const box of boxes) {
+          const currentCount = classBoxCounts.get(box.classId) || 0;
+          classBoxCounts.set(box.classId, currentCount + 1);
+        }
+      }
+    }
+  }
+
+  const unlabeledImages = Math.max(0, totalImages - completedImages);
+  const seenClassIds = new Set();
+  const classesStats = [];
+
+  for (const c of classes) {
+    seenClassIds.add(c.id);
+    const count = classBoxCounts.get(c.id) || 0;
+    const percentage = totalBoxes > 0 ? Number(((count / totalBoxes) * 100).toFixed(1)) : 0.0;
+    let status = "missing";
+    if (count >= 15) {
+      status = "healthy";
+    } else if (count > 0) {
+      status = "low";
+    }
+    classesStats.push({
+      id: c.id,
+      name: c.ic,
+      description: c.des || "",
+      color: c.color || "#0e7490",
+      count,
+      percentage,
+      status,
+    });
+  }
+
+  for (const [classId, count] of classBoxCounts.entries()) {
+    if (!seenClassIds.has(classId)) {
+      const percentage = totalBoxes > 0 ? Number(((count / totalBoxes) * 100).toFixed(1)) : 0.0;
+      let status = "missing";
+      if (count >= 15) {
+        status = "healthy";
+      } else if (count > 0) {
+        status = "low";
+      }
+      classesStats.push({
+        id: classId,
+        name: `Class #${classId}`,
+        description: "Unregistered class ID",
+        color: "#6b7280",
+        count,
+        percentage,
+        status,
+      });
+    }
+  }
+
+  return {
+    projectName: project.name,
+    projectId: project.id,
+    summary: {
+      totalImages,
+      completedImages,
+      unlabeledImages,
+      cleanImages,
+      totalBoxes,
+    },
+    classes: classesStats,
   };
 }
 
@@ -1856,12 +2063,14 @@ export async function catalogue(root, project) {
     syncProjectImages(db, root, project);
     const dbImages = db
       .prepare(
-        "SELECT id, project_id, file_path, name, status, locked_by, locked_at, completed_at FROM images WHERE project_id = ? ORDER BY id ASC",
+        "SELECT id, project_id, file_path, name, status, locked_by, locked_at, completed_at, reviewed_by, reviewed_at FROM images WHERE project_id = ? ORDER BY id ASC",
       )
       .all(project.id);
     const nowTime = Date.now();
     images = dbImages.map((row) => {
+      const isApproved = row.status === "approved";
       const isComplete =
+        isApproved ||
         row.status === "completed" ||
         fs.existsSync(labelFileFor(resolveInside(resolvedFolder, row.file_path)));
       const isLocked =
@@ -1870,7 +2079,13 @@ export async function catalogue(root, project) {
         new Date(row.locked_at).getTime() > nowTime - 15 * 60 * 1000;
       const activeHolder = isLocked ? row.locked_by : null;
       const activeLockedAt = isLocked ? row.locked_at : null;
-      const status = isComplete ? "complete" : row.status === "incomplete" ? "incomplete" : "open";
+      const status = isApproved
+        ? "approved"
+        : isComplete
+          ? "complete"
+          : row.status === "incomplete"
+            ? "incomplete"
+            : "open";
       return {
         id: row.id,
         name: row.file_path,
@@ -1881,6 +2096,8 @@ export async function catalogue(root, project) {
         completedAt: row.completed_at || null,
         lockedBy: activeHolder,
         lockedAt: activeLockedAt,
+        reviewedBy: row.reviewed_by || null,
+        reviewedAt: row.reviewed_at || null,
       };
     });
   }
@@ -2210,6 +2427,166 @@ async function guard(req, res, url, root, method, pathname) {
     return true;
   }
 
+  if (pathname === "/api/images/review/next" && method === "GET") {
+    if (!user) throw new HttpError(401, "Sign in");
+    const project = requireProject(db, req);
+    syncProjectImages(db, root, project);
+
+    const pendingRow = db
+      .prepare(
+        `SELECT id, project_id, file_path, name, status, locked_by, locked_at, completed_at, reviewed_by, reviewed_at
+         FROM images
+         WHERE project_id = :projectId
+           AND status = 'completed'
+           AND reviewed_at IS NULL
+         ORDER BY completed_at ASC, id ASC
+         LIMIT 1`,
+      )
+      .get({ projectId: project.id });
+
+    const pendingCount = db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM images
+         WHERE project_id = ? AND status = 'completed' AND reviewed_at IS NULL`,
+      )
+      .get(project.id).count;
+
+    if (!pendingRow) {
+      send(res, 200, {
+        ok: true,
+        image: null,
+        pendingCount: 0,
+        message: "No images pending review",
+      });
+      return true;
+    }
+
+    const claimRow = db
+      .prepare(
+        "SELECT claimed_by, completed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
+      )
+      .get(project.id, pendingRow.file_path);
+
+    const resolvedFolder = path.resolve(root, project.folder);
+    const fullPath = resolveInside(resolvedFolder, pendingRow.file_path);
+    const boxes = fs.existsSync(fullPath) ? readBoxes(labelFileFor(fullPath)) : [];
+
+    send(res, 200, {
+      ok: true,
+      image: {
+        id: pendingRow.id,
+        name: pendingRow.file_path,
+        filePath: pendingRow.file_path,
+        status: pendingRow.status,
+        completedBy: claimRow?.claimed_by || null,
+        completedAt: pendingRow.completed_at || claimRow?.completed_at || null,
+        reviewedBy: pendingRow.reviewed_by || null,
+        reviewedAt: pendingRow.reviewed_at || null,
+      },
+      boxes,
+      pendingCount,
+    });
+    return true;
+  }
+
+  if (pathname === "/api/images/review/action" && method === "POST") {
+    if (!user) throw new HttpError(401, "Sign in");
+    const project = requireProject(db, req);
+    const body = await readBody(req);
+    const action = typeof body.action === "string" ? body.action.trim().toLowerCase() : "";
+    if (action !== "approve" && action !== "reject") {
+      throw new HttpError(400, "Invalid action; expected approve or reject");
+    }
+
+    const imageId = Number(body.image_id ?? body.id);
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+
+    const imageRow = db
+      .prepare(
+        `SELECT id, project_id, file_path, name, status
+         FROM images
+         WHERE project_id = :projectId AND (id = :imageId OR file_path = :name)`,
+      )
+      .get({
+        projectId: project.id,
+        imageId: Number.isInteger(imageId) ? imageId : -1,
+        name,
+      });
+
+    if (!imageRow) {
+      throw new HttpError(404, "Image not found");
+    }
+
+    const resolvedFolder = path.resolve(root, project.folder);
+    const imageFull = resolveInside(resolvedFolder, imageRow.file_path);
+    const labelPath = labelFileFor(imageFull);
+
+    if (action === "approve") {
+      if (Array.isArray(body.boxes)) {
+        const boxes = cleanBoxes(body.boxes);
+        const lines = boxes.map(
+          (box) =>
+            `${box.classId} ${box.x.toFixed(6)} ${box.y.toFixed(6)} ${box.w.toFixed(6)} ${box.h.toFixed(6)}`,
+        );
+        fs.writeFileSync(labelPath, lines.length ? `${lines.join("\n")}\n` : "");
+      }
+      db.prepare(
+        `UPDATE images
+         SET status = 'approved',
+             reviewed_by = :userId,
+             reviewed_at = CURRENT_TIMESTAMP
+         WHERE id = :id`,
+      ).run({
+        userId: user.username,
+        id: imageRow.id,
+      });
+      db.prepare(
+        `UPDATE image_claims
+         SET status = 'approved'
+         WHERE project_id = ? AND rel_path = ?`,
+      ).run(project.id, imageRow.file_path);
+    } else {
+      // reject: revert to unlabeled and remove label file so annotator starts fresh
+      if (fs.existsSync(labelPath)) {
+        try {
+          fs.unlinkSync(labelPath);
+        } catch {
+          fs.writeFileSync(labelPath, "");
+        }
+      }
+      db.prepare(
+        `UPDATE images
+         SET status = 'unlabeled',
+             locked_by = NULL,
+             locked_at = NULL,
+             completed_at = NULL,
+             reviewed_by = NULL,
+             reviewed_at = NULL
+         WHERE id = :id`,
+      ).run({
+        id: imageRow.id,
+      });
+      db.prepare(
+        `UPDATE image_claims
+         SET status = 'incomplete',
+             claimed_by = NULL,
+             claimed_at = NULL,
+             completed_at = NULL
+         WHERE project_id = ? AND rel_path = ?`,
+      ).run(project.id, imageRow.file_path);
+    }
+
+    send(res, 200, {
+      ok: true,
+      action,
+      imageId: imageRow.id,
+      name: imageRow.file_path,
+      message: `Image ${action}d successfully`,
+    });
+    return true;
+  }
+
   if (pathname === "/api/claim") {
     if (!user) throw new HttpError(401, "Sign in");
     const project = requireProject(db, req);
@@ -2364,7 +2741,11 @@ async function guard(req, res, url, root, method, pathname) {
   if (method === "GET" && pathname === "/api/export") return false;
   if (
     (method === "POST" || method === "GET") &&
-    (pathname === "/api/project/check-exif" || pathname === "/api/projects/check-exif")
+    (pathname === "/api/project/check-exif" ||
+      pathname === "/api/projects/check-exif" ||
+      pathname === "/api/project/health" ||
+      pathname === "/api/projects/health" ||
+      /^\/api\/projects\/\d+\/health$/.test(pathname))
   ) {
     return false;
   }
@@ -2379,7 +2760,7 @@ async function guard(req, res, url, root, method, pathname) {
  * @param {URL} url
  * @param {string} root
  */
-async function handle(req, res, url, root) {
+export async function handle(req, res, url, root) {
   const method = (req.method || "GET").toUpperCase();
   const pathname = url.pathname;
   if (await guard(req, res, url, root, method, pathname)) return;
@@ -2388,6 +2769,54 @@ async function handle(req, res, url, root) {
     const db = await getDb(root);
     const project = currentProject(db, req);
     send(res, 200, { project: project ? publicProject(root, project, db) : null });
+    return;
+  }
+
+  const healthMatch = pathname.match(/^\/api\/projects\/(\d+)\/health$/);
+  if (
+    (pathname === "/api/project/health" ||
+      pathname === "/api/projects/health" ||
+      Boolean(healthMatch)) &&
+    (method === "POST" || method === "GET")
+  ) {
+    const db = await getDb(root);
+    let projectId = null;
+    let projectName = null;
+    if (healthMatch) {
+      projectId = Number(healthMatch[1]);
+    }
+    if (method === "POST") {
+      const body = await readBody(req).catch(() => ({}));
+      if (body.id !== undefined && body.id !== null) projectId = Number(body.id);
+      if (body.project_id !== undefined && body.project_id !== null)
+        projectId = Number(body.project_id);
+      if (typeof body.name === "string") projectName = body.name.trim();
+    }
+    if (projectId === null) {
+      if (url.searchParams.has("id")) {
+        projectId = Number(url.searchParams.get("id"));
+      } else if (url.searchParams.has("project_id")) {
+        projectId = Number(url.searchParams.get("project_id"));
+      }
+    }
+    if (!projectName && url.searchParams.has("name")) {
+      projectName = url.searchParams.get("name")?.trim();
+    }
+
+    let project = null;
+    if (Number.isInteger(projectId)) {
+      project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId);
+    } else if (projectName) {
+      project = db
+        .prepare("SELECT id, name, folder FROM projects WHERE name = ? COLLATE NOCASE")
+        .get(projectName);
+    } else {
+      project = currentProject(db, req);
+    }
+
+    if (!project) throw new HttpError(404, "Project not found");
+    const health = computeProjectHealth(root, project, db);
+    send(res, 200, health);
     return;
   }
 
@@ -2666,6 +3095,16 @@ async function handle(req, res, url, root) {
     /** @type {"yolo" | "coco"} */
     const exportFormat = rawFormat === "coco" ? "coco" : "yolo";
 
+    const rawScope = (
+      url.searchParams.get("scope") ??
+      url.searchParams.get("export_scope") ??
+      "all"
+    )
+      .trim()
+      .toLowerCase();
+    /** @type {"all" | "approved"} */
+    const exportScope = rawScope === "approved" ? "approved" : "all";
+
     try {
       writeClassesFile(db, project.id, resolvedFolder);
     } catch (err) {
@@ -2673,9 +3112,27 @@ async function handle(req, res, url, root) {
     }
 
     if (exportFormat === "coco") {
-      await streamCocoExport(req, res, db, project, resolvedFolder, exportType, trainSplitPct);
+      await streamCocoExport(
+        req,
+        res,
+        db,
+        project,
+        resolvedFolder,
+        exportType,
+        trainSplitPct,
+        exportScope,
+      );
     } else {
-      await streamYoloExport(req, res, db, project, resolvedFolder, exportType, trainSplitPct);
+      await streamYoloExport(
+        req,
+        res,
+        db,
+        project,
+        resolvedFolder,
+        exportType,
+        trainSplitPct,
+        exportScope,
+      );
     }
     return;
   }

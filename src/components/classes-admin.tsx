@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
+import { BarChart3, Loader2 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
+import { DatasetHealthModal } from "@/components/dataset-health-modal";
 import { classFill } from "@/lib/class-color";
 import {
   createClass,
   deleteClass,
   fetchCatalogue,
+  fetchProjectHealth,
   importClasses,
   updateClass,
   type ClassRow,
+  type ProjectHealthResult,
 } from "@/lib/label-client";
 
 const field =
@@ -30,9 +34,25 @@ export function ClassesAdmin() {
   const [query, setQuery] = useState("");
   const [importNote, setImportNote] = useState<string | null>(null);
 
+  const [healthResult, setHealthResult] = useState<ProjectHealthResult | null>(null);
+  const [loadingHealth, setLoadingHealth] = useState(false);
+
   async function load() {
     const data = await fetchCatalogue();
     setClasses(data.classes);
+  }
+
+  async function handleOpenHealth() {
+    setLoadingHealth(true);
+    setError(null);
+    try {
+      const result = await fetchProjectHealth();
+      setHealthResult(result);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load dataset health");
+    } finally {
+      setLoadingHealth(false);
+    }
   }
 
   useEffect(() => {
@@ -66,13 +86,31 @@ export function ClassesAdmin() {
     <div className="flex min-h-dvh flex-col bg-bg text-ink">
       <AppHeader current="classes" />
       <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
-        <div className="flex flex-col gap-1">
-          <h1 className="text-lg font-medium tracking-tight">Classes</h1>
-          <p className="max-w-xl text-sm text-muted">
-            The number is the YOLO class id stored in each label file. Ids stay put when you rename
-            a code. A removed id is left blank in classes.txt and is not reused. Each class is given
-            a colour on its own — you don't pick one.
-          </p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-1">
+            <h1 className="text-lg font-medium tracking-tight">Classes</h1>
+            <p className="max-w-xl text-sm text-muted">
+              The number is the YOLO class id stored in each label file. Ids stay put when you
+              rename a code. A removed id is left blank in classes.txt and is not reused. Each class
+              is given a colour on its own — you don't pick one.
+            </p>
+          </div>
+          <div className="shrink-0">
+            <button
+              type="button"
+              className="press inline-flex h-10 items-center gap-2 rounded-sm border border-line bg-surface px-3.5 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
+              disabled={loadingHealth}
+              onClick={() => void handleOpenHealth()}
+              title="Inspect dataset composition & class distribution"
+            >
+              {loadingHealth ? (
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <BarChart3 className="size-3.5 text-cyan-500" aria-hidden="true" />
+              )}
+              <span>Dataset Health</span>
+            </button>
+          </div>
         </div>
         {error ? (
           <p className="rounded-sm border border-line bg-surface px-3 py-2 text-sm" role="alert">
@@ -199,6 +237,9 @@ export function ClassesAdmin() {
           Saving a free image claims it for you. Someone else’s claim has to be taken over before
           you can change it.
         </p>
+        {healthResult ? (
+          <DatasetHealthModal health={healthResult} onClose={() => setHealthResult(null)} />
+        ) : null}
       </main>
     </div>
   );

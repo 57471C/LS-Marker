@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -7,6 +8,7 @@ import {
   Eye,
   EyeOff,
   Trash2,
+  X,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { LabelStage, newId, round6, type StageBox } from "@/components/label-stage";
@@ -17,10 +19,12 @@ import {
   fetchCatalogue,
   fetchLabel,
   fetchNextImage,
+  fetchNextReviewImage,
   imageSrc,
   lockImage,
   releaseIncomplete,
   saveLabel,
+  submitReviewAction,
   unlockImage,
   type Catalogue,
   type ClassRow,
@@ -67,6 +71,13 @@ function withKeys(
 }
 
 function StatusBadge({ status }: { status: PhotoStatus }) {
+  if (status === "approved") {
+    return (
+      <span className="inline-flex items-center rounded-sm bg-purple-500/15 px-2 py-0.5 text-xs font-medium text-purple-800">
+        Approved
+      </span>
+    );
+  }
   if (status === "complete") {
     return (
       <span className="inline-flex items-center rounded-sm bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-800">
@@ -88,14 +99,15 @@ function StatusBadge({ status }: { status: PhotoStatus }) {
   );
 }
 
-type Queue = "all" | "open" | "incomplete" | "complete" | "mine" | "free";
+type Queue = "all" | "open" | "incomplete" | "complete" | "approved" | "mine" | "free";
 
 function matchesQueue(image: ImageRow, next: Queue, username: string | null): boolean {
   if (next === "mine") return image.claimedBy === username;
   if (next === "free") return !image.claimedBy;
   if (next === "open") return image.status === "open";
   if (next === "incomplete") return image.status === "incomplete";
-  if (next === "complete") return image.status === "complete";
+  if (next === "complete") return image.status === "complete" || image.status === "approved";
+  if (next === "approved") return image.status === "approved";
   return true;
 }
 
@@ -139,12 +151,26 @@ export function Labeler() {
   const [indexProject, setIndexProject] = useState<number | null>(null);
   const paneDrag = useRef<{ x: number; width: number } | null>(null);
 
+  const [isReviewMode, setIsReviewMode] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return new URLSearchParams(window.location.search).get("mode") === "review";
+    }
+    return false;
+  });
+  const [pendingReviewCount, setPendingReviewCount] = useState<number>(0);
+  const isReviewModeRef = useRef(false);
+  isReviewModeRef.current = isReviewMode;
+
   const allImages = catalogue?.images ?? [];
   const images = allImages.filter((image) => matchesQueue(image, queue, username));
   const classes = catalogue?.classes ?? [];
   const projectId = catalogue?.project?.id ?? null;
   const safeIndex = images.length === 0 ? 0 : Math.min(index, images.length - 1);
   const current = images[safeIndex] ?? null;
+  const currentRef = useRef(current);
+  currentRef.current = current;
+  const allImagesRef = useRef(allImages);
+  allImagesRef.current = allImages;
   const ready = catalogue !== null;
   const folderOk = catalogue?.folderOk ?? false;
   const imageName = current?.name ?? null;
@@ -152,7 +178,7 @@ export function Labeler() {
 
   const dirty = serialize(boxes) !== saved;
   const holder = current?.claimedBy ?? null;
-  const locked = Boolean(holder && holder !== username);
+  const locked = !isReviewMode && Boolean(holder && holder !== username);
   const lockedRef = useRef(false);
   lockedRef.current = locked;
 
@@ -166,6 +192,8 @@ export function Labeler() {
     nudge: (_key: string, _fast: boolean): boolean => false,
     duplicate: () => {},
     markNone: async () => {},
+    approve: async () => {},
+    reject: async () => {},
   });
 
   const latestBoxKey = boxes[boxes.length - 1]?.key ?? "";
@@ -236,6 +264,52 @@ export function Labeler() {
     };
   }, []);
 
+  function exitReviewMode() {
+    setIsReviewMode(false);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("mode");
+    window.history.replaceState({}, "", url.pathname + (url.search ? url.search : ""));
+  }
+
+  function enterReviewMode() {
+    setIsReviewMode(true);
+    setQueue("all");
+    const url = new URL(window.location.href);
+    url.searchParams.set("mode", "review");
+    window.history.replaceState({}, "", url.pathname + url.search);
+  }
+
+  useEffect(() => {
+    function onPopState() {
+      const mode = new URLSearchParams(window.location.search).get("mode") === "review";
+      setIsReviewMode(mode);
+      if (mode) setQueue("all");
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (!isReviewMode || projectId == null) return;
+    let cancel = false;
+    fetchNextReviewImage(projectId)
+      .then((res) => {
+        if (cancel) return;
+        setPendingReviewCount(res.pendingCount);
+        const cur = currentRef.current;
+        if (cur && cur.status !== "complete" && cur.status !== "approved" && res.image) {
+          const at = allImagesRef.current.findIndex(
+            (img) => img.name === res.image?.filePath || img.name === res.image?.name,
+          );
+          if (at >= 0) setIndex(at);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, [isReviewMode, projectId]);
+
   const tokens = useMemo(() => parseCodes(codeList), [codeList]);
   const picks = useMemo(() => {
     const byIc = new Map(classes.map((row) => [row.ic.trim().toLowerCase(), row]));
@@ -291,7 +365,12 @@ export function Labeler() {
     setStatus("Loading");
 
     const currentStatus = current?.status;
-    if (imageName && currentStatus !== "complete") {
+    if (
+      imageName &&
+      currentStatus !== "complete" &&
+      currentStatus !== "approved" &&
+      !isReviewMode
+    ) {
       lockImage(imageName)
         .then((locked) => {
           if (cancel) return;
@@ -359,10 +438,16 @@ export function Labeler() {
     return () => {
       cancel = true;
     };
-  }, [ready, folderOk, imageName, folderKey, current?.status]);
+  }, [ready, folderOk, imageName, folderKey, current?.status, isReviewMode]);
 
   useEffect(() => {
-    if (!current?.name || current.status === "complete") return;
+    if (
+      !current?.name ||
+      current.status === "complete" ||
+      current.status === "approved" ||
+      isReviewMode
+    )
+      return;
     const name = current.name;
     const onExit = () => {
       const body = JSON.stringify({ name });
@@ -376,7 +461,7 @@ export function Labeler() {
       window.removeEventListener("beforeunload", onExit);
       window.removeEventListener("pagehide", onExit);
     };
-  }, [current?.name, current?.status]);
+  }, [current?.name, current?.status, isReviewMode]);
 
   function labelFor(classId: number): string {
     const row = classes.find((item) => item.id === classId);
@@ -606,6 +691,138 @@ export function Labeler() {
     setPaneWidth(Math.min(PANE_MAX, Math.max(PANE_MIN, next)));
   }
 
+  async function handleReviewApprove() {
+    if (!current) return;
+    setBusy(true);
+    try {
+      const cleaned = boxes.map((box) => ({
+        classId: box.classId,
+        x: round6(box.x),
+        y: round6(box.y),
+        w: round6(box.w),
+        h: round6(box.h),
+      }));
+      const res = await submitReviewAction({
+        project_id: projectId ?? undefined,
+        image_id: current.id,
+        name: current.name,
+        action: "approve",
+        boxes: cleaned,
+      });
+      setSaved(serialize(boxes));
+      setPendingReviewCount(res.pendingCount);
+      setCatalogue((prev) =>
+        prev
+          ? {
+              ...prev,
+              images: prev.images.map((img) =>
+                img.name === current.name
+                  ? {
+                      ...img,
+                      status: "approved",
+                      reviewedBy: username,
+                      reviewedAt: new Date().toISOString(),
+                    }
+                  : img,
+              ),
+            }
+          : prev,
+      );
+      setStatus(`Approved ${current.name}`);
+      setError(null);
+      if (res.nextImage) {
+        const at = allImages.findIndex(
+          (img) => img.name === res.nextImage?.filePath || img.name === res.nextImage?.name,
+        );
+        if (at >= 0) {
+          setIndex(at);
+        }
+      } else {
+        setStatus("All completed photos approved!");
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Approval failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleReviewReject() {
+    if (!current) return;
+    setBusy(true);
+    try {
+      const res = await submitReviewAction({
+        project_id: projectId ?? undefined,
+        image_id: current.id,
+        name: current.name,
+        action: "reject",
+      });
+      setBoxes([]);
+      setSaved("[]");
+      setPendingReviewCount(res.pendingCount);
+      setCatalogue((prev) =>
+        prev
+          ? {
+              ...prev,
+              images: prev.images.map((img) =>
+                img.name === current.name
+                  ? {
+                      ...img,
+                      status: "open",
+                      labelled: false,
+                      claimedBy: null,
+                      claimedAt: null,
+                      completedAt: null,
+                      reviewedBy: null,
+                      reviewedAt: null,
+                    }
+                  : img,
+              ),
+            }
+          : prev,
+      );
+      setStatus(`Rejected ${current.name} to pool`);
+      setError(null);
+      if (res.nextImage) {
+        const at = allImages.findIndex(
+          (img) => img.name === res.nextImage?.filePath || img.name === res.nextImage?.name,
+        );
+        if (at >= 0) {
+          setIndex(at);
+        }
+      } else {
+        setStatus("No more pending photos to review.");
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Reject failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleNextPendingReview() {
+    setBusy(true);
+    try {
+      const res = await fetchNextReviewImage(projectId ?? undefined);
+      setPendingReviewCount(res.pendingCount);
+      if (res.image) {
+        const at = allImages.findIndex(
+          (img) => img.name === res.image?.filePath || img.name === res.image?.name,
+        );
+        if (at >= 0) {
+          setIndex(at);
+        }
+        setStatus(`Loaded ${res.image.name} for review`);
+      } else {
+        setStatus("No pending photos to review");
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not fetch next review image");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   actions.current = {
     shift,
     save,
@@ -615,6 +832,8 @@ export function Labeler() {
     nudge,
     duplicate,
     markNone,
+    approve: handleReviewApprove,
+    reject: handleReviewReject,
   };
 
   useEffect(() => {
@@ -626,6 +845,30 @@ export function Labeler() {
       }
       const tag = event.target instanceof HTMLElement ? event.target.tagName : "";
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      if (isReviewModeRef.current) {
+        if (
+          (event.key === "a" || event.key === "A" || event.key === "Enter") &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.altKey
+        ) {
+          event.preventDefault();
+          void actions.current.approve();
+          return;
+        }
+        if (
+          (event.key === "x" || event.key === "X") &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.altKey
+        ) {
+          event.preventDefault();
+          void actions.current.reject();
+          return;
+        }
+      }
+
       if (
         event.key === "ArrowLeft" ||
         event.key === "ArrowRight" ||
@@ -789,7 +1032,7 @@ export function Labeler() {
   return (
     <div className="flex h-dvh flex-col bg-bg text-ink">
       <AppHeader
-        current="label"
+        current={isReviewMode ? "review" : "label"}
         meta={
           <>
             <p className="max-w-44 truncate font-mono text-sm text-muted tabular-nums sm:max-w-xs">
@@ -813,6 +1056,68 @@ export function Labeler() {
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <section className="flex min-h-80 min-w-0 flex-1 flex-col">
+          {isReviewMode ? (
+            <div className="sticky top-0 z-40 flex flex-wrap items-center justify-between gap-3 border-b border-amber-300 bg-amber-50 px-4 py-2.5 text-amber-950 shadow-xs dark:border-amber-900/60 dark:bg-amber-950/80 dark:text-amber-100">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center rounded-sm bg-amber-200/80 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-amber-900 dark:bg-amber-800/80 dark:text-amber-200">
+                  Review QA
+                </span>
+                <p className="max-w-xs truncate font-mono text-sm font-semibold">
+                  {current?.name ? `Reviewing: ${current.name}` : "No photo loaded"}
+                </p>
+                <span className="text-xs text-amber-800 dark:text-amber-300">
+                  | Completed by:{" "}
+                  <span className="font-medium">
+                    {current?.claimedBy || (current?.completedAt ? "Annotator" : "Not completed")}
+                  </span>
+                </span>
+                {pendingReviewCount > 0 ? (
+                  <span className="rounded-full bg-amber-200 px-2 py-0.5 font-mono text-xs font-medium text-amber-800 dark:bg-amber-800/60 dark:text-amber-200">
+                    {pendingReviewCount} pending
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={!current || busy}
+                  onClick={() => void handleReviewApprove()}
+                  className="press inline-flex h-9 items-center gap-1.5 rounded-sm bg-emerald-600 px-3 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700 disabled:opacity-40"
+                  title="Approve annotations (Hotkey: A or Enter)"
+                >
+                  <Check className="size-3.5" aria-hidden="true" />
+                  <span>✓ Approve (A)</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!current || busy}
+                  onClick={() => void handleReviewReject()}
+                  className="press inline-flex h-9 items-center gap-1.5 rounded-sm bg-rose-600 px-3 text-xs font-semibold text-white shadow-xs hover:bg-rose-700 disabled:opacity-40"
+                  title="Reject back to annotator pool (Hotkey: X)"
+                >
+                  <X className="size-3.5" aria-hidden="true" />
+                  <span>✕ Reject to Pool (X)</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void handleNextPendingReview()}
+                  className="press inline-flex h-9 items-center rounded-sm border border-amber-300 bg-white/80 px-2.5 text-xs font-medium text-amber-950 hover:bg-white dark:border-amber-700 dark:bg-amber-900/60 dark:text-amber-100 disabled:opacity-40"
+                  title="Fetch next completed image needing review"
+                >
+                  Next Pending
+                </button>
+                <button
+                  type="button"
+                  onClick={exitReviewMode}
+                  className="press inline-flex h-9 items-center rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-muted hover:text-ink"
+                  title="Exit review mode"
+                >
+                  Exit Review
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="min-h-0 flex-1 p-3">
             {current && catalogue?.folderOk ? (
               <div className="relative h-full min-h-72">
@@ -1098,7 +1403,26 @@ export function Labeler() {
           ) : null}
           <div className="flex shrink-0 flex-col gap-3 border-t border-line p-4">
             <div className="flex flex-col gap-2">
-              <p className="text-sm font-medium">Queue</p>
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">Queue</p>
+                {!isReviewMode ? (
+                  <button
+                    type="button"
+                    className="press inline-flex h-8 items-center rounded-sm bg-amber-600 px-2.5 text-xs font-semibold text-white shadow-xs hover:bg-amber-700"
+                    onClick={enterReviewMode}
+                  >
+                    Review QA
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="press inline-flex h-8 items-center rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-muted hover:text-ink"
+                    onClick={exitReviewMode}
+                  >
+                    Exit Review
+                  </button>
+                )}
+              </div>
               <div className="flex flex-wrap gap-1">
                 {(
                   [

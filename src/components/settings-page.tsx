@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Archive, CheckCircle2, Download, FileText, Loader2, X } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
+import { DatasetHealthModal } from "@/components/dataset-health-modal";
 import {
   checkProjectExif,
   createUser,
@@ -8,6 +9,7 @@ import {
   deleteUser,
   downloadDatasetExport,
   fetchAdmin,
+  fetchProjectHealth,
   fetchProjects,
   fetchUsers,
   lockAdmin,
@@ -16,8 +18,10 @@ import {
   type DatasetExportType,
   type ExifCheckResult,
   type ExportFormat,
+  type ExportScope,
   type LabUser,
   type Project,
+  type ProjectHealthResult,
 } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
 
@@ -53,6 +57,7 @@ export function SettingsPage() {
   const [projectToExport, setProjectToExport] = useState<Project | null>(null);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("yolo");
   const [exportType, setExportType] = useState<DatasetExportType>("labels_only");
+  const [exportScope, setExportScope] = useState<ExportScope>("all");
   const [trainSplit, setTrainSplit] = useState<number>(80);
   const [isExporting, setIsExporting] = useState(false);
   const [bytesExported, setBytesExported] = useState(0);
@@ -61,6 +66,9 @@ export function SettingsPage() {
 
   const [checkingExifProjectId, setCheckingExifProjectId] = useState<number | null>(null);
   const [exifResult, setExifResult] = useState<ExifCheckResult | null>(null);
+
+  const [checkingHealthProjectId, setCheckingHealthProjectId] = useState<number | null>(null);
+  const [healthResult, setHealthResult] = useState<ProjectHealthResult | null>(null);
 
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
@@ -115,6 +123,7 @@ export function SettingsPage() {
     setProjectToExport(p);
     setExportFormat(format);
     setExportType("labels_only");
+    setExportScope("all");
     setTrainSplit(80);
     setExportError(null);
     setBytesExported(0);
@@ -145,6 +154,7 @@ export function SettingsPage() {
         format: exportFormat,
         exportType,
         trainSplit,
+        scope: exportScope,
         signal: controller.signal,
         onProgress: (loaded) => setBytesExported(loaded),
       });
@@ -190,6 +200,19 @@ export function SettingsPage() {
       setError(err instanceof Error ? err.message : "Failed to check EXIF");
     } finally {
       setCheckingExifProjectId(null);
+    }
+  }
+
+  async function handleCheckHealth(p: Project) {
+    setCheckingHealthProjectId(p.id);
+    setError(null);
+    try {
+      const result = await fetchProjectHealth(p.id);
+      setHealthResult(result);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load project health");
+    } finally {
+      setCheckingHealthProjectId(null);
     }
   }
 
@@ -281,6 +304,11 @@ export function SettingsPage() {
                           {p.folderOk ? (
                             <span className="font-mono text-sm">
                               {p.totalPhotos ?? 0} / {p.completePhotos ?? 0}
+                              {p.approvedPhotos !== undefined && p.approvedPhotos > 0 ? (
+                                <span className="ml-1 text-xs text-purple-600 dark:text-purple-400 font-normal">
+                                  ({p.approvedPhotos} approved)
+                                </span>
+                              ) : null}
                             </span>
                           ) : (
                             <span
@@ -297,19 +325,10 @@ export function SettingsPage() {
                               type="button"
                               className="press inline-flex h-9 items-center rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
                               disabled={!p.folderOk || (p.totalPhotos ?? 0) === 0}
-                              onClick={() => openExportModal(p, "yolo")}
-                              title="Export YOLO dataset"
+                              onClick={() => openExportModal(p)}
+                              title="Export dataset (YOLO / COCO JSON)"
                             >
-                              Export YOLO
-                            </button>
-                            <button
-                              type="button"
-                              className="press inline-flex h-9 items-center rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
-                              disabled={!p.folderOk || (p.totalPhotos ?? 0) === 0}
-                              onClick={() => openExportModal(p, "coco")}
-                              title="Export COCO JSON dataset"
-                            >
-                              Export COCO
+                              Export
                             </button>
                             <button
                               type="button"
@@ -329,6 +348,22 @@ export function SettingsPage() {
                                 </>
                               ) : (
                                 "Check EXIF"
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              className="press inline-flex h-9 items-center gap-1.5 rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
+                              disabled={!p.folderOk || checkingHealthProjectId === p.id}
+                              onClick={() => void handleCheckHealth(p)}
+                              title="Inspect dataset composition & class distribution"
+                            >
+                              {checkingHealthProjectId === p.id ? (
+                                <>
+                                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                                  <span>Loading…</span>
+                                </>
+                              ) : (
+                                "Health"
                               )}
                             </button>
                             <button
@@ -498,7 +533,7 @@ export function SettingsPage() {
 
         {projectToExport ? (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
             onClick={(event) => {
               if (event.target === event.currentTarget && !isExporting) {
                 closeExportModal();
@@ -509,18 +544,18 @@ export function SettingsPage() {
               role="dialog"
               aria-modal="true"
               aria-labelledby="export-dialog-title"
-              className="flex w-full max-w-xl flex-col gap-5 rounded-xl border border-zinc-800 bg-zinc-950 p-6 text-zinc-100 shadow-2xl"
+              className="flex w-full max-w-xl flex-col gap-5 rounded-xl border border-line bg-bg p-6 text-ink shadow-2xl"
             >
-              <div className="flex items-start justify-between gap-4 border-b border-zinc-800/80 pb-4">
+              <div className="flex items-start justify-between gap-4 border-b border-line pb-4">
                 <div className="flex flex-col gap-1">
                   <h2
                     id="export-dialog-title"
-                    className="text-base font-semibold tracking-tight text-zinc-50"
+                    className="text-base font-semibold tracking-tight text-ink"
                   >
                     Export {exportFormat === "coco" ? "COCO JSON" : "YOLO"} Dataset:{" "}
                     {projectToExport.name}
                   </h2>
-                  <p className="font-mono text-xs text-zinc-400">
+                  <p className="font-mono text-xs text-muted">
                     {projectToExport.resolvedFolder || projectToExport.folder} &middot;{" "}
                     {projectToExport.completePhotos ?? 0} labeled /{" "}
                     {projectToExport.totalPhotos ?? 0} total photos
@@ -530,7 +565,7 @@ export function SettingsPage() {
                   type="button"
                   onClick={closeExportModal}
                   aria-label="Close export modal"
-                  className="press inline-flex size-8 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                  className="press inline-flex size-8 items-center justify-center rounded-md text-muted hover:bg-surface-raised hover:text-ink"
                 >
                   <X className="size-4" aria-hidden="true" />
                 </button>
@@ -538,16 +573,16 @@ export function SettingsPage() {
 
               {/* Format selector */}
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-zinc-300">Format</label>
-                <div className="grid grid-cols-2 gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-1">
+                <label className="text-xs font-medium text-ink">Format</label>
+                <div className="grid grid-cols-2 gap-2 rounded-lg border border-line bg-surface p-1">
                   <button
                     type="button"
                     disabled={isExporting}
                     onClick={() => setExportFormat("yolo")}
                     className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
                       exportFormat === "yolo"
-                        ? "bg-zinc-800 text-white shadow-xs"
-                        : "text-zinc-400 hover:text-zinc-200"
+                        ? "bg-ink text-surface shadow-xs"
+                        : "text-muted hover:text-ink"
                     }`}
                   >
                     YOLO
@@ -559,7 +594,7 @@ export function SettingsPage() {
                     className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
                       exportFormat === "coco"
                         ? "bg-blue-600 text-white shadow-xs"
-                        : "text-zinc-400 hover:text-zinc-200"
+                        : "text-muted hover:text-ink"
                     }`}
                   >
                     COCO JSON
@@ -567,12 +602,48 @@ export function SettingsPage() {
                 </div>
               </div>
 
+              {/* Include Images (Scope) selector */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-ink">Include Images</label>
+                <div className="grid grid-cols-2 gap-2 rounded-lg border border-line bg-surface p-1">
+                  <button
+                    type="button"
+                    disabled={isExporting}
+                    onClick={() => setExportScope("all")}
+                    className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
+                      exportScope === "all"
+                        ? "bg-ink text-surface shadow-xs"
+                        : "text-muted hover:text-ink"
+                    }`}
+                  >
+                    All Completed
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isExporting}
+                    onClick={() => setExportScope("approved")}
+                    className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
+                      exportScope === "approved"
+                        ? "bg-purple-600 text-white shadow-xs"
+                        : "text-muted hover:text-ink"
+                    }`}
+                  >
+                    Approved Only
+                  </button>
+                </div>
+                {exportScope === "approved" ? (
+                  <p className="text-[11px] text-purple-700">
+                    Only photos that have passed QA review will be packaged into the dataset.
+                  </p>
+                ) : null}
+              </div>
+
               <div className="flex flex-col gap-3" role="radiogroup" aria-label="Export Method">
                 <label
                   className={`flex cursor-pointer items-start gap-3.5 rounded-lg border p-4 transition-colors ${
                     exportType === "labels_only"
-                      ? "border-blue-500 bg-blue-500/10"
-                      : "border-zinc-800 bg-zinc-900/60 hover:border-zinc-700 hover:bg-zinc-900"
+                      ? "border-blue-500 bg-blue-50/70"
+                      : "border-line bg-surface hover:bg-surface-raised/60"
                   } ${isExporting ? "pointer-events-none opacity-60" : ""}`}
                 >
                   <input
@@ -587,27 +658,27 @@ export function SettingsPage() {
                   <div
                     className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border ${
                       exportType === "labels_only"
-                        ? "border-blue-500/40 bg-blue-500/20 text-blue-400"
-                        : "border-zinc-700 bg-zinc-800 text-zinc-400"
+                        ? "border-blue-200 bg-blue-100 text-blue-700"
+                        : "border-line bg-bg text-muted"
                     }`}
                   >
                     <FileText className="size-4" aria-hidden="true" />
                   </div>
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-zinc-100">
+                      <span className="text-sm font-semibold text-ink">
                         {exportFormat === "coco"
                           ? "Reference / Annotations Only"
                           : "Labels Only (Fast / Reference)"}
                       </span>
                       {exportType === "labels_only" ? (
                         <CheckCircle2
-                          className="size-4 shrink-0 text-blue-400"
+                          className="size-4 shrink-0 text-blue-600"
                           aria-hidden="true"
                         />
                       ) : null}
                     </div>
-                    <p className="text-xs leading-relaxed text-zinc-400">
+                    <p className="text-xs leading-relaxed text-muted">
                       {exportFormat === "coco"
                         ? "Best for Detectron2 / MMDetection on local storage. Exports annotations/instances_train.json and instances_val.json referencing existing image filenames, plus export_manifest.json. Instant download (< 5 MB)."
                         : "Best if you train on the same machine where images reside. Images remain in their original folders; exports YOLO label files, train/val path lists, and data.yaml. Instant download (< 5 MB)."}
@@ -618,8 +689,8 @@ export function SettingsPage() {
                 <label
                   className={`flex cursor-pointer items-start gap-3.5 rounded-lg border p-4 transition-colors ${
                     exportType === "full_tar"
-                      ? "border-blue-500 bg-blue-500/10"
-                      : "border-zinc-800 bg-zinc-900/60 hover:border-zinc-700 hover:bg-zinc-900"
+                      ? "border-blue-500 bg-blue-50/70"
+                      : "border-line bg-surface hover:bg-surface-raised/60"
                   } ${isExporting ? "pointer-events-none opacity-60" : ""}`}
                 >
                   <input
@@ -634,25 +705,25 @@ export function SettingsPage() {
                   <div
                     className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border ${
                       exportType === "full_tar"
-                        ? "border-blue-500/40 bg-blue-500/20 text-blue-400"
-                        : "border-zinc-700 bg-zinc-800 text-zinc-400"
+                        ? "border-blue-200 bg-blue-100 text-blue-700"
+                        : "border-line bg-bg text-muted"
                     }`}
                   >
                     <Archive className="size-4" aria-hidden="true" />
                   </div>
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-zinc-100">
+                      <span className="text-sm font-semibold text-ink">
                         Full Dataset (.tar stream)
                       </span>
                       {exportType === "full_tar" ? (
                         <CheckCircle2
-                          className="size-4 shrink-0 text-blue-400"
+                          className="size-4 shrink-0 text-blue-600"
                           aria-hidden="true"
                         />
                       ) : null}
                     </div>
-                    <p className="text-xs leading-relaxed text-zinc-400">
+                    <p className="text-xs leading-relaxed text-muted">
                       {exportFormat === "coco"
                         ? "Streams images/train/, images/val/, and annotations/instances_train.json, instances_val.json directly as an uncompressed TAR archive. Ready for immediate remote training runs."
                         : "Streams images and label pairs directly as an uncompressed TAR archive. Safe for huge datasets, collision-proof filenames, with zero memory overhead."}
@@ -661,12 +732,12 @@ export function SettingsPage() {
                 </label>
               </div>
 
-              <div className="flex flex-col gap-2.5 rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
+              <div className="flex flex-col gap-2.5 rounded-lg border border-line bg-surface p-4">
                 <div className="flex items-center justify-between gap-2">
-                  <label htmlFor="train-val-split" className="text-xs font-medium text-zinc-300">
+                  <label htmlFor="train-val-split" className="text-xs font-medium text-ink">
                     Train / Val Split
                   </label>
-                  <span className="font-mono text-xs font-semibold text-blue-400">
+                  <span className="font-mono text-xs font-semibold text-blue-600">
                     {trainSplit}% Train / {100 - trainSplit}% Val
                   </span>
                 </div>
@@ -680,7 +751,7 @@ export function SettingsPage() {
                     disabled={isExporting}
                     value={trainSplit}
                     onChange={(event) => setTrainSplit(Number(event.target.value))}
-                    className="h-2 flex-1 cursor-pointer appearance-none rounded-lg bg-zinc-800 accent-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="h-2 flex-1 cursor-pointer appearance-none rounded-lg bg-line accent-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
                   />
                   <div className="flex items-center gap-1">
                     <input
@@ -696,21 +767,21 @@ export function SettingsPage() {
                           setTrainSplit(Math.max(0, Math.min(100, Math.round(val))));
                         }
                       }}
-                      className="h-8 w-16 rounded-sm border border-zinc-700 bg-zinc-900 px-2 text-right font-mono text-xs text-zinc-100 outline-none focus-visible:border-blue-500 disabled:opacity-50"
+                      className="h-8 w-16 rounded-sm border border-line bg-bg px-2 text-right font-mono text-xs text-ink outline-none focus-visible:border-blue-600 disabled:opacity-50"
                     />
-                    <span className="font-mono text-xs text-zinc-400">%</span>
+                    <span className="font-mono text-xs text-muted">%</span>
                   </div>
                 </div>
               </div>
 
               {isExporting ? (
                 <div
-                  className="flex items-center justify-between gap-3 rounded-lg border border-blue-500/30 bg-blue-950/30 px-4 py-3 text-xs text-blue-200"
+                  className="flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900"
                   role="status"
                   aria-live="polite"
                 >
                   <div className="flex items-center gap-2.5">
-                    <Loader2 className="size-4 animate-spin text-blue-400" aria-hidden="true" />
+                    <Loader2 className="size-4 animate-spin text-blue-600" aria-hidden="true" />
                     <span>
                       Streaming{" "}
                       {exportFormat === "coco"
@@ -723,7 +794,7 @@ export function SettingsPage() {
                       …
                     </span>
                   </div>
-                  <span className="font-mono font-semibold text-blue-300">
+                  <span className="font-mono font-semibold text-blue-800">
                     {formatBytes(bytesExported)}
                   </span>
                 </div>
@@ -731,18 +802,18 @@ export function SettingsPage() {
 
               {exportError ? (
                 <p
-                  className="rounded-md border border-red-500/40 bg-red-950/40 px-3.5 py-2.5 text-xs text-red-300"
+                  className="rounded-md border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-700"
                   role="alert"
                 >
                   {exportError}
                 </p>
               ) : null}
 
-              <div className="flex items-center justify-end gap-2.5 border-t border-zinc-800/80 pt-4">
+              <div className="flex items-center justify-end gap-2.5 border-t border-line pt-4">
                 <button
                   type="button"
                   onClick={closeExportModal}
-                  className="press inline-flex h-10 items-center justify-center rounded-sm border border-zinc-700 bg-zinc-900 px-4 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+                  className="press inline-flex h-10 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-medium text-ink hover:bg-surface-raised"
                 >
                   Cancel
                 </button>
@@ -750,7 +821,7 @@ export function SettingsPage() {
                   type="button"
                   disabled={isExporting}
                   onClick={() => void handleStartExport()}
-                  className="press inline-flex h-10 items-center justify-center gap-2 rounded-sm bg-blue-600 px-5 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
+                  className="press inline-flex h-10 items-center justify-center gap-2 rounded-sm bg-blue-600 px-5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
                 >
                   {isExporting ? (
                     <>
@@ -849,7 +920,7 @@ export function SettingsPage() {
 
         {exifResult ? (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
             onClick={(event) => {
               if (event.target === event.currentTarget) {
                 setExifResult(null);
@@ -860,27 +931,27 @@ export function SettingsPage() {
               role="dialog"
               aria-modal="true"
               aria-labelledby="exif-dialog-title"
-              className="flex w-full max-w-lg flex-col gap-4 rounded-xl border border-zinc-800 bg-zinc-950 p-6 text-zinc-100 shadow-2xl"
+              className="flex w-full max-w-lg flex-col gap-4 rounded-xl border border-line bg-bg p-6 text-ink shadow-2xl"
             >
-              <div className="flex items-start justify-between gap-4 border-b border-zinc-800/80 pb-3">
+              <div className="flex items-start justify-between gap-4 border-b border-line pb-3">
                 <div className="flex items-center gap-3">
                   {exifResult.flaggedCount === 0 ? (
-                    <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400">
+                    <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-700">
                       <CheckCircle2 className="size-5" aria-hidden="true" />
                     </div>
                   ) : (
-                    <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-amber-400">
+                    <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-700">
                       <AlertTriangle className="size-5" aria-hidden="true" />
                     </div>
                   )}
                   <div className="flex flex-col gap-0.5">
                     <h2
                       id="exif-dialog-title"
-                      className="text-base font-semibold tracking-tight text-zinc-50"
+                      className="text-base font-semibold tracking-tight text-ink"
                     >
                       EXIF Orientation Diagnostic: {exifResult.projectName}
                     </h2>
-                    <p className="font-mono text-xs text-zinc-400">
+                    <p className="font-mono text-xs text-muted">
                       {exifResult.totalImages} images scanned &middot; {exifResult.flaggedCount}{" "}
                       flagged
                     </p>
@@ -890,15 +961,15 @@ export function SettingsPage() {
                   type="button"
                   onClick={() => setExifResult(null)}
                   aria-label="Close modal"
-                  className="press inline-flex size-8 items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                  className="press inline-flex size-8 items-center justify-center rounded-md text-muted hover:bg-surface-raised hover:text-ink"
                 >
                   <X className="size-4" aria-hidden="true" />
                 </button>
               </div>
 
               {exifResult.flaggedCount === 0 ? (
-                <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/20 p-4">
-                  <p className="text-sm font-medium text-emerald-300">
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+                  <p className="text-sm font-medium text-emerald-900">
                     All clear: Checked {exifResult.totalImages} images in &ldquo;
                     {exifResult.projectName}&rdquo;. 0 EXIF orientation tags detected. Coordinates
                     will align 1:1.
@@ -906,8 +977,8 @@ export function SettingsPage() {
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">
-                  <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 p-4">
-                    <p className="text-sm font-medium text-amber-300">
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+                    <p className="text-sm font-medium text-amber-900">
                       Warning: Found {exifResult.flaggedCount} of {exifResult.totalImages} images
                       with EXIF orientation tags. These images may render rotated in browsers while
                       reading unrotated dimensions during model training.
@@ -915,8 +986,8 @@ export function SettingsPage() {
                   </div>
 
                   <div className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-zinc-400">Flagged image files:</span>
-                    <div className="max-h-60 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900 p-2 font-mono text-xs text-amber-200/90 divide-y divide-zinc-800/60">
+                    <span className="text-xs font-medium text-muted">Flagged image files:</span>
+                    <div className="max-h-60 overflow-y-auto rounded-lg border border-line bg-surface p-2 font-mono text-xs text-amber-950 divide-y divide-line">
                       {exifResult.flaggedFiles.map((file) => (
                         <div key={file} className="py-1.5 px-2 break-all">
                           {file}
@@ -927,17 +998,21 @@ export function SettingsPage() {
                 </div>
               )}
 
-              <div className="flex justify-end border-t border-zinc-800/80 pt-3">
+              <div className="flex justify-end border-t border-line pt-3">
                 <button
                   type="button"
                   onClick={() => setExifResult(null)}
-                  className="press inline-flex h-9 items-center justify-center rounded-sm bg-zinc-800 px-4 text-xs font-semibold text-zinc-100 hover:bg-zinc-700"
+                  className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-semibold text-ink hover:bg-surface-raised"
                 >
                   Close
                 </button>
               </div>
             </div>
           </div>
+        ) : null}
+
+        {healthResult ? (
+          <DatasetHealthModal health={healthResult} onClose={() => setHealthResult(null)} />
         ) : null}
       </main>
     </div>

@@ -10,7 +10,7 @@ export function AppHeader({
   current,
   meta,
 }: {
-  current: "label" | "photos" | "classes" | "settings";
+  current: "label" | "photos" | "classes" | "settings" | "review";
   meta?: ReactNode;
 }) {
   const { username, setUsername } = useSession();
@@ -42,6 +42,16 @@ export function AppHeader({
         <Link to="/" className={item("label")}>
           Label
         </Link>
+        <a
+          href="/?mode=review"
+          className={
+            current === "review"
+              ? "inline-flex h-11 items-center rounded-sm bg-amber-600 px-3 text-sm font-medium text-white shadow-xs"
+              : "inline-flex h-11 items-center rounded-sm px-3 text-sm font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
+          }
+        >
+          Review QA
+        </a>
         <Link to="/photos" className={item("photos")}>
           Photos
         </Link>

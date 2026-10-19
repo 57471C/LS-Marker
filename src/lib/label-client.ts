@@ -1,5 +1,5 @@
 export type ClassRow = { id: number; ic: string; des: string; color: string };
-export type PhotoStatus = "open" | "incomplete" | "complete";
+export type PhotoStatus = "open" | "incomplete" | "complete" | "approved";
 export type ImageRow = {
   id?: number;
   name: string;
@@ -10,6 +10,8 @@ export type ImageRow = {
   completedAt: string | null;
   lockedBy?: string | null;
   lockedAt?: string | null;
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
 };
 export type Box = { classId: number; x: number; y: number; w: number; h: number };
 
@@ -32,6 +34,7 @@ export type Project = {
   folderError: string | null;
   totalPhotos?: number;
   completePhotos?: number;
+  approvedPhotos?: number;
 };
 
 function api(path: string): string {
@@ -60,6 +63,7 @@ async function asJson<T>(res: Response): Promise<T> {
 }
 
 export type ExportFormat = "yolo" | "coco";
+export type ExportScope = "all" | "approved";
 
 export type DatasetExportType = "labels_only" | "full_tar";
 export type YoloExportType = DatasetExportType;
@@ -69,6 +73,7 @@ export type DatasetExportOptions = {
   exportType: DatasetExportType;
   format?: ExportFormat;
   trainSplit?: number;
+  scope?: ExportScope;
   signal?: AbortSignal;
   onProgress?: (bytesLoaded: number) => void;
 };
@@ -80,12 +85,14 @@ export function datasetExportUrl(
   exportType: DatasetExportType,
   trainSplit = 80,
   format: ExportFormat = "yolo",
+  scope: ExportScope = "all",
 ): string {
   const params = new URLSearchParams({
     id: String(projectId),
     type: exportType,
     split: String(Math.round(trainSplit)),
     format,
+    scope,
   });
   return api(`/api/export?${params.toString()}`);
 }
@@ -94,21 +101,33 @@ export function yoloExportUrl(
   projectId: number,
   exportType: YoloExportType,
   trainSplit = 80,
+  scope: ExportScope = "all",
 ): string {
-  return datasetExportUrl(projectId, exportType, trainSplit, "yolo");
+  return datasetExportUrl(projectId, exportType, trainSplit, "yolo", scope);
 }
 
 export function cocoExportUrl(
   projectId: number,
   exportType: DatasetExportType,
   trainSplit = 80,
+  scope: ExportScope = "all",
 ): string {
-  return datasetExportUrl(projectId, exportType, trainSplit, "coco");
+  return datasetExportUrl(projectId, exportType, trainSplit, "coco", scope);
 }
 
 export async function downloadDatasetExport(options: DatasetExportOptions): Promise<void> {
-  const { projectId, exportType, format = "yolo", trainSplit = 80, signal, onProgress } = options;
-  const res = await fetch(datasetExportUrl(projectId, exportType, trainSplit, format), { signal });
+  const {
+    projectId,
+    exportType,
+    format = "yolo",
+    trainSplit = 80,
+    scope = "all",
+    signal,
+    onProgress,
+  } = options;
+  const res = await fetch(datasetExportUrl(projectId, exportType, trainSplit, format, scope), {
+    signal,
+  });
   if (!res.ok) {
     const message = await failMessage(res);
     if (res.status === 401 && message === "Sign in" && typeof window !== "undefined") {
@@ -477,4 +496,84 @@ export async function checkProjectExif(projectId: number): Promise<ExifCheckResu
     body: JSON.stringify({ id: projectId }),
   });
   return asJson<ExifCheckResult>(res);
+}
+
+export type ReviewImageItem = {
+  id: number;
+  projectId: number;
+  name: string;
+  filePath: string;
+  completedAt: string | null;
+  completedBy: string | null;
+  boxes: Box[];
+};
+
+export type ReviewNextResult = {
+  image: ReviewImageItem | null;
+  pendingCount: number;
+};
+
+export async function fetchNextReviewImage(projectId?: number): Promise<ReviewNextResult> {
+  const qs = projectId ? `?project_id=${projectId}` : "";
+  const res = await fetch(api(`/api/images/review/next${qs}`));
+  return asJson<ReviewNextResult>(res);
+}
+
+export type ReviewActionPayload = {
+  project_id?: number;
+  image_id?: number;
+  name?: string;
+  action: "approve" | "reject";
+  boxes?: Box[];
+};
+
+export type ReviewActionResult = {
+  ok: boolean;
+  action: "approve" | "reject";
+  nextImage: ReviewImageItem | null;
+  pendingCount: number;
+};
+
+export async function submitReviewAction(
+  payload: ReviewActionPayload,
+): Promise<ReviewActionResult> {
+  const res = await fetch(api("/api/images/review/action"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return asJson<ReviewActionResult>(res);
+}
+
+export type ClassHealthStatus = "healthy" | "low" | "missing";
+
+export type ClassHealthStat = {
+  id: number;
+  name: string;
+  description?: string;
+  color?: string;
+  count: number;
+  percentage: number;
+  status: ClassHealthStatus;
+};
+
+export type ProjectHealthSummary = {
+  totalImages: number;
+  completedImages: number;
+  unlabeledImages: number;
+  cleanImages: number;
+  totalBoxes: number;
+};
+
+export type ProjectHealthResult = {
+  projectName: string;
+  projectId?: number;
+  summary: ProjectHealthSummary;
+  classes: ClassHealthStat[];
+};
+
+export async function fetchProjectHealth(projectId?: number): Promise<ProjectHealthResult> {
+  const qs = projectId ? `?id=${projectId}` : "";
+  const res = await fetch(api(`/api/project/health${qs}`));
+  return asJson<ProjectHealthResult>(res);
 }

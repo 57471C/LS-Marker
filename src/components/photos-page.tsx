@@ -1,4 +1,3 @@
-import { Link } from "@tanstack/react-router";
 import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/app-header";
@@ -10,7 +9,7 @@ const field =
   "h-11 w-full rounded-sm border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
 type OwnerFilter = "any" | "mine" | "free" | "taken";
-type StatusFilter = "any" | "open" | "incomplete" | "complete";
+type StatusFilter = "any" | "open" | "incomplete" | "complete" | "approved";
 type SortField = "file" | "labels" | "owner" | "held";
 type SortDirection = "asc" | "desc";
 
@@ -67,6 +66,7 @@ export function PhotosPage() {
       if (status === "open" && image.status !== "open") return false;
       if (status === "incomplete" && image.status !== "incomplete") return false;
       if (status === "complete" && image.status !== "complete") return false;
+      if (status === "approved" && image.status !== "approved") return false;
       if (owner === "mine" && image.claimedBy !== username) return false;
       if (owner === "free" && image.claimedBy) return false;
       if (owner === "taken" && (!image.claimedBy || image.claimedBy === username)) return false;
@@ -81,7 +81,8 @@ export function PhotosPage() {
       if (sortField === "file") {
         cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
       } else if (sortField === "labels") {
-        const rank = (s: PhotoStatus) => (s === "complete" ? 2 : s === "incomplete" ? 1 : 0);
+        const rank = (s: PhotoStatus) =>
+          s === "approved" ? 3 : s === "complete" ? 2 : s === "incomplete" ? 1 : 0;
         cmp = rank(a.status) - rank(b.status);
       } else if (sortField === "owner") {
         const aOwner = a.claimedBy ?? "";
@@ -111,6 +112,7 @@ export function PhotosPage() {
   const openCount = (images ?? []).filter((image) => image.status === "open").length;
   const incompleteCount = (images ?? []).filter((image) => image.status === "incomplete").length;
   const completeCount = (images ?? []).filter((image) => image.status === "complete").length;
+  const approvedCount = (images ?? []).filter((image) => image.status === "approved").length;
   const mineCount = (images ?? []).filter((image) => image.claimedBy === username).length;
 
   function remember(name: string) {
@@ -139,9 +141,15 @@ export function PhotosPage() {
             <p className="text-sm text-muted">
               {images == null
                 ? "Loading"
-                : `${images.length} scanned · ${completeCount} complete · ${openCount} open · ${incompleteCount} incomplete · ${mineCount} yours`}
+                : `${images.length} scanned · ${completeCount} complete (${approvedCount} approved) · ${openCount} open · ${incompleteCount} incomplete · ${mineCount} yours`}
             </p>
           </div>
+          <a
+            href="/?mode=review"
+            className="press inline-flex h-10 items-center justify-center gap-1.5 rounded-sm bg-amber-600 px-3.5 text-xs font-semibold text-white shadow-xs hover:bg-amber-700"
+          >
+            Review QA
+          </a>
         </div>
         {error ? (
           <p className="rounded-sm border border-line bg-surface px-3 py-2 text-sm" role="alert">
@@ -175,6 +183,7 @@ export function PhotosPage() {
                   ["open", "Open"],
                   ["incomplete", "Incomplete"],
                   ["complete", "Complete"],
+                  ["approved", "Approved"],
                 ] as const
               ).map(([key, label]) => (
                 <FilterButton
@@ -256,21 +265,25 @@ export function PhotosPage() {
             </thead>
             <tbody className="divide-y divide-line">
               {shown.map((image) => {
+                const isApproved = image.status === "approved";
                 const isComplete = image.status === "complete";
                 const isIncomplete = image.status === "incomplete";
+                const targetUrl = isApproved || isComplete ? "/?mode=review" : "/";
                 return (
                   <tr
                     key={image.name}
                     className={`transition-colors ${
-                      isComplete
-                        ? "bg-emerald-500/5 hover:bg-emerald-500/10"
-                        : isIncomplete
-                          ? "bg-orange-500/5 hover:bg-orange-500/10"
-                          : "bg-amber-500/5 hover:bg-amber-500/10"
+                      isApproved
+                        ? "bg-purple-500/5 hover:bg-purple-500/10"
+                        : isComplete
+                          ? "bg-emerald-500/5 hover:bg-emerald-500/10"
+                          : isIncomplete
+                            ? "bg-orange-500/5 hover:bg-orange-500/10"
+                            : "bg-amber-500/5 hover:bg-amber-500/10"
                     }`}
                   >
                     <td className="py-2.5 pl-3 pr-2">
-                      <Link to="/" onClick={() => remember(image.name)} className="block">
+                      <a href={targetUrl} onClick={() => remember(image.name)} className="block">
                         <img
                           src={imageSrc(image.name)}
                           alt=""
@@ -278,19 +291,23 @@ export function PhotosPage() {
                           decoding="async"
                           className="size-12 rounded-sm bg-ink object-cover"
                         />
-                      </Link>
+                      </a>
                     </td>
                     <td className="py-2.5 pr-3">
-                      <Link
-                        to="/"
+                      <a
+                        href={targetUrl}
                         onClick={() => remember(image.name)}
                         className="block truncate font-mono text-sm text-ink hover:underline"
                       >
                         {image.name}
-                      </Link>
+                      </a>
                     </td>
                     <td className="py-2.5 pr-3">
-                      {isComplete ? (
+                      {isApproved ? (
+                        <span className="inline-flex items-center rounded-sm bg-purple-500/15 px-2 py-0.5 text-xs font-medium text-purple-800">
+                          Approved
+                        </span>
+                      ) : isComplete ? (
                         <span className="inline-flex items-center rounded-sm bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-800">
                           Complete
                         </span>
