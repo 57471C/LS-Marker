@@ -2,6 +2,8 @@ export type ClassRow = { id: number; ic: string; des: string; color: string };
 export type PhotoStatus = "open" | "incomplete" | "complete" | "approved";
 export type ImageRow = {
   id?: number;
+  project_id?: number;
+  file_path?: string;
   name: string;
   labelled: boolean;
   claimedBy: string | null;
@@ -10,9 +12,14 @@ export type ImageRow = {
   completedAt: string | null;
   lockedBy?: string | null;
   lockedAt?: string | null;
+  locked_by?: string | null;
+  locked_at?: string | null;
   reviewedBy?: string | null;
   reviewedAt?: string | null;
   owner?: string | null;
+  is_claimed?: boolean;
+  held_by?: string | null;
+  held_minutes_remaining?: number;
 };
 export type Box = { classId: number; x: number; y: number; w: number; h: number };
 
@@ -367,11 +374,45 @@ export async function claimImage(
   claimedAt: string;
   status: PhotoStatus;
   completedAt: string | null;
+  success?: boolean;
+  ok?: boolean;
+  locked_by?: string;
+  locked_at?: string;
+  is_claimed?: boolean;
+  held_by?: string | null;
+  held_minutes_remaining?: number;
 }> {
   const res = await fetch(api("/api/claim"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name, takeover, action: "claim" }),
+  });
+  return asJson(res);
+}
+
+export async function claimImageById(
+  id: number,
+  takeover = false,
+): Promise<{
+  success: boolean;
+  ok: boolean;
+  image?: unknown;
+  id: number;
+  name: string;
+  file_path?: string;
+  claimedBy: string;
+  claimedAt: string;
+  locked_by?: string;
+  locked_at?: string;
+  status: PhotoStatus;
+  is_claimed?: boolean;
+  held_by?: string | null;
+  held_minutes_remaining?: number;
+}> {
+  const res = await fetch(api(`/api/images/${id}/claim`), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ takeover }),
   });
   return asJson(res);
 }

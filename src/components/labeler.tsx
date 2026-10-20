@@ -15,6 +15,7 @@ import { LabelStage, newId, round6, type StageBox } from "@/components/label-sta
 import { classFill } from "@/lib/class-color";
 import {
   claimImage,
+  claimImageById,
   completeImage,
   fetchCatalogue,
   fetchLabel,
@@ -25,7 +26,6 @@ import {
   releaseIncomplete,
   saveLabel,
   submitReviewAction,
-  unlockImage,
   type Catalogue,
   type ClassRow,
   type ImageRow,
@@ -440,29 +440,6 @@ export function Labeler() {
     };
   }, [ready, folderOk, imageName, folderKey, current?.status, isReviewMode]);
 
-  useEffect(() => {
-    if (
-      !current?.name ||
-      current.status === "complete" ||
-      current.status === "approved" ||
-      isReviewMode
-    )
-      return;
-    const name = current.name;
-    const onExit = () => {
-      const body = JSON.stringify({ name });
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon("/api/images/unlock", new Blob([body], { type: "application/json" }));
-      }
-    };
-    window.addEventListener("beforeunload", onExit);
-    window.addEventListener("pagehide", onExit);
-    return () => {
-      window.removeEventListener("beforeunload", onExit);
-      window.removeEventListener("pagehide", onExit);
-    };
-  }, [current?.name, current?.status, isReviewMode]);
-
   function labelFor(classId: number): string {
     const row = classes.find((item) => item.id === classId);
     return row ? row.ic : `#${classId}`;
@@ -532,8 +509,6 @@ export function Labeler() {
     if (dirty) {
       const ok = await save();
       if (!ok) return;
-    } else if (current && current.status !== "complete" && current.claimedBy === username) {
-      unlockImage(current.name).catch(() => {});
     }
     setIndex((value) => {
       const currentIndex = Math.min(value, images.length - 1);
@@ -541,9 +516,54 @@ export function Labeler() {
     });
   }
 
+  async function ensureClaimed(): Promise<boolean> {
+    if (isReviewMode || !current) return true;
+    if (current.claimedBy === username) return true;
+    try {
+      let res: {
+        claimedBy: string;
+        claimedAt: string;
+        status?: PhotoStatus;
+        completedAt?: string | null;
+      };
+      if (current.id) {
+        res = await claimImageById(current.id);
+      } else {
+        res = await claimImage(current.name);
+      }
+      await refreshClaims((image) => ({
+        ...image,
+        claimedBy: res.claimedBy,
+        claimedAt: res.claimedAt,
+        lockedBy: res.claimedBy,
+        lockedAt: res.claimedAt,
+        status: (res.status as PhotoStatus) ?? image.status,
+        completedAt: (res as { completedAt?: string | null }).completedAt ?? image.completedAt,
+        is_claimed: true,
+        held_by: res.claimedBy,
+        held_minutes_remaining: 15,
+      }));
+      return true;
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Image claimed by another user");
+      return false;
+    }
+  }
+
+  function handleBoxesChange(nextBoxes: StageBox[]) {
+    if (lockedRef.current) return;
+    if (!isReviewMode && current && current.claimedBy !== username) {
+      void ensureClaimed();
+    }
+    setBoxes(nextBoxes);
+  }
+
   function removeSelected() {
     if (lockedRef.current) return;
     if (!selectedKey) return;
+    if (!isReviewMode && current && current.claimedBy !== username) {
+      void ensureClaimed();
+    }
     setBoxes((prev) => prev.filter((box) => box.key !== selectedKey));
     setSelectedKey(null);
   }
@@ -552,6 +572,9 @@ export function Labeler() {
     if (lockedRef.current) return;
     const last = boxes.at(-1);
     if (!last) return;
+    if (!isReviewMode && current && current.claimedBy !== username) {
+      void ensureClaimed();
+    }
     setBoxes((prev) => prev.filter((box) => box.key !== last.key));
     if (selectedKey === last.key) setSelectedKey(null);
   }
@@ -562,6 +585,9 @@ export function Labeler() {
 
   function nudge(key: string, fast: boolean): boolean {
     if (lockedRef.current || !selectedKey) return false;
+    if (!isReviewMode && current && current.claimedBy !== username) {
+      void ensureClaimed();
+    }
     const step = fast ? 0.01 : 0.002;
     const dx = key === "ArrowLeft" ? -step : key === "ArrowRight" ? step : 0;
     const dy = key === "ArrowUp" ? -step : key === "ArrowDown" ? step : 0;
@@ -583,6 +609,9 @@ export function Labeler() {
     if (lockedRef.current) return;
     const source = boxes.find((box) => box.key === selectedKey) ?? boxes.at(-1);
     if (!source) return;
+    if (!isReviewMode && current && current.claimedBy !== username) {
+      void ensureClaimed();
+    }
     let x = source.x + 0.02;
     let y = source.y + 0.02;
     if (x + source.w / 2 > 1 || y + source.h / 2 > 1) {
@@ -661,6 +690,9 @@ export function Labeler() {
 
   function chooseClass(id: number) {
     if (lockedRef.current) return;
+    if (!isReviewMode && current && current.claimedBy !== username) {
+      void ensureClaimed();
+    }
     setActiveClassId(id);
     if (!selectedKey) return;
     setBoxes((prev) =>
@@ -950,13 +982,28 @@ export function Labeler() {
     if (!current) return;
     setBusy(true);
     try {
-      const res = await claimImage(current.name, takeover);
+      let res: {
+        claimedBy: string;
+        claimedAt: string;
+        status?: PhotoStatus;
+        completedAt?: string | null;
+      };
+      if (current.id) {
+        res = await claimImageById(current.id, takeover);
+      } else {
+        res = await claimImage(current.name, takeover);
+      }
       await refreshClaims((image) => ({
         ...image,
         claimedBy: res.claimedBy,
         claimedAt: res.claimedAt,
-        status: res.status,
-        completedAt: res.completedAt,
+        lockedBy: res.claimedBy,
+        lockedAt: res.claimedAt,
+        status: (res.status as PhotoStatus) ?? image.status,
+        completedAt: (res as { completedAt?: string | null }).completedAt ?? image.completedAt,
+        is_claimed: true,
+        held_by: res.claimedBy,
+        held_minutes_remaining: 15,
       }));
       setConfirmTakeover(false);
       setStatus("Claimed");
@@ -1132,7 +1179,7 @@ export function Labeler() {
                   labelFor={labelFor}
                   colorFor={colorFor}
                   readOnly={locked}
-                  onChange={setBoxes}
+                  onChange={handleBoxesChange}
                   onSelect={selectBox}
                 />
                 <div className="pointer-events-none absolute top-2 left-2 z-30 flex gap-1">
@@ -1388,6 +1435,9 @@ export function Labeler() {
                           disabled={locked}
                           aria-label={`Delete box ${boxIndex + 1}`}
                           onClick={() => {
+                            if (!isReviewMode && current && current.claimedBy !== username) {
+                              void ensureClaimed();
+                            }
                             setBoxes((prev) => prev.filter((item) => item.key !== box.key));
                             if (selectedKey === box.key) setSelectedKey(null);
                           }}

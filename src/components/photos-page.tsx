@@ -22,18 +22,43 @@ type SortDirection = "asc" | "desc";
 
 const PAGE_SIZE = 40;
 
-function heldFor(claimedAt: string | null, completedAt: string | null): string {
-  if (!claimedAt) return "—";
-  const then = new Date(claimedAt).getTime();
-  if (Number.isNaN(then)) return "—";
-  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
-  if (Number.isNaN(end) || end < then) return "—";
-  const mins = Math.round((end - then) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.round(mins / 60);
-  if (hours < 48) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
+function parseUtcTime(dateStr: string | null | undefined): number {
+  if (!dateStr) return 0;
+  const str = String(dateStr).trim();
+  if (!str) return 0;
+  if (str.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(str)) {
+    return new Date(str).getTime();
+  }
+  const iso = str.includes("T") ? `${str}Z` : `${str.replace(" ", "T")}Z`;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? new Date(str).getTime() : t;
+}
+
+function isLeaseActive(image: ImageRow): boolean {
+  if (typeof image.is_claimed === "boolean") return image.is_claimed;
+  const lockedAt = image.lockedAt || image.claimedAt || image.locked_at;
+  const holder = image.held_by || image.lockedBy || image.claimedBy || image.locked_by;
+  if (!holder || !lockedAt) return false;
+  const time = parseUtcTime(lockedAt);
+  if (!time) return false;
+  return time > Date.now() - 15 * 60 * 1000;
+}
+
+function getActiveHolder(image: ImageRow): string | null {
+  if (!isLeaseActive(image)) return null;
+  return image.held_by || image.lockedBy || image.claimedBy || image.locked_by || null;
+}
+
+function getHeldMinutesRemaining(image: ImageRow): number {
+  if (!isLeaseActive(image)) return 0;
+  if (typeof image.held_minutes_remaining === "number") {
+    return image.held_minutes_remaining;
+  }
+  const lockedAt = image.lockedAt || image.claimedAt || image.locked_at;
+  if (!lockedAt) return 0;
+  const time = parseUtcTime(lockedAt);
+  if (!time) return 0;
+  return Math.max(0, Math.ceil((time + 15 * 60 * 1000 - Date.now()) / 60000));
 }
 
 export function PhotosPage() {
@@ -95,9 +120,10 @@ export function PhotosPage() {
       if (status === "incomplete" && image.status !== "incomplete") return false;
       if (status === "complete" && image.status !== "complete") return false;
       if (status === "approved" && image.status !== "approved") return false;
-      if (owner === "mine" && image.claimedBy !== username) return false;
-      if (owner === "free" && image.claimedBy) return false;
-      if (owner === "taken" && (!image.claimedBy || image.claimedBy === username)) return false;
+      const holder = getActiveHolder(image);
+      if (owner === "mine" && (!holder || holder !== username)) return false;
+      if (owner === "free" && holder) return false;
+      if (owner === "taken" && (!holder || holder === username)) return false;
       return true;
     });
   }, [images, query, owner, status, username]);
@@ -117,14 +143,7 @@ export function PhotosPage() {
         const bOwner = b.owner ?? "";
         cmp = aOwner.localeCompare(bOwner, undefined, { sensitivity: "base" });
       } else if (sortField === "held") {
-        const getDuration = (item: ImageRow) => {
-          if (!item.claimedAt) return -1;
-          const then = new Date(item.claimedAt).getTime();
-          if (Number.isNaN(then)) return -1;
-          const end = item.completedAt ? new Date(item.completedAt).getTime() : Date.now();
-          return end - then;
-        };
-        cmp = getDuration(a) - getDuration(b);
+        cmp = getHeldMinutesRemaining(a) - getHeldMinutesRemaining(b);
       }
       if (cmp === 0) {
         cmp = a.name.localeCompare(b.name, undefined, { numeric: true });
@@ -141,7 +160,7 @@ export function PhotosPage() {
   const incompleteCount = (images ?? []).filter((image) => image.status === "incomplete").length;
   const completeCount = (images ?? []).filter((image) => image.status === "complete").length;
   const approvedCount = (images ?? []).filter((image) => image.status === "approved").length;
-  const mineCount = (images ?? []).filter((image) => image.claimedBy === username).length;
+  const mineCount = (images ?? []).filter((image) => getActiveHolder(image) === username).length;
 
   async function handleDeletePhoto(item: ImageRow) {
     if (!item.id) return;
@@ -383,20 +402,38 @@ export function PhotosPage() {
                       )}
                     </td>
                     <td className="truncate py-2.5 pr-3 font-mono text-xs">
-                      {image.claimedBy ? (
-                        image.claimedBy === username ? (
-                          <span className="inline-flex items-center rounded-sm bg-ink/10 px-1.5 py-0.5 font-medium text-ink">
-                            {image.claimedBy} (you)
+                      {(() => {
+                        const activeHolder = getActiveHolder(image);
+                        const isMine = Boolean(activeHolder && activeHolder === username);
+                        const isTaken = Boolean(activeHolder && activeHolder !== username);
+                        if (isMine) {
+                          return (
+                            <span className="inline-flex items-center rounded-sm bg-blue-500/15 px-2 py-0.5 text-xs font-semibold text-blue-700 dark:text-blue-300">
+                              Mine
+                            </span>
+                          );
+                        }
+                        if (isTaken) {
+                          return (
+                            <span className="inline-flex items-center rounded-sm bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+                              Taken ({activeHolder})
+                            </span>
+                          );
+                        }
+                        return (
+                          <span className="inline-flex items-center rounded-sm bg-slate-500/10 px-2 py-0.5 text-xs font-normal text-muted">
+                            Free
                           </span>
-                        ) : (
-                          <span className="text-ink">{image.claimedBy}</span>
-                        )
-                      ) : (
-                        <span className="text-muted">Free</span>
-                      )}
+                        );
+                      })()}
                     </td>
                     <td className="hidden py-2.5 pr-3 text-xs text-muted sm:table-cell">
-                      {heldFor(image.claimedAt, image.completedAt)}
+                      {(() => {
+                        const activeHolder = getActiveHolder(image);
+                        if (!activeHolder) return "—";
+                        const mins = getHeldMinutesRemaining(image);
+                        return `${mins}m`;
+                      })()}
                     </td>
                     {isAdmin ? (
                       <td className="py-2.5 pr-3 text-right">

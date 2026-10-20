@@ -252,7 +252,7 @@ export function SettingsPage() {
   return (
     <div className="flex min-h-dvh flex-col bg-bg text-ink">
       <AppHeader current="settings" />
-      <main className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-4 py-6">
+      <main className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-8 px-4 py-6">
         <div className="flex flex-col gap-1">
           <h1 className="text-lg font-medium tracking-tight">Settings</h1>
           <p className="max-w-xl text-sm text-muted">
@@ -328,7 +328,7 @@ export function SettingsPage() {
                           </div>
                         </td>
                         <td
-                          className="max-w-xs truncate px-4 py-3 font-mono text-xs text-muted"
+                          className="max-w-md truncate px-4 py-3 font-mono text-xs text-muted"
                           title={p.resolvedFolder}
                         >
                           {p.folder}

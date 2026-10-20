@@ -2212,6 +2212,26 @@ function createProject(db, root, name, folder) {
 }
 
 /**
+ * Safely parse SQLite or ISO UTC date-time string to milliseconds.
+ * SQLite's CURRENT_TIMESTAMP is UTC without timezone ("YYYY-MM-DD HH:MM:SS").
+ * Standard new Date() in Node treats space-separated dates without timezone as local time,
+ * causing massive drift in non-UTC timezones.
+ * @param {string | null | undefined} dateStr
+ * @returns {number}
+ */
+export function parseUtcTime(dateStr) {
+  if (!dateStr) return 0;
+  const str = String(dateStr).trim();
+  if (!str) return 0;
+  if (str.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(str)) {
+    return new Date(str).getTime();
+  }
+  const iso = str.includes("T") ? `${str}Z` : `${str.replace(" ", "T")}Z`;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? new Date(str).getTime() : t;
+}
+
+/**
  * @param {string} root
  * @param {{ id: number, name: string, folder: string }} project
  */
@@ -2240,12 +2260,13 @@ export async function catalogue(root, project) {
         isApproved ||
         row.status === "completed" ||
         fs.existsSync(labelFileFor(resolveInside(resolvedFolder, row.file_path)));
-      const isLocked =
-        !isComplete &&
-        Boolean(row.locked_by) &&
-        new Date(row.locked_at).getTime() > nowTime - 15 * 60 * 1000;
-      const activeHolder = isLocked ? row.locked_by : null;
-      const activeLockedAt = isLocked ? row.locked_at : null;
+      const lockedTime = parseUtcTime(row.locked_at);
+      const isClaimed = Boolean(row.locked_by) && lockedTime > nowTime - 15 * 60 * 1000;
+      const heldMinutes = isClaimed
+        ? Math.max(0, Math.ceil((lockedTime + 15 * 60 * 1000 - nowTime) / 60000))
+        : 0;
+      const activeHolder = isClaimed ? row.locked_by : null;
+      const activeLockedAt = isClaimed ? row.locked_at : null;
       const status = isApproved
         ? "approved"
         : isComplete
@@ -2255,7 +2276,10 @@ export async function catalogue(root, project) {
             : "open";
       return {
         id: row.id,
+        project_id: row.project_id,
+        projectId: row.project_id,
         name: row.file_path,
+        file_path: row.file_path,
         labelled: isComplete,
         claimedBy: activeHolder,
         claimedAt: activeLockedAt,
@@ -2263,9 +2287,14 @@ export async function catalogue(root, project) {
         completedAt: row.completed_at || null,
         lockedBy: activeHolder,
         lockedAt: activeLockedAt,
+        locked_by: row.locked_by || null,
+        locked_at: row.locked_at || null,
         reviewedBy: row.reviewed_by || null,
         reviewedAt: row.reviewed_at || null,
         owner: row.owner || null,
+        is_claimed: isClaimed,
+        held_by: activeHolder,
+        held_minutes_remaining: heldMinutes,
       };
     });
   }
@@ -2463,62 +2492,119 @@ async function guard(req, res, url, root, method, pathname) {
     return true;
   }
 
-  if (pathname === "/api/images/lock" && method === "POST") {
+  const claimImageMatch = pathname.match(/^\/api\/images\/(\d+)\/claim$/);
+  if (
+    (pathname === "/api/images/lock" ||
+      pathname === "/api/images/claim" ||
+      Boolean(claimImageMatch)) &&
+    method === "POST"
+  ) {
     if (!user) throw new HttpError(401, "Sign in");
-    const project = requireProject(db, req);
-    syncProjectImages(db, root, project);
     const body = await readBody(req);
-    const imageId = Number(body.id);
+    const imageId = claimImageMatch ? Number(claimImageMatch[1]) : Number(body.id);
     const name = typeof body.name === "string" ? body.name : "";
+    let project = null;
+    if (Number.isInteger(imageId) && imageId > 0) {
+      const imgRow = db.prepare("SELECT project_id FROM images WHERE id = ?").get(imageId);
+      if (imgRow) {
+        project = db
+          .prepare("SELECT id, name, folder FROM projects WHERE id = ?")
+          .get(imgRow.project_id);
+      }
+    }
+    if (!project) {
+      project = requireProject(db, req);
+    }
+    syncProjectImages(db, root, project);
 
-    const lockQuery = `
-      UPDATE images
-      SET 
-        locked_by = :userId,
-        locked_at = CURRENT_TIMESTAMP
-      WHERE id = (
-        SELECT id FROM images
-        WHERE project_id = :projectId
-          AND (id = :imageId OR file_path = :name)
-          AND (locked_by IS NULL OR locked_by = :userId OR locked_at < datetime('now', '-15 minutes'))
-        LIMIT 1
-      )
-      RETURNING *;
-    `;
-    const locked = db.prepare(lockQuery).get({
-      userId: user.username,
-      projectId: project.id,
-      imageId: Number.isInteger(imageId) ? imageId : -1,
-      name,
-    });
+    let locked = null;
+    if (body.takeover && admin) {
+      if (Number.isInteger(imageId) && imageId > 0) {
+        locked = db
+          .prepare(
+            "UPDATE images SET locked_by = :userId, locked_at = CURRENT_TIMESTAMP WHERE id = :imageId RETURNING *",
+          )
+          .get({ userId: user.username, imageId });
+      } else if (name) {
+        locked = db
+          .prepare(
+            "UPDATE images SET locked_by = :userId, locked_at = CURRENT_TIMESTAMP WHERE project_id = :projectId AND file_path = :name RETURNING *",
+          )
+          .get({ userId: user.username, projectId: project.id, name });
+      }
+    }
+
+    if (!locked) {
+      const lockQuery = `
+        UPDATE images
+        SET 
+          locked_by = :userId,
+          locked_at = CURRENT_TIMESTAMP
+        WHERE id = (
+          SELECT id FROM images
+          WHERE (project_id = :projectId OR :projectId = -1)
+            AND (id = :imageId OR file_path = :name)
+            AND (locked_by IS NULL OR locked_by = :userId OR locked_at < datetime('now', '-15 minutes'))
+          LIMIT 1
+        )
+        RETURNING *;
+      `;
+      locked = db.prepare(lockQuery).get({
+        userId: user.username,
+        projectId: project ? project.id : -1,
+        imageId: Number.isInteger(imageId) && imageId > 0 ? imageId : -1,
+        name,
+      });
+    }
+
     if (!locked) {
       const existing = db
         .prepare(
-          "SELECT locked_by, locked_at FROM images WHERE project_id = ? AND (id = ? OR file_path = ?)",
+          "SELECT locked_by, locked_at FROM images WHERE (project_id = :projectId OR :projectId = -1) AND (id = :imageId OR file_path = :name)",
         )
-        .get(project.id, Number.isInteger(imageId) ? imageId : -1, name);
+        .get({
+          projectId: project ? project.id : -1,
+          imageId: Number.isInteger(imageId) && imageId > 0 ? imageId : -1,
+          name: name || "",
+        });
       if (existing?.locked_by && existing.locked_by !== user.username) {
-        throw new HttpError(409, `Locked by ${existing.locked_by}`);
+        const lockedTime = parseUtcTime(existing.locked_at);
+        const isStillValid = lockedTime > Date.now() - 15 * 60 * 1000;
+        if (isStillValid) {
+          send(res, 409, { error: `Image currently claimed by ${existing.locked_by}` });
+          return true;
+        }
       }
       throw new HttpError(404, "Image not found");
     }
-    db.prepare(`
-      INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
-      VALUES (?, ?, ?, ?, 'open', NULL)
-      ON CONFLICT(project_id, rel_path) DO UPDATE SET
-        claimed_by = excluded.claimed_by,
-        claimed_at = excluded.claimed_at,
-        status = 'open',
-        completed_at = NULL
-    `).run(project.id, locked.file_path, user.username, locked.locked_at);
+
+    if (project) {
+      db.prepare(`
+        INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+        VALUES (?, ?, ?, ?, 'open', NULL)
+        ON CONFLICT(project_id, rel_path) DO UPDATE SET
+          claimed_by = excluded.claimed_by,
+          claimed_at = excluded.claimed_at,
+          status = 'open',
+          completed_at = NULL
+      `).run(project.id, locked.file_path, user.username, locked.locked_at);
+    }
 
     send(res, 200, {
+      success: true,
       ok: true,
       image: locked,
       id: locked.id,
       name: locked.file_path,
+      file_path: locked.file_path,
       claimedBy: locked.locked_by,
       claimedAt: locked.locked_at,
+      locked_by: locked.locked_by,
+      locked_at: locked.locked_at,
+      status: locked.status,
+      is_claimed: true,
+      held_by: locked.locked_by,
+      held_minutes_remaining: 15,
     });
     return true;
   }
@@ -2854,10 +2940,11 @@ async function guard(req, res, url, root, method, pathname) {
         return true;
       }
 
-      const isExpired =
-        row?.claimed_at && new Date(row.claimed_at).getTime() < Date.now() - 15 * 60 * 1000;
+      const claimedTime = parseUtcTime(row?.claimed_at);
+      const isExpired = !claimedTime || claimedTime < Date.now() - 15 * 60 * 1000;
       if (row?.claimed_by && row.claimed_by !== user.username && !body.takeover && !isExpired) {
-        throw new HttpError(409, `Claimed by ${row.claimed_by}`);
+        send(res, 409, { error: `Image currently claimed by ${row.claimed_by}` });
+        return true;
       }
       db.prepare(
         `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
@@ -2872,11 +2959,18 @@ async function guard(req, res, url, root, method, pathname) {
         "UPDATE images SET locked_by = ?, locked_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
       ).run(user.username, project.id, name);
       send(res, 200, {
+        success: true,
+        ok: true,
         name,
         claimedBy: user.username,
         claimedAt: now,
+        locked_by: user.username,
+        locked_at: now,
         status: "open",
         completedAt: null,
+        is_claimed: true,
+        held_by: user.username,
+        held_minutes_remaining: 15,
       });
       return true;
     }
@@ -3281,6 +3375,46 @@ export async function handle(req, res, url, root) {
     if (!Number.isInteger(imageId)) throw new HttpError(400, "Bad image id");
     const result = deleteProjectImage(db, root, imageId);
     send(res, 200, result);
+    return;
+  }
+
+  const projectPhotosMatch = pathname.match(/^\/api\/projects\/(\d+)\/photos$/);
+  if (method === "GET" && (pathname === "/api/images" || Boolean(projectPhotosMatch))) {
+    const db = await getDb(root);
+    let projectId = projectPhotosMatch
+      ? Number(projectPhotosMatch[1])
+      : Number(url.searchParams.get("project_id"));
+    if (!Number.isInteger(projectId) || projectId <= 0) {
+      const project = requireProject(db, req);
+      projectId = project.id;
+    }
+    const dbImages = db
+      .prepare(
+        "SELECT id, project_id, file_path, name, status, owner, locked_by, locked_at, completed_at, reviewed_by, reviewed_at FROM images WHERE project_id = ? ORDER BY id ASC",
+      )
+      .all(projectId);
+    const nowTime = Date.now();
+    const result = dbImages.map((row) => {
+      const lockedTime = parseUtcTime(row.locked_at);
+      const isClaimed = Boolean(row.locked_by) && lockedTime > nowTime - 15 * 60 * 1000;
+      const heldMinutes = isClaimed
+        ? Math.max(0, Math.ceil((lockedTime + 15 * 60 * 1000 - nowTime) / 60000))
+        : 0;
+      return {
+        id: row.id,
+        project_id: row.project_id,
+        file_path: row.file_path,
+        name: row.name || row.file_path,
+        status: row.status,
+        owner: row.owner || null,
+        locked_by: row.locked_by,
+        locked_at: row.locked_at,
+        is_claimed: isClaimed,
+        held_by: isClaimed ? row.locked_by : null,
+        held_minutes_remaining: heldMinutes,
+      };
+    });
+    send(res, 200, { success: true, images: result });
     return;
   }
 
