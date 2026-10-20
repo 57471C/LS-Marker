@@ -170,6 +170,10 @@ export function getDb(root) {
               owner TEXT DEFAULT NULL,
               UNIQUE (project_id, file_path)
             );
+            CREATE TABLE IF NOT EXISTS system_settings (
+              key TEXT PRIMARY KEY,
+              value TEXT
+            );
           `);
           const claimCols = db.prepare("PRAGMA table_info(image_claims)").all();
           if (claimCols.length && !claimCols.some((col) => col.name === "status")) {
@@ -2123,6 +2127,44 @@ export async function createDatabaseBackup(db, destPath) {
 
 /**
  * @param {import("better-sqlite3").Database} db
+ * @param {string} key
+ * @param {string | null} defaultValue
+ */
+export function getSystemSetting(db, key, defaultValue = null) {
+  try {
+    const row = db.prepare("SELECT value FROM system_settings WHERE key = ?").get(key);
+    return row ? row.value : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
+
+/**
+ * @param {import("better-sqlite3").Database} db
+ * @param {string} key
+ * @param {string} value
+ */
+export function setSystemSetting(db, key, value) {
+  try {
+    db.prepare(`
+      INSERT INTO system_settings (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, String(value));
+  } catch (err) {
+    console.error("[label-api] setSystemSetting", err);
+  }
+}
+
+/**
+ * @param {import("better-sqlite3").Database} db
+ */
+export function isMaintenanceMode(db) {
+  return getSystemSetting(db, "maintenance_mode", "0") === "1";
+}
+
+/**
+ * @param {import("better-sqlite3").Database} db
  * @param {string} root
  * @param {number} imageId
  */
@@ -2390,7 +2432,19 @@ async function guard(req, res, url, root, method, pathname) {
   }
 
   const user = currentUser(db, req);
-  const admin = adminOpen(db, req);
+  const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
+  const inMaintenance = isMaintenanceMode(db);
+
+  if (inMaintenance && !admin) {
+    const isSafeRead = method === "GET" || pathname.startsWith("/api/system/");
+    if (!isSafeRead) {
+      send(res, 503, {
+        error: "Maintenance mode is active. System is temporarily paused for backup and updates.",
+        maintenance: true,
+      });
+      return true;
+    }
+  }
 
   if (pathname === "/api/users") {
     if (!admin) throw new HttpError(401, "Settings locked");
@@ -3009,12 +3063,7 @@ async function guard(req, res, url, root, method, pathname) {
   if (method === "GET" && pathname === "/api/projects") return false;
   if (method === "DELETE" && pathname === "/api/projects") return false;
   if (method === "GET" && pathname === "/api/export") return false;
-  if (
-    method === "GET" &&
-    (pathname === "/api/system/backup-status" || pathname === "/api/system/backup-download")
-  ) {
-    return false;
-  }
+  if (pathname.startsWith("/api/system/")) return false;
   if (
     (method === "DELETE" &&
       (/^\/api\/images\/\d+$/.test(pathname) || pathname === "/api/images")) ||
@@ -3053,6 +3102,22 @@ export async function handle(req, res, url, root) {
   const method = (req.method || "GET").toUpperCase();
   const pathname = url.pathname;
   if (await guard(req, res, url, root, method, pathname)) return;
+
+  const db = await getDb(root);
+  const user = currentUser(db, req);
+  const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
+  const inMaintenance = isMaintenanceMode(db);
+
+  if (inMaintenance && !admin) {
+    const isSafeRead = method === "GET" || pathname.startsWith("/api/system/");
+    if (!isSafeRead) {
+      send(res, 503, {
+        error: "Maintenance mode is active. System is temporarily paused for backup and updates.",
+        maintenance: true,
+      });
+      return;
+    }
+  }
 
   if (method === "GET" && pathname === "/api/project") {
     const db = await getDb(root);
@@ -3285,6 +3350,36 @@ export async function handle(req, res, url, root) {
       writeCookie(res, "partlab_project", "", 0);
     }
     send(res, 200, { ok: true, id });
+    return;
+  }
+
+  if (method === "GET" && pathname === "/api/system/maintenance") {
+    const db = await getDb(root);
+    send(res, 200, {
+      maintenance: isMaintenanceMode(db),
+      message: getSystemSetting(db, "maintenance_message", ""),
+    });
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/system/maintenance") {
+    const db = await getDb(root);
+    const user = currentUser(db, req);
+    const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
+    if (!admin) {
+      throw new HttpError(403, "Forbidden: Admin access required");
+    }
+    const body = await readBody(req).catch(() => ({}));
+    const enabled = Boolean(body.enabled);
+    setSystemSetting(db, "maintenance_mode", enabled ? "1" : "0");
+    if (typeof body.message === "string") {
+      setSystemSetting(db, "maintenance_message", body.message);
+    }
+    send(res, 200, {
+      success: true,
+      maintenance: enabled,
+      message: body.message || "",
+    });
     return;
   }
 

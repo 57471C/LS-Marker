@@ -1,8 +1,8 @@
 import { Link } from "@tanstack/react-router";
-import { CircleHelp } from "lucide-react";
+import { AlertTriangle, CircleHelp } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { KeyboardShortcutsModal } from "@/components/keyboard-shortcuts-modal";
-import { logout } from "@/lib/label-client";
+import { fetchMaintenanceStatus, logout } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
 import { useSession } from "@/lib/session";
 
@@ -16,6 +16,19 @@ export function AppHeader({
   const { username, setUsername } = useSession();
   const { current: project, openPicker } = useProject();
   const [helpOpen, setHelpOpen] = useState(false);
+  const [isMaintenance, setIsMaintenance] = useState(false);
+
+  useEffect(() => {
+    let cancel = false;
+    fetchMaintenanceStatus()
+      .then((res) => {
+        if (!cancel) setIsMaintenance(res.maintenance);
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, []);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -36,71 +49,85 @@ export function AppHeader({
       : "inline-flex h-11 items-center rounded-sm px-3 text-sm font-medium text-muted";
 
   return (
-    <header className="flex flex-wrap items-center gap-3 border-b border-line bg-surface px-4 py-2">
-      <p className="text-lg font-medium tracking-tight text-ink">LS-Marker</p>
-      <nav className="flex items-center gap-1" aria-label="Sections">
-        <Link to="/" className={item("label")}>
-          Label
-        </Link>
-        <a
-          href="/?mode=review"
-          className={
-            current === "review"
-              ? "inline-flex h-11 items-center rounded-sm bg-amber-600 px-3 text-sm font-medium text-white shadow-xs"
-              : "inline-flex h-11 items-center rounded-sm px-3 text-sm font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
-          }
+    <>
+      {isMaintenance ? (
+        <aside
+          aria-label="Maintenance Mode Notice"
+          className="flex items-center justify-center gap-2 border-b border-amber-500/50 bg-amber-400 px-4 py-1.5 text-center text-xs font-semibold text-amber-950 shadow-xs dark:bg-amber-500 dark:text-amber-950"
         >
-          Review QA
-        </a>
-        <Link to="/photos" className={item("photos")}>
-          Photos
-        </Link>
-        <Link to="/admin" className={item("classes")}>
-          Classes
-        </Link>
-        <Link to="/settings" className={item("settings")}>
-          Settings
-        </Link>
-        <button
-          type="button"
-          className="press inline-flex size-11 items-center justify-center rounded-sm text-muted hover:bg-surface-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent"
-          aria-label="Keyboard shortcuts"
-          title="Keyboard shortcuts (?)"
-          onClick={() => setHelpOpen(true)}
-        >
-          <CircleHelp className="size-5" aria-hidden="true" />
-        </button>
-      </nav>
-      {helpOpen ? <KeyboardShortcutsModal onClose={() => setHelpOpen(false)} /> : null}
-      <div className="ml-auto flex min-w-0 flex-wrap items-center gap-3">
-        {meta}
-        {project ? (
-          <p className="max-w-40 truncate font-mono text-sm text-muted">{project.name}</p>
-        ) : null}
-        {username ? (
+          <AlertTriangle className="size-4 shrink-0 text-amber-950" aria-hidden="true" />
+          <span>
+            MAINTENANCE MODE ACTIVE — Labeling & data changes are paused for system backup and
+            updates
+          </span>
+        </aside>
+      ) : null}
+      <header className="flex flex-wrap items-center gap-3 border-b border-line bg-surface px-4 py-2">
+        <p className="text-lg font-medium tracking-tight text-ink">LS-Marker</p>
+        <nav className="flex items-center gap-1" aria-label="Sections">
+          <Link to="/" className={item("label")}>
+            Label
+          </Link>
+          <a
+            href="/?mode=review"
+            className={
+              current === "review"
+                ? "inline-flex h-11 items-center rounded-sm bg-amber-600 px-3 text-sm font-medium text-white shadow-xs"
+                : "inline-flex h-11 items-center rounded-sm px-3 text-sm font-medium text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
+            }
+          >
+            Review QA
+          </a>
+          <Link to="/photos" className={item("photos")}>
+            Photos
+          </Link>
+          <Link to="/admin" className={item("classes")}>
+            Classes
+          </Link>
+          <Link to="/settings" className={item("settings")}>
+            Settings
+          </Link>
           <button
             type="button"
-            className="press inline-flex h-11 items-center rounded-sm border border-line bg-surface px-3 text-sm font-medium text-ink"
-            onClick={openPicker}
+            className="press inline-flex size-11 items-center justify-center rounded-sm text-muted hover:bg-surface-raised hover:text-ink focus-visible:ring-2 focus-visible:ring-accent"
+            aria-label="Keyboard shortcuts"
+            title="Keyboard shortcuts (?)"
+            onClick={() => setHelpOpen(true)}
           >
-            Projects
+            <CircleHelp className="size-5" aria-hidden="true" />
           </button>
-        ) : null}
-        {username ? (
-          <>
-            <p className="truncate font-mono text-sm text-muted">{username}</p>
+        </nav>
+        {helpOpen ? <KeyboardShortcutsModal onClose={() => setHelpOpen(false)} /> : null}
+        <div className="ml-auto flex min-w-0 flex-wrap items-center gap-3">
+          {meta}
+          {project ? (
+            <p className="max-w-40 truncate font-mono text-sm text-muted">{project.name}</p>
+          ) : null}
+          {username ? (
             <button
               type="button"
               className="press inline-flex h-11 items-center rounded-sm border border-line bg-surface px-3 text-sm font-medium text-ink"
-              onClick={() => {
-                void logout().finally(() => setUsername(null));
-              }}
+              onClick={openPicker}
             >
-              Sign out
+              Projects
             </button>
-          </>
-        ) : null}
-      </div>
-    </header>
+          ) : null}
+          {username ? (
+            <>
+              <p className="truncate font-mono text-sm text-muted">{username}</p>
+              <button
+                type="button"
+                className="press inline-flex h-11 items-center rounded-sm border border-line bg-surface px-3 text-sm font-medium text-ink"
+                onClick={() => {
+                  void logout().finally(() => setUsername(null));
+                }}
+              >
+                Sign out
+              </button>
+            </>
+          ) : null}
+        </div>
+      </header>
+    </>
   );
 }

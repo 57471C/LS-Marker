@@ -7,11 +7,13 @@ import {
   Download,
   FileText,
   Loader2,
+  Wrench,
   X,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { BackupModal } from "@/components/backup-modal";
 import { DatasetHealthModal } from "@/components/dataset-health-modal";
+import { MaintenanceModal } from "@/components/maintenance-modal";
 import { RescanModal } from "@/components/rescan-modal";
 import {
   checkProjectExif,
@@ -20,11 +22,13 @@ import {
   deleteUser,
   downloadDatasetExport,
   fetchAdmin,
+  fetchMaintenanceStatus,
   fetchProjectHealth,
   fetchProjects,
   fetchUsers,
   lockAdmin,
   resetUserPassword,
+  setMaintenanceMode,
   syncProjectImages,
   unlockAdmin,
   type DatasetExportType,
@@ -87,6 +91,8 @@ export function SettingsPage() {
   const [syncResult, setSyncResult] = useState<SyncImagesResult | null>(null);
 
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
+  const [isMaintenanceModalOpen, setIsMaintenanceModalOpen] = useState(false);
+  const [isMaintenance, setIsMaintenance] = useState(false);
 
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
@@ -103,10 +109,20 @@ export function SettingsPage() {
       .catch((err: unknown) => {
         if (!cancel) setError(err instanceof Error ? err.message : "Could not check settings");
       });
+    fetchMaintenanceStatus()
+      .then((res) => {
+        if (!cancel) setIsMaintenance(res.maintenance);
+      })
+      .catch(() => {});
     return () => {
       cancel = true;
     };
   }, []);
+
+  async function handleToggleMaintenance(enabled: boolean) {
+    const res = await setMaintenanceMode(enabled);
+    setIsMaintenance(res.maintenance);
+  }
 
   useEffect(() => {
     if (!unlocked) return;
@@ -562,15 +578,34 @@ export function SettingsPage() {
             </section>
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-              <button
-                type="button"
-                className={btn}
-                onClick={() => setIsBackupModalOpen(true)}
-                title="Download safe SQLite snapshot"
-              >
-                <Database className="size-4 text-muted" aria-hidden="true" />
-                <span>Backup Database</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className={btn}
+                  onClick={() => setIsBackupModalOpen(true)}
+                  title="Download safe SQLite snapshot"
+                >
+                  <Database className="size-4 text-muted" aria-hidden="true" />
+                  <span>Backup Database</span>
+                </button>
+
+                <button
+                  type="button"
+                  className={
+                    isMaintenance
+                      ? "press inline-flex h-11 items-center justify-center gap-2 rounded-sm border border-amber-500 bg-amber-400 px-4 text-sm font-semibold text-amber-950 shadow-xs hover:bg-amber-300 dark:border-amber-400 dark:bg-amber-500 dark:text-amber-950"
+                      : "press inline-flex h-11 items-center justify-center gap-2 rounded-sm border border-amber-500/40 bg-amber-500/15 px-4 text-sm font-semibold text-amber-800 hover:bg-amber-500/25 dark:border-amber-500/30 dark:text-amber-300"
+                  }
+                  onClick={() => setIsMaintenanceModalOpen(true)}
+                  title="Toggle maintenance mode to safely backup and pull git updates"
+                >
+                  <Wrench
+                    className="size-4 text-amber-700 dark:text-amber-400"
+                    aria-hidden="true"
+                  />
+                  <span>{isMaintenance ? "Maintenance Mode: Active" : "Maintenance Mode"}</span>
+                </button>
+              </div>
 
               <button
                 type="button"
@@ -1079,6 +1114,12 @@ export function SettingsPage() {
         ) : null}
 
         <BackupModal isOpen={isBackupModalOpen} onClose={() => setIsBackupModalOpen(false)} />
+        <MaintenanceModal
+          isOpen={isMaintenanceModalOpen}
+          isMaintenance={isMaintenance}
+          onClose={() => setIsMaintenanceModalOpen(false)}
+          onToggle={handleToggleMaintenance}
+        />
       </main>
     </div>
   );

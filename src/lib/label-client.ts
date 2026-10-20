@@ -704,3 +704,25 @@ export async function downloadDatabaseBackup(onProgress?: (bytes: number) => voi
   link.remove();
   URL.revokeObjectURL(url);
 }
+
+export type MaintenanceStatus = {
+  maintenance: boolean;
+  message?: string;
+};
+
+export async function fetchMaintenanceStatus(): Promise<MaintenanceStatus> {
+  const res = await fetch(api("/api/system/maintenance"));
+  return asJson<MaintenanceStatus>(res);
+}
+
+export async function setMaintenanceMode(
+  enabled: boolean,
+  message?: string,
+): Promise<{ success: boolean; maintenance: boolean; message?: string }> {
+  const res = await fetch(api("/api/system/maintenance"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled, message }),
+  });
+  return asJson(res);
+}
