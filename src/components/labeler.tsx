@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -7,7 +8,9 @@ import {
   ChevronUp,
   Eye,
   EyeOff,
+  Loader2,
   Trash2,
+  Unlock,
   X,
 } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
@@ -17,6 +20,7 @@ import {
   claimImage,
   claimImageById,
   completeImage,
+  fetchAdmin,
   fetchCatalogue,
   fetchLabel,
   fetchNextImage,
@@ -26,6 +30,7 @@ import {
   releaseIncomplete,
   saveLabel,
   submitReviewAction,
+  unlockApprovedImage,
   type Catalogue,
   type ClassRow,
   type ImageRow,
@@ -103,7 +108,8 @@ type Queue = "all" | "open" | "incomplete" | "complete" | "approved" | "mine" | 
 
 function matchesQueue(image: ImageRow, next: Queue, username: string | null): boolean {
   if (next === "mine") return image.claimedBy === username;
-  if (next === "free") return !image.claimedBy;
+  if (next === "free")
+    return !image.claimedBy && (image.status === "open" || image.status === "incomplete");
   if (next === "open") return image.status === "open";
   if (next === "incomplete") return image.status === "incomplete";
   if (next === "complete") return image.status === "complete" || image.status === "approved";
@@ -130,7 +136,28 @@ function parseCodes(text: string): string[] {
 }
 
 export function Labeler() {
-  const { username } = useSession();
+  const { username, admin: sessionAdmin } = useSession();
+  const [isAdmin, setIsAdmin] = useState(sessionAdmin);
+  const [showUnlockModal, setShowUnlockModal] = useState(false);
+  const [isUnlocking, setIsUnlocking] = useState(false);
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setIsAdmin(sessionAdmin);
+  }, [sessionAdmin]);
+
+  useEffect(() => {
+    let cancel = false;
+    fetchAdmin()
+      .then((unlocked) => {
+        if (!cancel && unlocked) setIsAdmin(true);
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, []);
+
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
@@ -160,6 +187,7 @@ export function Labeler() {
   const [pendingReviewCount, setPendingReviewCount] = useState<number>(0);
   const isReviewModeRef = useRef(false);
   isReviewModeRef.current = isReviewMode;
+  const canUnlock = Boolean(isAdmin || isReviewMode || username?.toLowerCase() === "admin");
 
   const allImages = catalogue?.images ?? [];
   const images = allImages.filter((image) => matchesQueue(image, queue, username));
@@ -178,7 +206,8 @@ export function Labeler() {
 
   const dirty = serialize(boxes) !== saved;
   const holder = current?.claimedBy ?? null;
-  const locked = !isReviewMode && Boolean(holder && holder !== username);
+  const isApproved = current?.status === "approved";
+  const locked = isApproved || (!isReviewMode && Boolean(holder && holder !== username));
   const lockedRef = useRef(false);
   lockedRef.current = locked;
 
@@ -517,7 +546,7 @@ export function Labeler() {
   }
 
   async function ensureClaimed(): Promise<boolean> {
-    if (isReviewMode || !current) return true;
+    if (isReviewMode || isApproved || !current) return true;
     if (current.claimedBy === username) return true;
     try {
       let res: {
@@ -547,6 +576,34 @@ export function Labeler() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Image claimed by another user");
       return false;
+    }
+  }
+
+  async function handleConfirmUnlock() {
+    if (!current) return;
+    setIsUnlocking(true);
+    setUnlockError(null);
+    try {
+      const res = await unlockApprovedImage(current.id ?? current.name);
+      await refreshClaims((img) => ({
+        ...img,
+        status: "complete",
+        claimedBy: res.claimedBy,
+        claimedAt: res.claimedAt,
+        lockedBy: res.lockedBy,
+        lockedAt: res.lockedAt,
+        reviewedBy: null,
+        reviewedAt: null,
+        is_claimed: true,
+        held_by: res.claimedBy,
+        held_minutes_remaining: 15,
+      }));
+      setShowUnlockModal(false);
+      setStatus("Photo unlocked for editing");
+    } catch (err: unknown) {
+      setUnlockError(err instanceof Error ? err.message : "Failed to unlock photo");
+    } finally {
+      setIsUnlocking(false);
     }
   }
 
@@ -752,6 +809,8 @@ export function Labeler() {
                   ? {
                       ...img,
                       status: "approved",
+                      owner: img.owner || username,
+                      completedBy: img.owner || img.completedBy || username,
                       reviewedBy: username,
                       reviewedAt: new Date().toISOString(),
                     }
@@ -1069,7 +1128,15 @@ export function Labeler() {
   const position =
     images.length === 0 ? "image 0 of 0" : `image ${safeIndex + 1} of ${images.length}`;
   const labelledCount = allImages.filter((image) => image.labelled).length;
-  const claimLabel = !current ? "" : holder === username ? "Yours" : holder ? holder : "Free";
+  const claimLabel = !current
+    ? ""
+    : isApproved
+      ? "Approved"
+      : holder === username
+        ? "Yours"
+        : holder
+          ? holder
+          : "Free";
   const folderAt = current ? allImages.findIndex((image) => image.name === current.name) : -1;
   const previousPhoto = folderAt > 0 ? allImages[folderAt - 1] : null;
   const canDuplicate = !locked && boxes.length > 0;
@@ -1114,9 +1181,16 @@ export function Labeler() {
                 </p>
                 <span className="text-xs text-amber-800 dark:text-amber-300">
                   | Completed by:{" "}
-                  <span className="font-medium">
-                    {current?.claimedBy || (current?.completedAt ? "Annotator" : "Not completed")}
+                  <span className="font-semibold text-ink">
+                    {current?.owner ||
+                      current?.claimedBy ||
+                      (current?.completedAt ? username || "You" : "Not completed")}
                   </span>
+                  {current?.reviewedBy ? (
+                    <span className="ml-1 text-purple-700 dark:text-purple-300 font-normal">
+                      (Approved by {current.reviewedBy === username ? "you" : current.reviewedBy})
+                    </span>
+                  ) : null}
                 </span>
                 {pendingReviewCount > 0 ? (
                   <span className="rounded-full bg-amber-200 px-2 py-0.5 font-mono text-xs font-medium text-amber-800 dark:bg-amber-800/60 dark:text-amber-200">
@@ -1125,26 +1199,43 @@ export function Labeler() {
                 ) : null}
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={!current || busy}
-                  onClick={() => void handleReviewApprove()}
-                  className="press inline-flex h-9 items-center gap-1.5 rounded-sm bg-emerald-600 px-3 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700 disabled:opacity-40"
-                  title="Approve annotations (Hotkey: A or Enter)"
-                >
-                  <Check className="size-3.5" aria-hidden="true" />
-                  <span>✓ Approve (A)</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={!current || busy}
-                  onClick={() => void handleReviewReject()}
-                  className="press inline-flex h-9 items-center gap-1.5 rounded-sm bg-rose-600 px-3 text-xs font-semibold text-white shadow-xs hover:bg-rose-700 disabled:opacity-40"
-                  title="Reject back to annotator pool (Hotkey: X)"
-                >
-                  <X className="size-3.5" aria-hidden="true" />
-                  <span>✕ Reject to Pool (X)</span>
-                </button>
+                {isApproved ? (
+                  canUnlock ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setShowUnlockModal(true)}
+                      className="press inline-flex h-9 items-center gap-1.5 rounded-sm border border-amber-600 bg-amber-600/10 px-3 text-xs font-semibold text-amber-900 shadow-xs hover:bg-amber-600/20 dark:text-amber-200 disabled:opacity-40"
+                      title="Revoke QA approval and unlock photo to edit"
+                    >
+                      <Unlock className="size-3.5" aria-hidden="true" />
+                      <span>Unlock to Edit</span>
+                    </button>
+                  ) : null
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      disabled={!current || busy}
+                      onClick={() => void handleReviewApprove()}
+                      className="press inline-flex h-9 items-center gap-1.5 rounded-sm bg-emerald-600 px-3 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700 disabled:opacity-40"
+                      title="Approve annotations (Hotkey: A or Enter)"
+                    >
+                      <Check className="size-3.5" aria-hidden="true" />
+                      <span>✓ Approve (A)</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!current || busy}
+                      onClick={() => void handleReviewReject()}
+                      className="press inline-flex h-9 items-center gap-1.5 rounded-sm bg-rose-600 px-3 text-xs font-semibold text-white shadow-xs hover:bg-rose-700 disabled:opacity-40"
+                      title="Reject back to annotator pool (Hotkey: X)"
+                    >
+                      <X className="size-3.5" aria-hidden="true" />
+                      <span>✕ Reject to Pool (X)</span>
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   disabled={busy}
@@ -1224,14 +1315,21 @@ export function Labeler() {
               <ChevronLeft className="size-4" aria-hidden="true" />
               Previous
             </button>
-            <button
-              type="button"
-              className={btnPrimary}
-              onClick={() => void save()}
-              disabled={!current || busy || !dirty || locked}
-            >
-              Save
-            </button>
+            {isApproved ? (
+              <span className="inline-flex items-center gap-1.5 rounded-sm bg-purple-500/15 px-3 py-2 text-xs font-semibold text-purple-800 dark:text-purple-300">
+                <Check className="size-3.5" aria-hidden="true" />✓ Approved by{" "}
+                {current?.reviewedBy || current?.owner || "QA"}
+              </span>
+            ) : (
+              <button
+                type="button"
+                className={btnPrimary}
+                onClick={() => void save()}
+                disabled={!current || busy || !dirty || locked}
+              >
+                Save
+              </button>
+            )}
             <button
               type="button"
               className={btn}
@@ -1241,19 +1339,32 @@ export function Labeler() {
               Next
               <ChevronRight className="size-4" aria-hidden="true" />
             </button>
-            <button
-              type="button"
-              className={btn}
-              title="No parts in this photo. Saves an empty label and opens the next unlabelled photo."
-              disabled={!current || busy || locked || boxes.length > 0}
-              onClick={() => void markNone()}
-            >
-              No parts
-            </button>
+            {!isApproved ? (
+              <button
+                type="button"
+                className={btn}
+                title="No parts in this photo. Saves an empty label and opens the next unlabelled photo."
+                disabled={!current || busy || locked || boxes.length > 0}
+                onClick={() => void markNone()}
+              >
+                No parts
+              </button>
+            ) : null}
+            {isApproved && canUnlock ? (
+              <button
+                type="button"
+                className="press inline-flex h-11 items-center gap-1.5 rounded-sm border border-amber-500/40 bg-amber-500/15 px-3.5 text-xs font-semibold text-amber-800 hover:bg-amber-500/25 dark:text-amber-200"
+                onClick={() => setShowUnlockModal(true)}
+                title="Unlock approved photo to edit"
+              >
+                <Unlock className="size-4" aria-hidden="true" />
+                Unlock to Edit
+              </button>
+            ) : null}
             <p className="ml-auto text-sm text-muted" aria-live="polite">
               {dirty ? "Unsaved" : status}
               {current?.labelled ? " · txt" : ""}
-              {locked ? " · locked" : ""}
+              {locked ? (isApproved ? " · approved" : " · locked") : ""}
             </p>
           </div>
         </section>
@@ -1480,6 +1591,7 @@ export function Labeler() {
                     ["open", "Open"],
                     ["incomplete", "Incomplete"],
                     ["complete", "Complete"],
+                    ["approved", "Approved"],
                     ["mine", "Mine"],
                     ["free", "Free"],
                   ] as const
@@ -1501,61 +1613,88 @@ export function Labeler() {
             </div>
             {current ? (
               <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm text-muted">
-                    {holder === username
-                      ? current.status === "complete"
-                        ? "Completed by you. Held time paused."
-                        : "You have this image."
-                      : holder
-                        ? `Claimed by ${holder}. Take over to edit.`
-                        : "Free. Saving claims it for you."}
-                  </p>
-                  <StatusBadge status={current.status} />
-                </div>
-                {holder === username ? (
-                  <div className="flex flex-col gap-2 sm:flex-row">
-                    <button
-                      type="button"
-                      className="press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-sm bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-40"
-                      disabled={busy}
-                      onClick={() => void completeCurrent()}
-                    >
-                      Complete
-                    </button>
-                    <button
-                      type="button"
-                      className="press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-sm border border-yellow-500/20 bg-yellow-400 px-4 text-sm font-medium text-yellow-950 hover:bg-yellow-500 active:bg-yellow-600 disabled:opacity-40"
-                      disabled={busy}
-                      onClick={() => void releaseIncompleteAction()}
-                    >
-                      Release incomplete
-                    </button>
-                  </div>
-                ) : holder ? (
-                  <button
-                    type="button"
-                    className={btn}
-                    disabled={busy}
-                    onClick={() => {
-                      if (!confirmTakeover) {
-                        setConfirmTakeover(true);
-                        return;
-                      }
-                      void claim(true);
-                    }}
-                  >
-                    {confirmTakeover ? "Confirm takeover" : "Take over"}
-                  </button>
+                {isApproved ? (
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5 rounded-sm bg-purple-500/15 px-2.5 py-1 text-xs font-semibold text-purple-800 dark:text-purple-300">
+                        <Check className="size-3.5" aria-hidden="true" />
+                        Approved by {current.reviewedBy || current.owner || "QA"}
+                      </span>
+                      <StatusBadge status={current.status} />
+                    </div>
+                    <p className="text-xs text-muted">
+                      This photo is approved and frozen in read-only mode to safeguard ground truth.
+                    </p>
+                    {canUnlock ? (
+                      <button
+                        type="button"
+                        className="press inline-flex h-10 w-full items-center justify-center gap-2 rounded-sm border border-amber-500/40 bg-amber-500/15 px-4 text-xs font-semibold text-amber-800 hover:bg-amber-500/25 dark:text-amber-200"
+                        onClick={() => setShowUnlockModal(true)}
+                      >
+                        <Unlock className="size-4" aria-hidden="true" />
+                        Unlock to Edit
+                      </button>
+                    ) : null}
+                  </>
                 ) : (
-                  <button
-                    type="button"
-                    className={btn}
-                    disabled={busy}
-                    onClick={() => void claim(false)}
-                  >
-                    Claim
-                  </button>
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm text-muted">
+                        {holder === username
+                          ? current.status === "complete"
+                            ? "Completed by you. Held time paused."
+                            : "You have this image."
+                          : holder
+                            ? `Claimed by ${holder}. Take over to edit.`
+                            : "Free. Saving claims it for you."}
+                      </p>
+                      <StatusBadge status={current.status} />
+                    </div>
+                    {holder === username ? (
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <button
+                          type="button"
+                          className="press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-sm bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-40"
+                          disabled={busy}
+                          onClick={() => void completeCurrent()}
+                        >
+                          Complete
+                        </button>
+                        <button
+                          type="button"
+                          className="press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-sm border border-yellow-500/20 bg-yellow-400 px-4 text-sm font-medium text-yellow-950 hover:bg-yellow-500 active:bg-yellow-600 disabled:opacity-40"
+                          disabled={busy}
+                          onClick={() => void releaseIncompleteAction()}
+                        >
+                          Release incomplete
+                        </button>
+                      </div>
+                    ) : holder ? (
+                      <button
+                        type="button"
+                        className={btn}
+                        disabled={busy}
+                        onClick={() => {
+                          if (!confirmTakeover) {
+                            setConfirmTakeover(true);
+                            return;
+                          }
+                          void claim(true);
+                        }}
+                      >
+                        {confirmTakeover ? "Confirm takeover" : "Take over"}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className={btn}
+                        disabled={busy}
+                        onClick={() => void claim(false)}
+                      >
+                        Claim
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             ) : null}
@@ -1565,6 +1704,64 @@ export function Labeler() {
           </div>
         </aside>
       </div>
+
+      {showUnlockModal && current ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="unlock-dialog-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md rounded-xl border border-line bg-surface p-6 shadow-2xl">
+            <div className="flex items-center gap-3 text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="size-6 shrink-0" aria-hidden="true" />
+              <h3 id="unlock-dialog-title" className="text-base font-semibold text-ink">
+                Unlock Approved Photo?
+              </h3>
+            </div>
+            <p className="mt-3 text-sm text-muted leading-relaxed">
+              This photo is currently approved. Unlocking it will revoke the QA approval and return
+              it to &apos;In Progress&apos;. Do you want to proceed?
+            </p>
+            {unlockError ? (
+              <p className="mt-3 rounded-sm border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-600 dark:text-red-400">
+                {unlockError}
+              </p>
+            ) : null}
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                disabled={isUnlocking}
+                onClick={() => {
+                  setShowUnlockModal(false);
+                  setUnlockError(null);
+                }}
+                className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-medium text-ink hover:bg-surface-raised"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isUnlocking}
+                onClick={() => void handleConfirmUnlock()}
+                className="press inline-flex h-9 items-center justify-center gap-1.5 rounded-sm bg-amber-600 px-4 text-xs font-semibold text-white shadow-xs hover:bg-amber-700 disabled:opacity-50"
+              >
+                {isUnlocking ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                    Unlocking...
+                  </>
+                ) : (
+                  <>
+                    <Unlock className="size-3.5" aria-hidden="true" />
+                    Unlock and Edit
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

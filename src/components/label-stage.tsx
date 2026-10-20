@@ -382,15 +382,25 @@ export function LabelStage({
   }
 
   function onPointerDown(event: PointerEvent<HTMLDivElement>) {
-    if (readOnly || event.button !== 0) return;
+    if (event.button !== 0) return;
     const here = point(event);
     if (!here) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
     const target = event.target instanceof Element ? event.target : null;
     const handle = target?.closest("[data-corner]");
     const boxEl = target?.closest("[data-box]");
     const key = boxEl?.getAttribute("data-box");
+
+    if (readOnly) {
+      if (key) {
+        onSelect(key);
+      } else {
+        onSelect(null);
+      }
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
 
     if (handle && key) {
       const box = boxesRef.current.find((item) => item.key === key);
@@ -522,7 +532,7 @@ export function LabelStage({
               <div
                 key={box.key}
                 data-box={box.key}
-                className={`box-mark absolute ${spaceMode === "off" ? "cursor-move" : ""} ${selected ? "is-selected z-10" : "z-0"}`}
+                className={`box-mark absolute ${spaceMode === "off" && !readOnly ? "cursor-move" : ""} ${selected ? "is-selected z-10" : "z-0"}`}
                 style={{
                   ...styleOf(box),
                   borderColor: color,
@@ -537,7 +547,7 @@ export function LabelStage({
                 >
                   {labelFor(box.classId)}
                 </span>
-                {selected
+                {selected && !readOnly
                   ? HANDLES.map((corner) => (
                       <span
                         key={corner}

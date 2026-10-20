@@ -10,6 +10,7 @@ export type ImageRow = {
   claimedAt: string | null;
   status: PhotoStatus;
   completedAt: string | null;
+  completedBy?: string | null;
   lockedBy?: string | null;
   lockedAt?: string | null;
   locked_by?: string | null;
@@ -519,6 +520,38 @@ export async function unlockImage(nameOrId: string | number): Promise<void> {
   await asJson(res);
 }
 
+export async function unlockApprovedImage(nameOrId: string | number): Promise<{
+  ok: boolean;
+  success: boolean;
+  id: number;
+  name: string;
+  file_path: string;
+  status: PhotoStatus;
+  claimedBy: string;
+  claimedAt: string;
+  lockedBy: string;
+  lockedAt: string;
+  is_claimed: boolean;
+  held_by: string;
+  held_minutes_remaining: number;
+  message?: string;
+}> {
+  const url =
+    typeof nameOrId === "number"
+      ? api(`/api/images/${nameOrId}/unlock`)
+      : api("/api/images/unlock");
+  const body =
+    typeof nameOrId === "number"
+      ? { id: nameOrId, action: "unlock-approved" }
+      : { name: nameOrId, action: "unlock-approved" };
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return asJson(res);
+}
+
 export async function skipImage(nameOrId: string | number): Promise<void> {
   const body = typeof nameOrId === "number" ? { id: nameOrId } : { name: nameOrId };
   const res = await fetch(api("/api/images/skip"), {
@@ -552,6 +585,9 @@ export type ReviewImageItem = {
   filePath: string;
   completedAt: string | null;
   completedBy: string | null;
+  owner?: string | null;
+  reviewedBy?: string | null;
+  reviewedAt?: string | null;
   boxes: Box[];
 };
 

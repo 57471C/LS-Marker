@@ -122,7 +122,11 @@ export function PhotosPage() {
       if (status === "approved" && image.status !== "approved") return false;
       const holder = getActiveHolder(image);
       if (owner === "mine" && (!holder || holder !== username)) return false;
-      if (owner === "free" && holder) return false;
+      if (
+        owner === "free" &&
+        (holder || (image.status !== "open" && image.status !== "incomplete"))
+      )
+        return false;
       if (owner === "taken" && (!holder || holder === username)) return false;
       return true;
     });
@@ -403,6 +407,13 @@ export function PhotosPage() {
                     </td>
                     <td className="truncate py-2.5 pr-3 font-mono text-xs">
                       {(() => {
+                        if (image.status === "approved") {
+                          return (
+                            <span className="text-muted" title="Approved (Locked)">
+                              —
+                            </span>
+                          );
+                        }
                         const activeHolder = getActiveHolder(image);
                         const isMine = Boolean(activeHolder && activeHolder === username);
                         const isTaken = Boolean(activeHolder && activeHolder !== username);
@@ -429,6 +440,7 @@ export function PhotosPage() {
                     </td>
                     <td className="hidden py-2.5 pr-3 text-xs text-muted sm:table-cell">
                       {(() => {
+                        if (image.status === "approved") return "—";
                         const activeHolder = getActiveHolder(image);
                         if (!activeHolder) return "—";
                         const mins = getHeldMinutesRemaining(image);

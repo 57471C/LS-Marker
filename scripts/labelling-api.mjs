@@ -667,6 +667,15 @@ function cleanPassword(value) {
  * @param {string} username
  */
 function claimForWrite(db, projectId, rel, username) {
+  const imgRow = db
+    .prepare("SELECT id, status FROM images WHERE project_id = ? AND file_path = ?")
+    .get(projectId, rel);
+  if (imgRow && imgRow.status === "approved") {
+    throw new HttpError(
+      403,
+      "Photo is approved and locked. Must be unlocked by an admin or reviewer to edit.",
+    );
+  }
   const row = db
     .prepare(
       "SELECT claimed_by, claimed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
@@ -2292,7 +2301,14 @@ export async function catalogue(root, project) {
     syncProjectImages(db, root, project);
     const dbImages = db
       .prepare(
-        "SELECT id, project_id, file_path, name, status, locked_by, locked_at, completed_at, reviewed_by, reviewed_at, owner FROM images WHERE project_id = ? ORDER BY id ASC",
+        `SELECT 
+          images.id, images.project_id, images.file_path, images.name, images.status, 
+          images.locked_by, images.locked_at, images.completed_at, images.reviewed_by, images.reviewed_at,
+          COALESCE(images.owner, image_claims.claimed_by) AS owner
+        FROM images
+        LEFT JOIN image_claims ON image_claims.project_id = images.project_id AND image_claims.rel_path = images.file_path
+        WHERE images.project_id = ?
+        ORDER BY images.id ASC`,
       )
       .all(project.id);
     const nowTime = Date.now();
@@ -2334,6 +2350,7 @@ export async function catalogue(root, project) {
         reviewedBy: row.reviewed_by || null,
         reviewedAt: row.reviewed_at || null,
         owner: row.owner || null,
+        completedBy: row.owner || null,
         is_claimed: isClaimed,
         held_by: activeHolder,
         held_minutes_remaining: heldMinutes,
@@ -2571,6 +2588,22 @@ async function guard(req, res, url, root, method, pathname) {
     }
     syncProjectImages(db, root, project);
 
+    const targetImg = db
+      .prepare(
+        "SELECT id, project_id, file_path, status, locked_by, locked_at FROM images WHERE (project_id = :projectId OR :projectId = -1) AND (id = :imageId OR file_path = :name)",
+      )
+      .get({
+        projectId: project ? project.id : -1,
+        imageId: Number.isInteger(imageId) && imageId > 0 ? imageId : -1,
+        name: name || "",
+      });
+    if (targetImg && targetImg.status === "approved") {
+      send(res, 403, {
+        error: "Photo is approved and locked. Must be unlocked by an admin or reviewer to edit.",
+      });
+      return true;
+    }
+
     let locked = null;
     if (body.takeover && admin) {
       if (Number.isInteger(imageId) && imageId > 0) {
@@ -2663,13 +2696,106 @@ async function guard(req, res, url, root, method, pathname) {
     return true;
   }
 
-  if ((pathname === "/api/images/unlock" || pathname === "/api/unlock") && method === "POST") {
+  const unlockImageMatch = pathname.match(/^\/api\/images\/(\d+)\/unlock$/);
+  if (
+    (pathname === "/api/images/unlock" ||
+      pathname === "/api/unlock" ||
+      Boolean(unlockImageMatch)) &&
+    method === "POST"
+  ) {
     if (!user) throw new HttpError(401, "Sign in");
-    const project = requireProject(db, req);
     const body = await readBody(req);
-    const imageId = Number(body.id);
+    const imageId = unlockImageMatch ? Number(unlockImageMatch[1]) : Number(body.id);
     const name = typeof body.name === "string" ? body.name : "";
 
+    let project = null;
+    if (Number.isInteger(imageId) && imageId > 0) {
+      const imgRow = db.prepare("SELECT project_id FROM images WHERE id = ?").get(imageId);
+      if (imgRow) {
+        project = db
+          .prepare("SELECT id, name, folder FROM projects WHERE id = ?")
+          .get(imgRow.project_id);
+      }
+    }
+    if (!project) {
+      project = requireProject(db, req);
+    }
+
+    const targetImg = db
+      .prepare(
+        "SELECT id, project_id, file_path, status, locked_by, locked_at, owner, reviewed_by FROM images WHERE project_id = :projectId AND (id = :imageId OR file_path = :name)",
+      )
+      .get({
+        projectId: project.id,
+        imageId: Number.isInteger(imageId) && imageId > 0 ? imageId : -1,
+        name,
+      });
+
+    if (!targetImg) {
+      throw new HttpError(404, "Image not found");
+    }
+
+    // Explicit Unlock of Approved Photo
+    if (targetImg.status === "approved" || body.action === "unlock-approved") {
+      const isAuthorized =
+        admin ||
+        user.admin === true ||
+        user.username.toLowerCase() === "admin" ||
+        req.headers["x-role"] === "reviewer" ||
+        req.headers.referer?.includes("mode=review");
+
+      if (!isAuthorized) {
+        send(res, 403, { error: "Only Admins and Reviewers can unlock approved photos." });
+        return true;
+      }
+
+      const now = new Date().toISOString();
+      db.transaction(() => {
+        db.prepare(
+          `UPDATE images
+           SET status = 'completed',
+               locked_by = :userId,
+               locked_at = CURRENT_TIMESTAMP,
+               reviewed_by = NULL,
+               reviewed_at = NULL
+           WHERE id = :id`,
+        ).run({
+          userId: user.username,
+          id: targetImg.id,
+        });
+
+        db.prepare(
+          `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+           VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'complete', CURRENT_TIMESTAMP)
+           ON CONFLICT(project_id, rel_path) DO UPDATE SET
+             claimed_by = excluded.claimed_by,
+             claimed_at = excluded.claimed_at,
+             status = 'complete'`,
+        ).run(project.id, targetImg.file_path, user.username);
+      })();
+
+      send(res, 200, {
+        ok: true,
+        success: true,
+        id: targetImg.id,
+        name: targetImg.file_path,
+        file_path: targetImg.file_path,
+        status: "complete",
+        claimedBy: user.username,
+        claimedAt: now,
+        lockedBy: user.username,
+        lockedAt: now,
+        locked_by: user.username,
+        locked_at: now,
+        is_claimed: true,
+        held_by: user.username,
+        held_minutes_remaining: 15,
+        message: "QA approval revoked. Photo unlocked for editing.",
+      });
+      return true;
+    }
+
+    // Normal lease release for unapproved images
     const unlockQuery = `
       UPDATE images
       SET 
@@ -2687,12 +2813,12 @@ async function guard(req, res, url, root, method, pathname) {
       admin: admin ? 1 : 0,
     });
 
-    if (name) {
+    if (name || targetImg.file_path) {
       db.prepare(`
         UPDATE image_claims
         SET claimed_by = NULL, claimed_at = NULL
         WHERE project_id = ? AND rel_path = ? AND (claimed_by = ? OR ? = 1)
-      `).run(project.id, name, user.username, admin ? 1 : 0);
+      `).run(project.id, name || targetImg.file_path, user.username, admin ? 1 : 0);
     }
 
     send(res, 200, { ok: true });
@@ -2748,12 +2874,16 @@ async function guard(req, res, url, root, method, pathname) {
 
     const pendingRow = db
       .prepare(
-        `SELECT id, project_id, file_path, name, status, locked_by, locked_at, completed_at, reviewed_by, reviewed_at
+        `SELECT 
+          images.id, images.project_id, images.file_path, images.name, images.status, 
+          images.locked_by, images.locked_at, images.completed_at, images.reviewed_by, images.reviewed_at,
+          COALESCE(images.owner, image_claims.claimed_by) AS owner
          FROM images
-         WHERE project_id = :projectId
-           AND status = 'completed'
-           AND reviewed_at IS NULL
-         ORDER BY completed_at ASC, id ASC
+         LEFT JOIN image_claims ON image_claims.project_id = images.project_id AND image_claims.rel_path = images.file_path
+         WHERE images.project_id = :projectId
+           AND images.status = 'completed'
+           AND images.reviewed_at IS NULL
+         ORDER BY images.completed_at ASC, images.id ASC
          LIMIT 1`,
       )
       .get({ projectId: project.id });
@@ -2790,10 +2920,12 @@ async function guard(req, res, url, root, method, pathname) {
       ok: true,
       image: {
         id: pendingRow.id,
+        projectId: pendingRow.project_id,
         name: pendingRow.file_path,
         filePath: pendingRow.file_path,
         status: pendingRow.status,
-        completedBy: claimRow?.claimed_by || null,
+        owner: pendingRow.owner || claimRow?.claimed_by || null,
+        completedBy: pendingRow.owner || claimRow?.claimed_by || null,
         completedAt: pendingRow.completed_at || claimRow?.completed_at || null,
         reviewedBy: pendingRow.reviewed_by || null,
         reviewedAt: pendingRow.reviewed_at || null,
@@ -2922,6 +3054,16 @@ async function guard(req, res, url, root, method, pathname) {
         )
         .get(project.id, name);
       const action = typeof body.action === "string" ? body.action : "claim";
+
+      const imgRow = db
+        .prepare("SELECT id, status FROM images WHERE project_id = ? AND file_path = ?")
+        .get(project.id, name);
+      if (imgRow && imgRow.status === "approved" && action !== "release-incomplete") {
+        throw new HttpError(
+          403,
+          "Photo is approved and locked. Must be unlocked by an admin or reviewer to edit.",
+        );
+      }
 
       if (action === "release-incomplete") {
         const isExpired =
@@ -3726,10 +3868,19 @@ export async function handle(req, res, url, root) {
     }
 
     if (method === "PUT" && pathname === "/api/label") {
-      const body = await readBody(req);
-      const boxes = cleanBoxes(body.boxes);
       const user = currentUser(db, req);
       if (!user) throw new HttpError(401, "Sign in");
+      const imgRow = db
+        .prepare("SELECT id, status FROM images WHERE project_id = ? AND file_path = ?")
+        .get(project.id, name);
+      if (imgRow && imgRow.status === "approved") {
+        throw new HttpError(
+          403,
+          "Photo is approved and locked. Must be unlocked by an admin or reviewer to edit.",
+        );
+      }
+      const body = await readBody(req);
+      const boxes = cleanBoxes(body.boxes);
       claimForWrite(db, project.id, name, user.username);
       const lines = boxes.map(
         (box) =>
