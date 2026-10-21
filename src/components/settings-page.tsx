@@ -593,14 +593,14 @@ export function SettingsPage() {
                   type="button"
                   className={
                     isMaintenance
-                      ? "press inline-flex h-11 items-center justify-center gap-2 rounded-sm border border-amber-500 bg-amber-400 px-4 text-sm font-semibold text-amber-950 shadow-xs hover:bg-amber-300 dark:border-amber-400 dark:bg-amber-500 dark:text-amber-950"
-                      : "press inline-flex h-11 items-center justify-center gap-2 rounded-sm border border-amber-500/40 bg-amber-500/15 px-4 text-sm font-semibold text-amber-800 hover:bg-amber-500/25 dark:border-amber-500/30 dark:text-amber-300"
+                      ? "press inline-flex h-11 items-center justify-center gap-2 rounded-sm border-2 border-amber-600 bg-amber-400 px-4 text-sm font-bold text-amber-950 shadow-xs ring-2 ring-amber-500/40 hover:bg-amber-300 dark:border-amber-400 dark:bg-amber-500 dark:text-amber-950"
+                      : "press inline-flex h-11 items-center justify-center gap-2 rounded-sm border border-amber-500 bg-amber-100 px-4 text-sm font-bold text-amber-950 shadow-xs hover:bg-amber-200 active:bg-amber-300 dark:border-amber-600 dark:bg-amber-950/60 dark:text-amber-100 dark:hover:bg-amber-900/60"
                   }
                   onClick={() => setIsMaintenanceModalOpen(true)}
                   title="Toggle maintenance mode to safely backup and pull git updates"
                 >
                   <Wrench
-                    className="size-4 text-amber-700 dark:text-amber-400"
+                    className={`size-4 ${isMaintenance ? "text-amber-950" : "text-amber-900 dark:text-amber-200"}`}
                     aria-hidden="true"
                   />
                   <span>{isMaintenance ? "Maintenance Mode: Active" : "Maintenance Mode"}</span>

@@ -78,27 +78,27 @@ function withKeys(
 function StatusBadge({ status }: { status: PhotoStatus }) {
   if (status === "approved") {
     return (
-      <span className="inline-flex items-center rounded-sm bg-purple-500/15 px-2 py-0.5 text-xs font-medium text-purple-800">
+      <span className="inline-flex items-center rounded-sm border border-purple-300 bg-purple-100 px-2 py-0.5 text-xs font-semibold text-purple-950 dark:border-purple-800 dark:bg-purple-950 dark:text-purple-200">
         Approved
       </span>
     );
   }
   if (status === "complete") {
     return (
-      <span className="inline-flex items-center rounded-sm bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-800">
+      <span className="inline-flex items-center rounded-sm border border-emerald-300 bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
         Complete
       </span>
     );
   }
   if (status === "incomplete") {
     return (
-      <span className="inline-flex items-center rounded-sm bg-orange-500/15 px-2 py-0.5 text-xs font-medium text-orange-800">
+      <span className="inline-flex items-center rounded-sm border border-orange-300 bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-950 dark:border-orange-800 dark:bg-orange-950 dark:text-orange-200">
         Incomplete
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center rounded-sm bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-800">
+    <span className="inline-flex items-center rounded-sm border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
       Open
     </span>
   );
@@ -1173,13 +1173,13 @@ export function Labeler() {
           {isReviewMode ? (
             <div className="sticky top-0 z-40 flex flex-wrap items-center justify-between gap-3 border-b border-amber-300 bg-amber-50 px-4 py-2.5 text-amber-950 shadow-xs dark:border-amber-900/60 dark:bg-amber-950/80 dark:text-amber-100">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center rounded-sm bg-amber-200/80 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-amber-900 dark:bg-amber-800/80 dark:text-amber-200">
+                <span className="inline-flex items-center rounded-sm border border-amber-400 bg-amber-200/90 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-amber-950 dark:border-amber-700 dark:bg-amber-900 dark:text-amber-100">
                   Review QA
                 </span>
                 <p className="max-w-xs truncate font-mono text-sm font-semibold">
                   {current?.name ? `Reviewing: ${current.name}` : "No photo loaded"}
                 </p>
-                <span className="text-xs text-amber-800 dark:text-amber-300">
+                <span className="text-xs font-medium text-amber-950 dark:text-amber-100">
                   | Completed by:{" "}
                   <span className="font-semibold text-ink">
                     {current?.owner ||
@@ -1187,13 +1187,13 @@ export function Labeler() {
                       (current?.completedAt ? username || "You" : "Not completed")}
                   </span>
                   {current?.reviewedBy ? (
-                    <span className="ml-1 text-purple-700 dark:text-purple-300 font-normal">
+                    <span className="ml-1 font-semibold text-purple-900 dark:text-purple-200">
                       (Approved by {current.reviewedBy === username ? "you" : current.reviewedBy})
                     </span>
                   ) : null}
                 </span>
                 {pendingReviewCount > 0 ? (
-                  <span className="rounded-full bg-amber-200 px-2 py-0.5 font-mono text-xs font-medium text-amber-800 dark:bg-amber-800/60 dark:text-amber-200">
+                  <span className="rounded-full border border-amber-400 bg-amber-200 px-2.5 py-0.5 font-mono text-xs font-bold text-amber-950 dark:border-amber-700 dark:bg-amber-900 dark:text-amber-100">
                     {pendingReviewCount} pending
                   </span>
                 ) : null}
@@ -1205,10 +1205,10 @@ export function Labeler() {
                       type="button"
                       disabled={busy}
                       onClick={() => setShowUnlockModal(true)}
-                      className="press inline-flex h-9 items-center gap-1.5 rounded-sm border border-amber-600 bg-amber-600/10 px-3 text-xs font-semibold text-amber-900 shadow-xs hover:bg-amber-600/20 dark:text-amber-200 disabled:opacity-40"
+                      className="press inline-flex h-9 items-center gap-1.5 rounded-sm bg-amber-600 px-3 text-xs font-bold text-white shadow-xs hover:bg-amber-700 active:bg-amber-800 dark:bg-amber-600 dark:hover:bg-amber-700 disabled:opacity-40"
                       title="Revoke QA approval and unlock photo to edit"
                     >
-                      <Unlock className="size-3.5" aria-hidden="true" />
+                      <Unlock className="size-3.5 text-white" aria-hidden="true" />
                       <span>Unlock to Edit</span>
                     </button>
                   ) : null
@@ -1316,9 +1316,12 @@ export function Labeler() {
               Previous
             </button>
             {isApproved ? (
-              <span className="inline-flex items-center gap-1.5 rounded-sm bg-purple-500/15 px-3 py-2 text-xs font-semibold text-purple-800 dark:text-purple-300">
-                <Check className="size-3.5" aria-hidden="true" />✓ Approved by{" "}
-                {current?.reviewedBy || current?.owner || "QA"}
+              <span className="inline-flex items-center gap-1.5 rounded-sm border border-purple-300 bg-purple-100 px-3 py-2 text-xs font-bold text-purple-950 shadow-xs dark:border-purple-800 dark:bg-purple-950 dark:text-purple-200">
+                <Check
+                  className="size-4 text-purple-700 dark:text-purple-300 stroke-[2.5]"
+                  aria-hidden="true"
+                />
+                ✓ Approved by {current?.reviewedBy || current?.owner || "QA"}
               </span>
             ) : (
               <button
@@ -1353,11 +1356,11 @@ export function Labeler() {
             {isApproved && canUnlock ? (
               <button
                 type="button"
-                className="press inline-flex h-11 items-center gap-1.5 rounded-sm border border-amber-500/40 bg-amber-500/15 px-3.5 text-xs font-semibold text-amber-800 hover:bg-amber-500/25 dark:text-amber-200"
+                className="press inline-flex h-11 items-center gap-1.5 rounded-sm bg-amber-600 px-4 text-xs font-bold text-white shadow-xs hover:bg-amber-700 active:bg-amber-800 dark:bg-amber-600 dark:hover:bg-amber-700"
                 onClick={() => setShowUnlockModal(true)}
                 title="Unlock approved photo to edit"
               >
-                <Unlock className="size-4" aria-hidden="true" />
+                <Unlock className="size-4 text-white" aria-hidden="true" />
                 Unlock to Edit
               </button>
             ) : null}
@@ -1616,8 +1619,11 @@ export function Labeler() {
                 {isApproved ? (
                   <>
                     <div className="flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-1.5 rounded-sm bg-purple-500/15 px-2.5 py-1 text-xs font-semibold text-purple-800 dark:text-purple-300">
-                        <Check className="size-3.5" aria-hidden="true" />
+                      <span className="inline-flex items-center gap-1.5 rounded-sm border border-purple-300 bg-purple-100 px-2.5 py-1 text-xs font-bold text-purple-950 dark:border-purple-800 dark:bg-purple-950 dark:text-purple-200">
+                        <Check
+                          className="size-3.5 text-purple-700 dark:text-purple-300 stroke-[2.5]"
+                          aria-hidden="true"
+                        />
                         Approved by {current.reviewedBy || current.owner || "QA"}
                       </span>
                       <StatusBadge status={current.status} />
@@ -1628,10 +1634,10 @@ export function Labeler() {
                     {canUnlock ? (
                       <button
                         type="button"
-                        className="press inline-flex h-10 w-full items-center justify-center gap-2 rounded-sm border border-amber-500/40 bg-amber-500/15 px-4 text-xs font-semibold text-amber-800 hover:bg-amber-500/25 dark:text-amber-200"
+                        className="press inline-flex h-10 w-full items-center justify-center gap-2 rounded-sm bg-amber-600 px-4 text-xs font-bold text-white shadow-xs hover:bg-amber-700 active:bg-amber-800 dark:bg-amber-600 dark:hover:bg-amber-700"
                         onClick={() => setShowUnlockModal(true)}
                       >
-                        <Unlock className="size-4" aria-hidden="true" />
+                        <Unlock className="size-4 text-white" aria-hidden="true" />
                         Unlock to Edit
                       </button>
                     ) : null}
@@ -1662,7 +1668,7 @@ export function Labeler() {
                         </button>
                         <button
                           type="button"
-                          className="press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-sm border border-yellow-500/20 bg-yellow-400 px-4 text-sm font-medium text-yellow-950 hover:bg-yellow-500 active:bg-yellow-600 disabled:opacity-40"
+                          className="press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-sm border border-amber-400 bg-amber-300 px-4 text-sm font-semibold text-amber-950 hover:bg-amber-400 active:bg-amber-500 disabled:opacity-40 shadow-xs dark:border-amber-600 dark:bg-amber-500 dark:text-amber-950"
                           disabled={busy}
                           onClick={() => void releaseIncompleteAction()}
                         >

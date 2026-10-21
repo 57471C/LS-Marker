@@ -762,3 +762,29 @@ export async function setMaintenanceMode(
   });
   return asJson(res);
 }
+
+export type GitPullResult = {
+  ok: boolean;
+  success: boolean;
+  output: string;
+  restarting: boolean;
+  packageJsonChanged?: boolean;
+  message: string;
+};
+
+export async function executeGitPull(restart = true): Promise<GitPullResult> {
+  const res = await fetch(api("/api/system/git-pull"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ restart }),
+  });
+  return asJson(res);
+}
+
+export async function executeServerRestart(): Promise<{ ok: boolean; message: string }> {
+  const res = await fetch(api("/api/system/restart-server"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
+  return asJson(res);
+}

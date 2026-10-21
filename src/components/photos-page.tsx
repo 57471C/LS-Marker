@@ -374,19 +374,19 @@ export function PhotosPage() {
                     </td>
                     <td className="py-2.5 pr-3">
                       {isApproved ? (
-                        <span className="inline-flex items-center rounded-sm bg-purple-500/15 px-2 py-0.5 text-xs font-medium text-purple-800">
+                        <span className="inline-flex items-center rounded-sm border border-purple-300 bg-purple-100 px-2 py-0.5 text-xs font-semibold text-purple-950 dark:border-purple-800 dark:bg-purple-950 dark:text-purple-200">
                           Approved
                         </span>
                       ) : isComplete ? (
-                        <span className="inline-flex items-center rounded-sm bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-800">
+                        <span className="inline-flex items-center rounded-sm border border-emerald-300 bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
                           Complete
                         </span>
                       ) : isIncomplete ? (
-                        <span className="inline-flex items-center rounded-sm bg-orange-500/15 px-2 py-0.5 text-xs font-medium text-orange-800">
+                        <span className="inline-flex items-center rounded-sm border border-orange-300 bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-950 dark:border-orange-800 dark:bg-orange-950 dark:text-orange-200">
                           Incomplete
                         </span>
                       ) : (
-                        <span className="inline-flex items-center rounded-sm bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-800">
+                        <span className="inline-flex items-center rounded-sm border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
                           Open
                         </span>
                       )}
@@ -419,14 +419,14 @@ export function PhotosPage() {
                         const isTaken = Boolean(activeHolder && activeHolder !== username);
                         if (isMine) {
                           return (
-                            <span className="inline-flex items-center rounded-sm bg-blue-500/15 px-2 py-0.5 text-xs font-semibold text-blue-700 dark:text-blue-300">
+                            <span className="inline-flex items-center rounded-sm border border-blue-300 bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-950 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
                               Mine
                             </span>
                           );
                         }
                         if (isTaken) {
                           return (
-                            <span className="inline-flex items-center rounded-sm bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400">
+                            <span className="inline-flex items-center rounded-sm border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-950 dark:border-amber-700 dark:bg-amber-900 dark:text-amber-100">
                               Taken ({activeHolder})
                             </span>
                           );

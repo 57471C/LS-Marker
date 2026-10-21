@@ -1,8 +1,12 @@
+import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import tar from "tar-stream";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Local labelling API. Vite middleware so `npm run dev` is one process on 8080.
@@ -3585,6 +3589,100 @@ export async function handle(req, res, url, root) {
     }
   }
 
+  if (method === "POST" && pathname === "/api/system/git-pull") {
+    const db = await getDb(root);
+    const user = currentUser(db, req);
+    const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
+    if (!admin) {
+      throw new HttpError(403, "Forbidden: Admin access required");
+    }
+
+    if (!isMaintenanceMode(db)) {
+      throw new HttpError(400, "Maintenance mode must be active before running git pull.");
+    }
+
+    const body = await readBody(req).catch(() => ({}));
+    const shouldRestart = body.restart !== false;
+
+    let output = "";
+    let success = false;
+    try {
+      const result = await execFileAsync("git", ["pull"], {
+        cwd: root,
+        timeout: 45000,
+        windowsHide: true,
+      });
+      output = (result.stdout || "") + (result.stderr || "");
+      success = true;
+    } catch (err) {
+      output = `${err.stdout || ""}\n${err.stderr ? `${err.stderr}\n` : ""}${err.message || ""}`;
+      success = false;
+    }
+
+    const packageChanged = output.includes("package.json") || output.includes("package-lock.json");
+    const canRestart = Boolean(activeViteServer && typeof activeViteServer.restart === "function");
+
+    send(res, success ? 200 : 500, {
+      ok: success,
+      success,
+      output: output.trim(),
+      packageJsonChanged: packageChanged,
+      restarting: success && shouldRestart && canRestart,
+      message: success
+        ? shouldRestart && canRestart
+          ? "Git pull succeeded. Vite server is restarting."
+          : "Git pull succeeded."
+        : "Git pull failed. Check output for details.",
+    });
+
+    if (success && shouldRestart && canRestart) {
+      setTimeout(async () => {
+        try {
+          console.log("[system] Restarting Vite server after git pull...");
+          await activeViteServer.restart(true);
+        } catch (err) {
+          console.error("[system] Failed to restart Vite server:", err);
+        }
+      }, 600);
+    }
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/system/restart-server") {
+    const db = await getDb(root);
+    const user = currentUser(db, req);
+    const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
+    if (!admin) {
+      throw new HttpError(403, "Forbidden: Admin access required");
+    }
+
+    if (!isMaintenanceMode(db)) {
+      throw new HttpError(400, "Maintenance mode must be active before restarting server.");
+    }
+
+    const canRestart = Boolean(activeViteServer && typeof activeViteServer.restart === "function");
+    if (!canRestart) {
+      throw new HttpError(400, "Vite server restart is not supported in this runtime environment.");
+    }
+
+    send(res, 200, {
+      ok: true,
+      success: true,
+      restarting: true,
+      message: "Vite server is restarting.",
+    });
+
+    setTimeout(async () => {
+      try {
+        console.log("[system] Restarting Vite server...");
+        await activeViteServer.restart(true);
+      } catch (err) {
+        console.error("[system] Failed to restart Vite server:", err);
+      }
+    }, 600);
+    return;
+  }
+
   const imgDeleteMatch = pathname.match(/^\/api\/images\/(\d+)$/);
   if (
     (Boolean(imgDeleteMatch) && method === "DELETE") ||
@@ -3936,13 +4034,24 @@ export async function handle(req, res, url, root) {
   send(res, 404, { error: "Not found" });
 }
 
+let activeViteServer = null;
+
+export function restartViteServer() {
+  if (activeViteServer && typeof activeViteServer.restart === "function") {
+    return activeViteServer.restart(true);
+  }
+  return null;
+}
+
 export function labellingApiPlugin() {
   return {
     name: "labelling-api",
     configureServer(server) {
+      activeViteServer = server;
       mount(server);
     },
     configurePreviewServer(server) {
+      activeViteServer = server;
       mount(server);
     },
   };

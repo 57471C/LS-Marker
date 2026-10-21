@@ -1,6 +1,21 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Loader2, ShieldAlert, Users, Wrench, X } from "lucide-react";
-import { fetchBackupStatus, type BackupStatusResult } from "@/lib/label-client";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  GitBranch,
+  Loader2,
+  ShieldAlert,
+  Users,
+  Wrench,
+  X,
+} from "lucide-react";
+import {
+  executeGitPull,
+  fetchBackupStatus,
+  type BackupStatusResult,
+  type GitPullResult,
+} from "@/lib/label-client";
 
 type MaintenanceModalProps = {
   isOpen: boolean;
@@ -20,11 +35,18 @@ export function MaintenanceModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [pulling, setPulling] = useState(false);
+  const [pullResult, setPullResult] = useState<GitPullResult | null>(null);
+  const [countdown, setCountdown] = useState<number | null>(null);
+
   useEffect(() => {
     if (!isOpen) {
       setSessions(null);
       setError(null);
       setSubmitting(false);
+      setPulling(false);
+      setPullResult(null);
+      setCountdown(null);
       return;
     }
 
@@ -65,6 +87,39 @@ export function MaintenanceModal({
     }
   }
 
+  async function handleGitPull() {
+    setPulling(true);
+    setPullResult(null);
+    setCountdown(null);
+    try {
+      const res = await executeGitPull(true);
+      setPullResult(res);
+      if (res.success && res.restarting) {
+        let remaining = 3;
+        setCountdown(remaining);
+        const timer = setInterval(() => {
+          remaining -= 1;
+          if (remaining <= 0) {
+            clearInterval(timer);
+            window.location.reload();
+          } else {
+            setCountdown(remaining);
+          }
+        }, 1000);
+      }
+    } catch (err: unknown) {
+      setPullResult({
+        ok: false,
+        success: false,
+        output: err instanceof Error ? err.message : "Git pull request failed",
+        restarting: false,
+        message: "Failed to execute git pull",
+      });
+    } finally {
+      setPulling(false);
+    }
+  }
+
   const hasActiveSessions = Boolean(sessions?.activeCount && sessions.activeCount > 0);
 
   return (
@@ -88,8 +143,8 @@ export function MaintenanceModal({
             <div
               className={`flex size-10 shrink-0 items-center justify-center rounded-full ${
                 isMaintenance
-                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                  : "bg-blue-500/15 text-blue-700 dark:text-blue-400"
+                  ? "border border-amber-300 bg-amber-100 text-amber-950 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
+                  : "border border-blue-300 bg-blue-100 text-blue-950 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-200"
               }`}
             >
               {isMaintenance ? (
@@ -131,34 +186,107 @@ export function MaintenanceModal({
         <div className="flex flex-col gap-3">
           {/* Status Banner */}
           {isMaintenance ? (
-            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-950 dark:border-amber-700/50 dark:bg-amber-950/20 dark:text-amber-200">
-              <div className="flex items-center gap-2 font-semibold text-xs">
+            <div className="rounded-lg border border-amber-300 bg-amber-50/80 p-3.5 text-ink dark:border-amber-700/60 dark:bg-amber-950/30">
+              <div className="flex items-center gap-2 font-bold text-xs text-amber-950 dark:text-amber-200">
                 <AlertTriangle
-                  className="size-4 text-amber-600 dark:text-amber-400"
+                  className="size-4 shrink-0 text-amber-600 dark:text-amber-400"
                   aria-hidden="true"
                 />
                 <span>MAINTENANCE MODE IS CURRENTLY ACTIVE</span>
               </div>
-              <p className="mt-1 text-xs text-amber-800 dark:text-amber-300">
+              <p className="mt-1.5 text-xs leading-relaxed text-ink/85 dark:text-ink/90">
                 Non-admin annotators cannot claim images, save labels, or alter data. Admins retain
                 full access.
               </p>
             </div>
           ) : (
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-emerald-950 dark:border-emerald-800/50 dark:bg-emerald-950/20 dark:text-emerald-200">
-              <div className="flex items-center gap-2 font-semibold text-xs">
+            <div className="rounded-lg border border-emerald-300 bg-emerald-50/80 p-3.5 text-ink dark:border-emerald-800/60 dark:bg-emerald-950/30">
+              <div className="flex items-center gap-2 font-bold text-xs text-emerald-950 dark:text-emerald-200">
                 <CheckCircle2
-                  className="size-4 text-emerald-600 dark:text-emerald-400"
+                  className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400"
                   aria-hidden="true"
                 />
                 <span>NORMAL OPERATION (Maintenance Mode is OFF)</span>
               </div>
-              <p className="mt-1 text-xs text-emerald-800 dark:text-emerald-300">
+              <p className="mt-1.5 text-xs leading-relaxed text-ink/85 dark:text-ink/90">
                 Staff can freely claim and label images. Enable maintenance mode before running git
                 pull or applying server updates.
               </p>
             </div>
           )}
+
+          {/* Git Pull & Server Update (Active in Maintenance Mode) */}
+          {isMaintenance ? (
+            <div className="rounded-lg border-2 border-amber-400 bg-amber-50/70 p-4 text-ink dark:border-amber-700/60 dark:bg-amber-950/25">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-2.5">
+                  <GitBranch
+                    className="mt-0.5 size-5 shrink-0 text-amber-700 dark:text-amber-400"
+                    aria-hidden="true"
+                  />
+                  <div>
+                    <h3 className="text-sm font-bold text-ink">Update from GitHub</h3>
+                    <p className="text-xs text-muted">
+                      Pull latest code and restart Vite dev server.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={pulling || submitting}
+                  onClick={() => void handleGitPull()}
+                  className="press inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-sm bg-amber-600 px-4 text-xs font-bold text-white shadow-xs hover:bg-amber-700 active:bg-amber-800 disabled:opacity-50"
+                >
+                  {pulling ? (
+                    <>
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                      <span>Pulling &amp; Restarting…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="size-3.5" aria-hidden="true" />
+                      <span>Git Pull &amp; Restart</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {pullResult ? (
+                <div className="mt-3 flex flex-col gap-2">
+                  <div
+                    className={`flex items-center gap-2 rounded-sm p-2.5 text-xs font-semibold ${
+                      pullResult.success
+                        ? "border border-emerald-300 bg-emerald-100 text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                        : "border border-red-300 bg-red-100 text-red-950 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
+                    }`}
+                  >
+                    {pullResult.success ? (
+                      <CheckCircle2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    ) : (
+                      <AlertTriangle className="size-4 shrink-0 text-red-600 dark:text-red-400" />
+                    )}
+                    <span>{pullResult.message}</span>
+                    {countdown !== null ? (
+                      <span className="ml-auto font-mono text-xs font-bold text-emerald-800 dark:text-emerald-300 animate-pulse">
+                        Reloading in {countdown}s…
+                      </span>
+                    ) : null}
+                  </div>
+                  {pullResult.packageJsonChanged ? (
+                    <p className="text-[11px] font-medium text-amber-800 dark:text-amber-300">
+                      Note: package.json changed. If dependencies were added, an `npm install` may
+                      be required.
+                    </p>
+                  ) : null}
+                  {pullResult.output ? (
+                    <pre className="max-h-36 overflow-auto rounded-sm border border-line bg-surface p-2.5 font-mono text-[11px] leading-tight text-ink/90 whitespace-pre-wrap select-all">
+                      {pullResult.output}
+                    </pre>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           {/* Active Sessions Warning */}
           {loading ? (
@@ -184,12 +312,12 @@ export function MaintenanceModal({
               </p>
             </div>
           ) : (
-            <div className="flex items-center gap-2 rounded-lg border border-line bg-surface-raised/30 p-2.5 text-xs text-muted">
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50/70 p-3 text-xs dark:border-emerald-800/60 dark:bg-emerald-950/30">
               <CheckCircle2
-                className="size-4 text-emerald-600 dark:text-emerald-400"
+                className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400"
                 aria-hidden="true"
               />
-              <span>
+              <span className="font-medium text-emerald-950 dark:text-emerald-100">
                 No annotators are currently holding active image leases. Safe to perform
                 maintenance.
               </span>
