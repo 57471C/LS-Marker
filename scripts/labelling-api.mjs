@@ -148,6 +148,13 @@ export function getDb(root) {
               ic TEXT NOT NULL,
               des TEXT NOT NULL,
               color TEXT,
+              part_type TEXT DEFAULT NULL,
+              dim1_name TEXT DEFAULT NULL,
+              dim1_mm REAL DEFAULT NULL,
+              dim2_name TEXT DEFAULT NULL,
+              dim2_mm REAL DEFAULT NULL,
+              dim3_name TEXT DEFAULT NULL,
+              dim3_mm REAL DEFAULT NULL,
               PRIMARY KEY (project_id, id),
               UNIQUE (project_id, ic)
             );
@@ -219,6 +226,19 @@ export function getDb(root) {
           }
           ensureDefaultProject(db, root);
         }
+        const currentClassCols = db.prepare("PRAGMA table_info(classes)").all();
+        const addClassCol = (colName, colType) => {
+          if (currentClassCols.length && !currentClassCols.some((c) => c.name === colName)) {
+            db.exec(`ALTER TABLE classes ADD COLUMN ${colName} ${colType}`);
+          }
+        };
+        addClassCol("part_type", "TEXT DEFAULT NULL");
+        addClassCol("dim1_name", "TEXT DEFAULT NULL");
+        addClassCol("dim1_mm", "REAL DEFAULT NULL");
+        addClassCol("dim2_name", "TEXT DEFAULT NULL");
+        addClassCol("dim2_mm", "REAL DEFAULT NULL");
+        addClassCol("dim3_name", "TEXT DEFAULT NULL");
+        addClassCol("dim3_mm", "REAL DEFAULT NULL");
         for (const project of db.prepare("SELECT id, folder FROM projects").all()) {
           assignMissingColors(db, project.id);
           rememberProjectFolder(path.resolve(root, project.folder));
@@ -1572,6 +1592,68 @@ export function prepareExportPlan(
 }
 
 /**
+ * Builds dimensions.json metadata containing only classes that have dimension values set.
+ * @param {{ id: number, name: string }} project
+ * @param {Array<{
+ *   id: number,
+ *   ic: string,
+ *   des?: string,
+ *   part_type?: string | null,
+ *   dim1_name?: string | null,
+ *   dim1_mm?: number | null,
+ *   dim2_name?: string | null,
+ *   dim2_mm?: number | null,
+ *   dim3_name?: string | null,
+ *   dim3_mm?: number | null,
+ * }>} classes
+ */
+export function buildDimensionsJson(project, classes) {
+  const hasMm = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
+  const withValues = classes
+    .filter((c) => {
+      const pt = c.part_type ? String(c.part_type).trim().toLowerCase() : "none";
+      if (!pt || pt === "none") return false;
+      return hasMm(c.dim1_mm) || hasMm(c.dim2_mm) || hasMm(c.dim3_mm);
+    })
+    .map((c) => {
+      const dimensions = [];
+      if (hasMm(c.dim1_mm)) {
+        dimensions.push({ name: c.dim1_name || "dim1", mm: Number(c.dim1_mm) });
+      }
+      if (hasMm(c.dim2_mm)) {
+        dimensions.push({ name: c.dim2_name || "dim2", mm: Number(c.dim2_mm) });
+      }
+      if (hasMm(c.dim3_mm)) {
+        dimensions.push({ name: c.dim3_name || "dim3", mm: Number(c.dim3_mm) });
+      }
+      return {
+        id: c.id,
+        ic: c.ic,
+        description: c.des || "",
+        part_type: c.part_type,
+        dimensions,
+        dim1_name: c.dim1_name ?? null,
+        dim1_mm: hasMm(c.dim1_mm) ? Number(c.dim1_mm) : null,
+        dim2_name: c.dim2_name ?? null,
+        dim2_mm: hasMm(c.dim2_mm) ? Number(c.dim2_mm) : null,
+        dim3_name: c.dim3_name ?? null,
+        dim3_mm: hasMm(c.dim3_mm) ? Number(c.dim3_mm) : null,
+      };
+    });
+
+  return `${JSON.stringify(
+    {
+      project_name: project.name,
+      exported_at: new Date().toISOString(),
+      unit: "mm",
+      classes: withValues,
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+/**
  * @param {import("http").IncomingMessage} req
  * @param {import("http").ServerResponse} res
  * @param {import("better-sqlite3").Database} db
@@ -1579,6 +1661,8 @@ export function prepareExportPlan(
  * @param {string} resolvedFolder
  * @param {"labels_only" | "full_tar"} exportType
  * @param {number} trainSplitPct
+ * @param {"all" | "approved"} [exportScope]
+ * @param {boolean} [includeDimensions]
  */
 async function streamYoloExport(
   req,
@@ -1589,6 +1673,7 @@ async function streamYoloExport(
   exportType,
   trainSplitPct,
   exportScope = "all",
+  includeDimensions = false,
 ) {
   const { classes, items, manifest } = prepareExportPlan(
     db,
@@ -1648,6 +1733,9 @@ async function streamYoloExport(
   try {
     await addTarBuffer(pack, "data.yaml", dataYaml);
     await addTarBuffer(pack, "export_manifest.json", manifestJson);
+    if (includeDimensions) {
+      await addTarBuffer(pack, "dimensions.json", buildDimensionsJson(project, classes));
+    }
 
     if (exportType === "labels_only") {
       const trainPaths = items
@@ -1733,6 +1821,7 @@ async function streamCocoExport(
   exportType,
   trainSplitPct,
   exportScope = "all",
+  includeDimensions = false,
 ) {
   const { classes, items, manifest } = prepareExportPlan(
     db,
@@ -1791,6 +1880,9 @@ async function streamCocoExport(
 
   try {
     await addTarBuffer(pack, "export_manifest.json", manifestJson);
+    if (includeDimensions) {
+      await addTarBuffer(pack, "dimensions.json", buildDimensionsJson(project, classes));
+    }
     await addTarDirectory(pack, "annotations/");
     await addTarBuffer(pack, "annotations/instances_train.json", trainJson);
     await addTarBuffer(pack, "annotations/instances_val.json", valJson);
@@ -1957,8 +2049,121 @@ function writeClassesFile(db, projectId, folder) {
  */
 function listClasses(db, projectId) {
   return db
-    .prepare("SELECT id, ic, des, color FROM classes WHERE project_id = ? ORDER BY id")
+    .prepare(
+      `SELECT id, ic, des, color, part_type, dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
+       FROM classes WHERE project_id = ? ORDER BY id`,
+    )
     .all(projectId);
+}
+
+const VALID_PART_TYPES = new Set(["none", "bolt", "nut", "washer", "cable_tie", "other"]);
+
+const DEFAULT_DIM_NAMES = {
+  bolt: ["Length under head", "Thread diameter", null],
+  nut: ["Across flats (A/F)", "Height", null],
+  washer: ["Outer diameter", "Inner diameter", "Thickness"],
+  cable_tie: ["Length", "Width", null],
+};
+
+function cleanOptionalDimName(val, maxLen = 60) {
+  if (val === undefined || val === null) return null;
+  const s = String(val).trim();
+  if (!s) return null;
+  if (s.length > maxLen) {
+    throw new HttpError(400, `Dimension name is limited to ${maxLen} characters`);
+  }
+  return s;
+}
+
+function cleanOptionalDimMm(val, label = "Dimension value") {
+  if (val === undefined || val === null || val === "") return null;
+  const n = Number(val);
+  if (!Number.isFinite(n) || n < 0 || n > 100000) {
+    throw new HttpError(400, `${label} must be a valid positive number (mm)`);
+  }
+  return Math.round(n * 1000) / 1000;
+}
+
+/**
+ * @param {Record<string, unknown>} body
+ */
+export function cleanClassDimensions(body) {
+  const rawType =
+    body.part_type === undefined || body.part_type === null
+      ? "none"
+      : String(body.part_type).trim().toLowerCase() || "none";
+  if (!VALID_PART_TYPES.has(rawType)) {
+    throw new HttpError(400, "Invalid part_type");
+  }
+  if (rawType === "none") {
+    return {
+      part_type: null,
+      dim1_name: null,
+      dim1_mm: null,
+      dim2_name: null,
+      dim2_mm: null,
+      dim3_name: null,
+      dim3_mm: null,
+    };
+  }
+  const defaults = DEFAULT_DIM_NAMES[rawType];
+  const dim1_name = defaults ? defaults[0] : cleanOptionalDimName(body.dim1_name);
+  const dim2_name = defaults ? defaults[1] : cleanOptionalDimName(body.dim2_name);
+  const dim3_name = defaults ? defaults[2] : cleanOptionalDimName(body.dim3_name);
+  const dim1_mm = cleanOptionalDimMm(body.dim1_mm, dim1_name || "Dimension 1");
+  const dim2_mm = cleanOptionalDimMm(body.dim2_mm, dim2_name || "Dimension 2");
+  const dim3_mm =
+    rawType === "washer" || rawType === "other"
+      ? cleanOptionalDimMm(body.dim3_mm, dim3_name || "Dimension 3")
+      : null;
+
+  return {
+    part_type: rawType,
+    dim1_name,
+    dim1_mm,
+    dim2_name,
+    dim2_mm,
+    dim3_name,
+    dim3_mm,
+  };
+}
+
+/**
+ * @param {{
+ *   part_type?: string | null,
+ *   dim1_name?: string | null,
+ *   dim1_mm?: number | null,
+ *   dim2_name?: string | null,
+ *   dim2_mm?: number | null,
+ *   dim3_name?: string | null,
+ *   dim3_mm?: number | null,
+ * }} cls
+ * @returns {"complete" | "missing" | "none"}
+ */
+export function computeClassDimensionsStatus(cls) {
+  const pt = cls?.part_type ? String(cls.part_type).trim().toLowerCase() : "none";
+  if (!pt || pt === "none") return "none";
+
+  const hasMm = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
+  const hasName = (v) => typeof v === "string" && v.trim().length > 0;
+
+  if (pt === "bolt" || pt === "nut" || pt === "cable_tie") {
+    return hasMm(cls.dim1_mm) && hasMm(cls.dim2_mm) ? "complete" : "missing";
+  }
+  if (pt === "washer") {
+    return hasMm(cls.dim1_mm) && hasMm(cls.dim2_mm) && hasMm(cls.dim3_mm) ? "complete" : "missing";
+  }
+  if (pt === "other") {
+    const pairs = [
+      [hasName(cls.dim1_name), hasMm(cls.dim1_mm)],
+      [hasName(cls.dim2_name), hasMm(cls.dim2_mm)],
+      [hasName(cls.dim3_name), hasMm(cls.dim3_mm)],
+    ];
+    const anyFilled = pairs.some(([n, m]) => n && m);
+    const anyPartial = pairs.some(([n, m]) => (n && !m) || (!n && m));
+    return anyFilled && !anyPartial ? "complete" : "missing";
+  }
+  return "none";
 }
 
 /**
@@ -2111,6 +2316,7 @@ export function computeProjectHealth(root, project, db) {
   const unlabeledImages = Math.max(0, totalImages - completedImages);
   const seenClassIds = new Set();
   const classesStats = [];
+  let missingDimensionsCount = 0;
 
   for (const c of classes) {
     seenClassIds.add(c.id);
@@ -2122,6 +2328,10 @@ export function computeProjectHealth(root, project, db) {
     } else if (count > 0) {
       status = "low";
     }
+    const dimensionsStatus = computeClassDimensionsStatus(c);
+    if (dimensionsStatus === "missing") {
+      missingDimensionsCount++;
+    }
     classesStats.push({
       id: c.id,
       name: c.ic,
@@ -2130,6 +2340,14 @@ export function computeProjectHealth(root, project, db) {
       count,
       percentage,
       status,
+      dimensionsStatus,
+      part_type: c.part_type ?? null,
+      dim1_name: c.dim1_name ?? null,
+      dim1_mm: c.dim1_mm ?? null,
+      dim2_name: c.dim2_name ?? null,
+      dim2_mm: c.dim2_mm ?? null,
+      dim3_name: c.dim3_name ?? null,
+      dim3_mm: c.dim3_mm ?? null,
     });
   }
 
@@ -2150,6 +2368,7 @@ export function computeProjectHealth(root, project, db) {
         count,
         percentage,
         status,
+        dimensionsStatus: "none",
       });
     }
   }
@@ -2163,6 +2382,7 @@ export function computeProjectHealth(root, project, db) {
       unlabeledImages,
       cleanImages,
       totalBoxes,
+      missingDimensionsCount,
     },
     classes: classesStats,
   };
@@ -3839,24 +4059,43 @@ export async function handle(req, res, url, root) {
     const body = await readBody(req);
     const ic = cleanText(body.ic, "Item code", 40);
     const des = cleanText(body.des, "Description", 120);
+    const dims = cleanClassDimensions(body);
     const next = db
       .prepare("SELECT COALESCE(MAX(id), -1) + 1 AS id FROM classes WHERE project_id = ?")
       .get(project.id);
     const color = pickColor(db, project.id);
     try {
-      db.prepare("INSERT INTO classes (project_id, id, ic, des, color) VALUES (?, ?, ?, ?, ?)").run(
+      db.prepare(
+        `INSERT INTO classes (
+          project_id, id, ic, des, color,
+          part_type, dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
         project.id,
         next.id,
         ic,
         des,
         color,
+        dims.part_type,
+        dims.dim1_name,
+        dims.dim1_mm,
+        dims.dim2_name,
+        dims.dim2_mm,
+        dims.dim3_name,
+        dims.dim3_mm,
       );
     } catch (err) {
       if (String(err).includes("UNIQUE")) throw new HttpError(409, "That item code already exists");
       throw err;
     }
     writeClassesFile(db, project.id, path.resolve(root, project.folder));
-    send(res, 200, { id: next.id, ic, des, color });
+    send(res, 200, {
+      id: next.id,
+      ic,
+      des,
+      color,
+      ...dims,
+    });
     return;
   }
 
@@ -3872,20 +4111,55 @@ export async function handle(req, res, url, root) {
       .prepare("SELECT id FROM classes WHERE project_id = ? AND id = ?")
       .get(project.id, id);
     if (!existing) throw new HttpError(404, "Class not found");
+    const hasDimsPayload =
+      body.part_type !== undefined ||
+      body.dim1_name !== undefined ||
+      body.dim1_mm !== undefined ||
+      body.dim2_name !== undefined ||
+      body.dim2_mm !== undefined ||
+      body.dim3_name !== undefined ||
+      body.dim3_mm !== undefined;
     try {
-      db.prepare("UPDATE classes SET ic = ?, des = ? WHERE project_id = ? AND id = ?").run(
-        ic,
-        des,
-        project.id,
-        id,
-      );
+      if (hasDimsPayload) {
+        const dims = cleanClassDimensions(body);
+        db.prepare(
+          `UPDATE classes
+           SET ic = ?, des = ?,
+               part_type = ?, dim1_name = ?, dim1_mm = ?,
+               dim2_name = ?, dim2_mm = ?,
+               dim3_name = ?, dim3_mm = ?
+           WHERE project_id = ? AND id = ?`,
+        ).run(
+          ic,
+          des,
+          dims.part_type,
+          dims.dim1_name,
+          dims.dim1_mm,
+          dims.dim2_name,
+          dims.dim2_mm,
+          dims.dim3_name,
+          dims.dim3_mm,
+          project.id,
+          id,
+        );
+      } else {
+        db.prepare("UPDATE classes SET ic = ?, des = ? WHERE project_id = ? AND id = ?").run(
+          ic,
+          des,
+          project.id,
+          id,
+        );
+      }
     } catch (err) {
       if (String(err).includes("UNIQUE")) throw new HttpError(409, "That item code already exists");
       throw err;
     }
     writeClassesFile(db, project.id, path.resolve(root, project.folder));
     const row = db
-      .prepare("SELECT id, ic, des, color FROM classes WHERE project_id = ? AND id = ?")
+      .prepare(
+        `SELECT id, ic, des, color, part_type, dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
+         FROM classes WHERE project_id = ? AND id = ?`,
+      )
       .get(project.id, id);
     send(res, 200, row);
     return;
@@ -3973,6 +4247,15 @@ export async function handle(req, res, url, root) {
     /** @type {"all" | "approved"} */
     const exportScope = rawScope === "approved" ? "approved" : "all";
 
+    const rawDims = (
+      url.searchParams.get("dimensions") ??
+      url.searchParams.get("include_dimensions") ??
+      ""
+    )
+      .trim()
+      .toLowerCase();
+    const includeDimensions = ["1", "true", "yes"].includes(rawDims);
+
     try {
       writeClassesFile(db, project.id, resolvedFolder);
     } catch (err) {
@@ -3989,6 +4272,7 @@ export async function handle(req, res, url, root) {
         exportType,
         trainSplitPct,
         exportScope,
+        includeDimensions,
       );
     } else {
       await streamYoloExport(
@@ -4000,6 +4284,7 @@ export async function handle(req, res, url, root) {
         exportType,
         trainSplitPct,
         exportScope,
+        includeDimensions,
       );
     }
     return;

@@ -76,6 +76,7 @@ export function SettingsPage() {
   const [exportType, setExportType] = useState<DatasetExportType>("labels_only");
   const [exportScope, setExportScope] = useState<ExportScope>("all");
   const [trainSplit, setTrainSplit] = useState<number>(80);
+  const [includeDimensions, setIncludeDimensions] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [bytesExported, setBytesExported] = useState(0);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -159,6 +160,7 @@ export function SettingsPage() {
     setExportType("labels_only");
     setExportScope("all");
     setTrainSplit(80);
+    setIncludeDimensions(false);
     setExportError(null);
     setBytesExported(0);
     setIsExporting(false);
@@ -189,6 +191,7 @@ export function SettingsPage() {
         exportType,
         trainSplit,
         scope: exportScope,
+        includeDimensions,
         signal: controller.signal,
         onProgress: (loaded) => setBytesExported(loaded),
       });
@@ -867,6 +870,30 @@ export function SettingsPage() {
                   </div>
                 </div>
               </div>
+
+              {(exportFormat === "yolo" || exportFormat === "coco") && (
+                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-line bg-surface p-3.5 hover:bg-surface-raised/60">
+                  <input
+                    type="checkbox"
+                    checked={includeDimensions}
+                    disabled={isExporting}
+                    onChange={(event) => setIncludeDimensions(event.target.checked)}
+                    className="mt-0.5 size-4 rounded border-line accent-blue-600 disabled:opacity-50"
+                  />
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-xs font-semibold text-ink">
+                      Include part dimensions (metadata)
+                    </span>
+                    <span className="text-[11px] leading-relaxed text-muted">
+                      Writes a standalone{" "}
+                      <code className="font-mono text-ink">dimensions.json</code> file alongside the
+                      export archive containing classes with recorded measurements. Label files,{" "}
+                      <code className="font-mono text-ink">data.yaml</code>, and COCO annotations
+                      remain untouched.
+                    </span>
+                  </div>
+                </label>
+              )}
 
               {isExporting ? (
                 <div

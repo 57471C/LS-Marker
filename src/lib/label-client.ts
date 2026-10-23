@@ -1,4 +1,17 @@
-export type ClassRow = { id: number; ic: string; des: string; color: string };
+export type PartType = "none" | "bolt" | "nut" | "washer" | "cable_tie" | "other";
+export type ClassRow = {
+  id: number;
+  ic: string;
+  des: string;
+  color: string;
+  part_type?: PartType | null;
+  dim1_name?: string | null;
+  dim1_mm?: number | null;
+  dim2_name?: string | null;
+  dim2_mm?: number | null;
+  dim3_name?: string | null;
+  dim3_mm?: number | null;
+};
 export type PhotoStatus = "open" | "incomplete" | "complete" | "approved";
 export type ImageRow = {
   id?: number;
@@ -90,6 +103,7 @@ export type DatasetExportOptions = {
   format?: ExportFormat;
   trainSplit?: number;
   scope?: ExportScope;
+  includeDimensions?: boolean;
   signal?: AbortSignal;
   onProgress?: (bytesLoaded: number) => void;
 };
@@ -102,6 +116,7 @@ export function datasetExportUrl(
   trainSplit = 80,
   format: ExportFormat = "yolo",
   scope: ExportScope = "all",
+  includeDimensions = false,
 ): string {
   const params = new URLSearchParams({
     id: String(projectId),
@@ -110,6 +125,9 @@ export function datasetExportUrl(
     format,
     scope,
   });
+  if (includeDimensions) {
+    params.set("dimensions", "1");
+  }
   return api(`/api/export?${params.toString()}`);
 }
 
@@ -118,8 +136,9 @@ export function yoloExportUrl(
   exportType: YoloExportType,
   trainSplit = 80,
   scope: ExportScope = "all",
+  includeDimensions = false,
 ): string {
-  return datasetExportUrl(projectId, exportType, trainSplit, "yolo", scope);
+  return datasetExportUrl(projectId, exportType, trainSplit, "yolo", scope, includeDimensions);
 }
 
 export function cocoExportUrl(
@@ -127,8 +146,9 @@ export function cocoExportUrl(
   exportType: DatasetExportType,
   trainSplit = 80,
   scope: ExportScope = "all",
+  includeDimensions = false,
 ): string {
-  return datasetExportUrl(projectId, exportType, trainSplit, "coco", scope);
+  return datasetExportUrl(projectId, exportType, trainSplit, "coco", scope, includeDimensions);
 }
 
 export async function downloadDatasetExport(options: DatasetExportOptions): Promise<void> {
@@ -138,12 +158,16 @@ export async function downloadDatasetExport(options: DatasetExportOptions): Prom
     format = "yolo",
     trainSplit = 80,
     scope = "all",
+    includeDimensions = false,
     signal,
     onProgress,
   } = options;
-  const res = await fetch(datasetExportUrl(projectId, exportType, trainSplit, format, scope), {
-    signal,
-  });
+  const res = await fetch(
+    datasetExportUrl(projectId, exportType, trainSplit, format, scope, includeDimensions),
+    {
+      signal,
+    },
+  );
   if (!res.ok) {
     const message = await failMessage(res);
     if (res.status === 401 && message === "Sign in" && typeof window !== "undefined") {
@@ -281,7 +305,15 @@ export function importClasses(
   }).then((res) => asJson(res));
 }
 
-export function updateClass(row: Pick<ClassRow, "id" | "ic" | "des">): Promise<ClassRow> {
+export type UpdateClassInput = Pick<ClassRow, "id" | "ic" | "des"> &
+  Partial<
+    Pick<
+      ClassRow,
+      "part_type" | "dim1_name" | "dim1_mm" | "dim2_name" | "dim2_mm" | "dim3_name" | "dim3_mm"
+    >
+  >;
+
+export function updateClass(row: UpdateClassInput): Promise<ClassRow> {
   return fetch(api("/api/classes"), {
     method: "PATCH",
     headers: { "content-type": "application/json" },
@@ -636,6 +668,7 @@ export async function submitReviewAction(
 }
 
 export type ClassHealthStatus = "healthy" | "low" | "missing";
+export type ClassDimensionsStatus = "complete" | "missing" | "none";
 
 export type ClassHealthStat = {
   id: number;
@@ -645,6 +678,14 @@ export type ClassHealthStat = {
   count: number;
   percentage: number;
   status: ClassHealthStatus;
+  dimensionsStatus?: ClassDimensionsStatus;
+  part_type?: PartType | null;
+  dim1_name?: string | null;
+  dim1_mm?: number | null;
+  dim2_name?: string | null;
+  dim2_mm?: number | null;
+  dim3_name?: string | null;
+  dim3_mm?: number | null;
 };
 
 export type ProjectHealthSummary = {
@@ -653,6 +694,7 @@ export type ProjectHealthSummary = {
   unlabeledImages: number;
   cleanImages: number;
   totalBoxes: number;
+  missingDimensionsCount?: number;
 };
 
 export type ProjectHealthResult = {

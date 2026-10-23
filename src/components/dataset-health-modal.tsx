@@ -21,6 +21,10 @@ export function DatasetHealthModal({ health, onClose }: DatasetHealthModalProps)
   const lowClasses = classes.filter((c) => c.status === "low");
   const hasIssues = missingClasses.length > 0 || lowClasses.length > 0;
 
+  const missingDimClasses = classes.filter((c) => c.dimensionsStatus === "missing");
+  const missingDimCount = summary.missingDimensionsCount ?? missingDimClasses.length;
+  const completeDimCount = classes.filter((c) => c.dimensionsStatus === "complete").length;
+
   const completedPct =
     summary.totalImages > 0 ? Math.round((summary.completedImages / summary.totalImages) * 100) : 0;
 
@@ -59,6 +63,17 @@ export function DatasetHealthModal({ health, onClose }: DatasetHealthModalProps)
               </h2>
               <p className="font-mono text-xs text-muted">
                 Class balance &amp; annotation distribution audit
+                {" · "}
+                {missingDimCount > 0 ? (
+                  <span className="font-semibold text-amber-700">
+                    {missingDimCount} {missingDimCount === 1 ? "class" : "classes"} missing
+                    dimensions
+                  </span>
+                ) : completeDimCount > 0 ? (
+                  <span className="text-emerald-700">0 classes missing dimensions</span>
+                ) : (
+                  <span>No part dimensions configured</span>
+                )}
               </p>
             </div>
           </div>
@@ -183,6 +198,29 @@ export function DatasetHealthModal({ health, onClose }: DatasetHealthModalProps)
             </div>
           )}
 
+          {/* Separate Part Dimensions Warning (does not block All Classes Healthy) */}
+          {missingDimCount > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3.5 text-amber-900">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="mt-0.5 size-4.5 shrink-0 text-amber-600" />
+                <div className="flex flex-col gap-0.5 text-xs">
+                  <span className="font-semibold uppercase tracking-wide">
+                    {missingDimCount} {missingDimCount === 1 ? "class" : "classes"} missing
+                    dimensions
+                  </span>
+                  <p className="leading-relaxed text-amber-800">
+                    Part type is assigned but one or more expected measurement values (mm) are
+                    blank:{" "}
+                    <span className="font-medium">
+                      {missingDimClasses.map((c) => c.name).join(", ")}
+                    </span>
+                    . Reference metadata only — training exports remain unaffected.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Class Breakdown Table */}
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between text-xs">
@@ -199,6 +237,7 @@ export function DatasetHealthModal({ health, onClose }: DatasetHealthModalProps)
                     <th className="px-3 py-2.5">IC Code (Class)</th>
                     <th className="px-3 py-2.5 font-mono text-right">Box Count</th>
                     <th className="px-3 py-2.5">Distribution (%)</th>
+                    <th className="px-3 py-2.5 text-center">Dimensions</th>
                     <th className="px-3 py-2.5 text-center">Health Status</th>
                   </tr>
                 </thead>
@@ -242,6 +281,19 @@ export function DatasetHealthModal({ health, onClose }: DatasetHealthModalProps)
                           </div>
                         </td>
                         <td className="px-3 py-2.5 text-center">
+                          {cls.dimensionsStatus === "complete" ? (
+                            <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                              Complete
+                            </span>
+                          ) : cls.dimensionsStatus === "missing" ? (
+                            <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                              Missing
+                            </span>
+                          ) : (
+                            <span className="text-muted">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 text-center">
                           {cls.status === "healthy" ? (
                             <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
                               Healthy ({cls.count})
@@ -261,7 +313,7 @@ export function DatasetHealthModal({ health, onClose }: DatasetHealthModalProps)
                   })}
                   {classes.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="px-4 py-6 text-center text-muted font-sans">
+                      <td colSpan={5} className="px-4 py-6 text-center text-muted font-sans">
                         No classes found.
                       </td>
                     </tr>
