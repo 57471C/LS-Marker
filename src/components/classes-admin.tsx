@@ -57,6 +57,155 @@ function formatPartSummary(row: ClassRow): string | null {
   return pt === "other" ? `${label} (${vals.join(", ")})` : `${label}: ${vals.join(" × ")} mm`;
 }
 
+function hasCompleteMeasurements(row: ClassRow): boolean {
+  const pt = row.part_type;
+  if (!pt || pt === "none") return false;
+  const hasMm = (v: number | null | undefined) =>
+    v !== null && v !== undefined && Number.isFinite(Number(v));
+  const hasName = (v: string | null | undefined) => typeof v === "string" && v.trim().length > 0;
+
+  if (pt === "bolt" || pt === "nut" || pt === "cable_tie") {
+    return hasMm(row.dim1_mm) && hasMm(row.dim2_mm);
+  }
+  if (pt === "washer") {
+    return hasMm(row.dim1_mm) && hasMm(row.dim2_mm) && hasMm(row.dim3_mm);
+  }
+  if (pt === "other") {
+    const pairs: [boolean, boolean][] = [
+      [hasName(row.dim1_name), hasMm(row.dim1_mm)],
+      [hasName(row.dim2_name), hasMm(row.dim2_mm)],
+      [hasName(row.dim3_name), hasMm(row.dim3_mm)],
+    ];
+    const anyFilled = pairs.some(([n, m]) => n && m) || hasMm(row.dim1_mm);
+    const anyPartial = pairs.some(([n, m]) => n && !m);
+    return anyFilled && !anyPartial;
+  }
+  return false;
+}
+
+function PartDimensionStatusIcon({
+  row,
+  partSummary,
+  onClick,
+}: {
+  row: ClassRow;
+  partSummary: string | null;
+  onClick: () => void;
+}) {
+  const complete = hasCompleteMeasurements(row);
+  const pt = row.part_type ?? "none";
+
+  if (!complete) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={partSummary ? `Incomplete dimensions: ${partSummary}` : "No measurement data"}
+        aria-label={partSummary ? `Incomplete dimensions: ${partSummary}` : "No measurement data"}
+        className="inline-flex size-8 shrink-0 items-center justify-center rounded-sm border border-red-200 bg-red-50 text-red-600 transition-colors hover:bg-red-100"
+      >
+        <Ruler className="size-3.5" aria-hidden="true" />
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={partSummary ?? "Part dimensions recorded"}
+      aria-label={partSummary ?? "Part dimensions recorded"}
+      className="inline-flex size-8 shrink-0 items-center justify-center rounded-sm border border-emerald-300 bg-emerald-50 text-emerald-700 transition-colors hover:bg-emerald-100"
+    >
+      {pt === "bolt" ? (
+        <svg viewBox="0 0 16 16" className="size-4" fill="none" aria-hidden="true">
+          {/* Bolt head */}
+          <rect
+            x="2"
+            y="3.5"
+            width="3.5"
+            height="9"
+            rx="0.8"
+            fill="currentColor"
+            fillOpacity="0.2"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          {/* Threaded shaft */}
+          <rect
+            x="5.5"
+            y="5.5"
+            width="8.5"
+            height="5"
+            rx="0.5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <line x1="8" y1="5.5" x2="8" y2="10.5" stroke="currentColor" strokeWidth="1.2" />
+          <line x1="10.5" y1="5.5" x2="10.5" y2="10.5" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
+      ) : pt === "nut" ? (
+        <svg viewBox="0 0 16 16" className="size-4" fill="none" aria-hidden="true">
+          {/* Hexagon nut */}
+          <polygon
+            points="8,1.8 13.5,5 13.5,11 8,14.2 2.5,11 2.5,5"
+            fill="currentColor"
+            fillOpacity="0.2"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+          />
+          <circle cx="8" cy="8" r="2.3" stroke="currentColor" strokeWidth="1.5" />
+        </svg>
+      ) : pt === "washer" ? (
+        <svg viewBox="0 0 16 16" className="size-4" fill="none" aria-hidden="true">
+          {/* Concentric washer rings */}
+          <circle
+            cx="8"
+            cy="8"
+            r="5.8"
+            fill="currentColor"
+            fillOpacity="0.18"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <circle
+            cx="8"
+            cy="8"
+            r="2.5"
+            fill="var(--color-surface, #fff)"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+        </svg>
+      ) : pt === "cable_tie" ? (
+        <svg viewBox="0 0 16 16" className="size-4" fill="none" aria-hidden="true">
+          {/* Cable tie head + strap */}
+          <rect
+            x="1.8"
+            y="4.5"
+            width="4"
+            height="7"
+            rx="1"
+            fill="currentColor"
+            fillOpacity="0.2"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M5.8 6.5 H13.5 L14.5 8 L13.5 9.5 H5.8 Z"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : (
+        <Ruler className="size-3.5" aria-hidden="true" />
+      )}
+    </button>
+  );
+}
+
 export function ClassesAdmin() {
   const [classes, setClasses] = useState<ClassRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -747,7 +896,12 @@ function ClassList({
                       </p>
                     ) : null}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex items-center gap-2">
+                    <PartDimensionStatusIcon
+                      row={row}
+                      partSummary={partSummary}
+                      onClick={() => onStartEdit(row)}
+                    />
                     <button type="button" className={btn} onClick={() => onStartEdit(row)}>
                       Edit
                     </button>
