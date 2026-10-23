@@ -8,6 +8,7 @@ export type StageBox = {
   y: number;
   w: number;
   h: number;
+  points?: [number, number][];
 };
 
 export function newId(): string {
@@ -22,7 +23,8 @@ type Corner = "nw" | "ne" | "sw" | "se";
 type Drag =
   | { kind: "draw"; classId: number; x0: number; y0: number; x1: number; y1: number }
   | { kind: "move"; key: string; dx: number; dy: number }
-  | { kind: "resize"; key: string; anchorX: number; anchorY: number };
+  | { kind: "resize"; key: string; anchorX: number; anchorY: number }
+  | { kind: "vertex"; key: string; index: number };
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
@@ -30,6 +32,32 @@ function clamp(n: number, min: number, max: number): number {
 
 export function round6(n: number): number {
   return Math.round(n * 1e6) / 1e6;
+}
+
+export function polygonBBox(points: [number, number][]): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  let minX = 1;
+  let minY = 1;
+  let maxX = 0;
+  let maxY = 0;
+  for (const [px, py] of points) {
+    if (px < minX) minX = px;
+    if (px > maxX) maxX = px;
+    if (py < minY) minY = py;
+    if (py > maxY) maxY = py;
+  }
+  const w = Math.max(0.008, maxX - minX);
+  const h = Math.max(0.008, maxY - minY);
+  return {
+    x: round6(minX + w / 2),
+    y: round6(minY + h / 2),
+    w: round6(w),
+    h: round6(h),
+  };
 }
 
 function fromCorners(
@@ -116,6 +144,8 @@ export function LabelStage({
   colorFor,
   readOnly,
   hiddenKeys,
+  toolMode = "box",
+  renderMode = "outline",
   onChange,
   onSelect,
 }: {
@@ -128,6 +158,8 @@ export function LabelStage({
   colorFor: (classId: number) => string;
   readOnly?: boolean;
   hiddenKeys?: ReadonlySet<string>;
+  toolMode?: "box" | "polygon";
+  renderMode?: "outline" | "filled";
   onChange: (boxes: StageBox[]) => void;
   onSelect: (key: string | null) => void;
 }) {
@@ -142,6 +174,11 @@ export function LabelStage({
   const [draft, setDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(
     null,
   );
+  const [polyDraft, setPolyDraft] = useState<[number, number][] | null>(null);
+  const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
+  const polyDraftRef = useRef(polyDraft);
+  polyDraftRef.current = polyDraft;
+
   const [view, setView] = useState<View>({ zoom: 1, x: 0, y: 0 });
   const [spaceMode, setSpaceMode] = useState<"off" | "ready" | "dragging">("off");
   const viewRef = useRef(view);
@@ -154,6 +191,16 @@ export function LabelStage({
     y: number;
   } | null>(null);
   viewRef.current = view;
+
+  const prevSrc = useRef(src);
+  const prevToolMode = useRef(toolMode);
+  if (prevSrc.current !== src || prevToolMode.current !== toolMode) {
+    prevSrc.current = src;
+    prevToolMode.current = toolMode;
+    if (polyDraft) {
+      setPolyDraft(null);
+    }
+  }
 
   useEffect(() => {
     const el = frameRef.current;
@@ -246,6 +293,41 @@ export function LabelStage({
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
+  function closePolygon(pts: [number, number][]) {
+    if (pts.length < 3 || activeClassId == null) {
+      setPolyDraft(null);
+      return;
+    }
+    const cleanPts: [number, number][] = [];
+    for (const p of pts) {
+      if (cleanPts.length === 0) {
+        cleanPts.push(p);
+      } else {
+        const last = cleanPts[cleanPts.length - 1];
+        if (Math.hypot(p[0] - last[0], p[1] - last[1]) > 0.002) {
+          cleanPts.push(p);
+        }
+      }
+    }
+    if (cleanPts.length < 3) {
+      setPolyDraft(null);
+      return;
+    }
+    const bbox = polygonBBox(cleanPts);
+    const newBox: StageBox = {
+      key: newId(),
+      classId: activeClassId,
+      ...bbox,
+      points: cleanPts.map(([px, py]) => [round6(px), round6(py)]),
+    };
+    onChange([...boxesRef.current, newBox]);
+    onSelect(newBox.key);
+    setPolyDraft(null);
+  }
+
+  const closePolygonRef = useRef(closePolygon);
+  closePolygonRef.current = closePolygon;
+
   useEffect(() => {
     function typing(target: EventTarget | null): boolean {
       if (!(target instanceof HTMLElement)) return false;
@@ -256,9 +338,34 @@ export function LabelStage({
       if (event.key === "Escape") {
         dragRef.current = null;
         setDraft(null);
+        if (polyDraftRef.current) {
+          event.preventDefault();
+          setPolyDraft(null);
+          return;
+        }
         return;
       }
       if (typing(event.target)) return;
+
+      if (event.key === "Enter") {
+        if (polyDraftRef.current && polyDraftRef.current.length >= 3) {
+          event.preventDefault();
+          closePolygonRef.current(polyDraftRef.current);
+          return;
+        }
+      }
+      if (event.key === "Backspace") {
+        if (polyDraftRef.current && polyDraftRef.current.length > 0) {
+          event.preventDefault();
+          if (polyDraftRef.current.length > 1) {
+            setPolyDraft(polyDraftRef.current.slice(0, -1));
+          } else {
+            setPolyDraft(null);
+          }
+          return;
+        }
+      }
+
       if (event.code === "Space") {
         event.preventDefault();
         if (spaceRef.current) return;
@@ -294,7 +401,7 @@ export function LabelStage({
     };
   }, []);
 
-  function point(event: PointerEvent): { x: number; y: number } | null {
+  function point(event: PointerEvent | React.MouseEvent): { x: number; y: number } | null {
     const el = overlayRef.current;
     if (!el) return null;
     const rect = el.getBoundingClientRect();
@@ -334,6 +441,7 @@ export function LabelStage({
         y: round6(box.y),
         w: round6(box.w),
         h: round6(box.h),
+        points: box.points ? box.points.map(([px, py]) => [round6(px), round6(py)]) : undefined,
       })),
     );
   }
@@ -386,7 +494,8 @@ export function LabelStage({
     const here = point(event);
     if (!here) return;
     const target = event.target instanceof Element ? event.target : null;
-    const handle = target?.closest("[data-corner]");
+    const cornerHandle = target?.closest("[data-corner]");
+    const vertexHandle = target?.closest("[data-vertex]");
     const boxEl = target?.closest("[data-box]");
     const key = boxEl?.getAttribute("data-box");
 
@@ -399,14 +508,36 @@ export function LabelStage({
       return;
     }
 
+    // Active polygon drafting flow
+    if (polyDraftRef.current && polyDraftRef.current.length > 0) {
+      event.preventDefault();
+      const first = polyDraftRef.current[0];
+      const d0 = Math.hypot(here.x - first[0], here.y - first[1]);
+      if (polyDraftRef.current.length >= 3 && d0 < 0.025) {
+        closePolygonRef.current(polyDraftRef.current);
+        return;
+      }
+      setPolyDraft([...polyDraftRef.current, [round6(here.x), round6(here.y)]]);
+      return;
+    }
+
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
 
-    if (handle && key) {
+    // Draggable vertex handle of selected polygon
+    if (vertexHandle && key) {
+      const vIdx = Number(vertexHandle.getAttribute("data-vertex"));
+      onSelect(key);
+      dragRef.current = { kind: "vertex", key, index: vIdx };
+      return;
+    }
+
+    // Draggable corner handle of selected box
+    if (cornerHandle && key) {
       const box = boxesRef.current.find((item) => item.key === key);
       if (!box) return;
       onSelect(key);
-      const corner = handle.getAttribute("data-corner") as Corner;
+      const corner = cornerHandle.getAttribute("data-corner") as Corner;
       const left = box.x - box.w / 2;
       const top = box.y - box.h / 2;
       const right = box.x + box.w / 2;
@@ -421,6 +552,7 @@ export function LabelStage({
       return;
     }
 
+    // Click on existing shape body
     if (key) {
       const box = boxesRef.current.find((item) => item.key === key);
       if (!box) return;
@@ -429,8 +561,20 @@ export function LabelStage({
       return;
     }
 
+    // Empty canvas click
+    if (activeClassId == null) {
+      onSelect(null);
+      return;
+    }
+
+    if (toolMode === "polygon") {
+      onSelect(null);
+      setPolyDraft([[round6(here.x), round6(here.y)]]);
+      return;
+    }
+
+    // Standard box draw
     onSelect(null);
-    if (activeClassId == null) return;
     dragRef.current = {
       kind: "draw",
       classId: activeClassId,
@@ -443,10 +587,13 @@ export function LabelStage({
   }
 
   function onPointerMove(event: PointerEvent<HTMLDivElement>) {
-    const drag = dragRef.current;
-    if (!drag) return;
     const here = point(event);
     if (!here) return;
+    setCursorPos(here);
+
+    const drag = dragRef.current;
+    if (!drag) return;
+
     if (drag.kind === "draw") {
       drag.x1 = here.x;
       drag.y1 = here.y;
@@ -457,10 +604,36 @@ export function LabelStage({
       onChange(
         boxesRef.current.map((box) => {
           if (box.key !== drag.key) return box;
+          const newX = clamp(here.x - drag.dx, box.w / 2, 1 - box.w / 2);
+          const newY = clamp(here.y - drag.dy, box.h / 2, 1 - box.h / 2);
+          const shiftX = newX - box.x;
+          const shiftY = newY - box.y;
           return {
             ...box,
-            x: clamp(here.x - drag.dx, box.w / 2, 1 - box.w / 2),
-            y: clamp(here.y - drag.dy, box.h / 2, 1 - box.h / 2),
+            x: newX,
+            y: newY,
+            points: box.points
+              ? box.points.map(([px, py]) => [clamp(px + shiftX, 0, 1), clamp(py + shiftY, 0, 1)])
+              : undefined,
+          };
+        }),
+      );
+      return;
+    }
+    if (drag.kind === "vertex") {
+      onChange(
+        boxesRef.current.map((box) => {
+          if (box.key !== drag.key || !box.points) return box;
+          const nextPoints = box.points.map((pt, i) =>
+            i === drag.index
+              ? ([round6(clamp(here.x, 0, 1)), round6(clamp(here.y, 0, 1))] as [number, number])
+              : pt,
+          );
+          const bbox = polygonBBox(nextPoints);
+          return {
+            ...box,
+            ...bbox,
+            points: nextPoints,
           };
         }),
       );
@@ -472,6 +645,15 @@ export function LabelStage({
         return fromCorners(box, drag.anchorX, drag.anchorY, here.x, here.y);
       }),
     );
+  }
+
+  function onDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
+    if (readOnly || toolMode !== "polygon") return;
+    if (polyDraftRef.current && polyDraftRef.current.length >= 3) {
+      event.preventDefault();
+      event.stopPropagation();
+      closePolygonRef.current(polyDraftRef.current);
+    }
   }
 
   const draftBox =
@@ -521,13 +703,152 @@ export function LabelStage({
           onPointerMove={onPointerMove}
           onPointerUp={finish}
           onPointerCancel={finish}
+          onDoubleClick={onDoubleClick}
+          onPointerLeave={() => setCursorPos(null)}
           role="application"
-          aria-label="Draw bounding boxes"
+          aria-label="Draw bounding boxes and polygons"
         >
+          {/* SVG layer for polygons and precision lines */}
+          <svg
+            className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+            viewBox="0 0 1000 1000"
+            preserveAspectRatio="none"
+          >
+            {boxes.map((box) => {
+              if (hiddenKeys?.has(box.key) || !box.points || box.points.length < 3) return null;
+              const selected = box.key === selectedKey;
+              const color = colorFor(box.classId);
+              const isFilled = renderMode === "filled";
+              return (
+                <g key={box.key}>
+                  <polygon
+                    data-box={box.key}
+                    points={box.points.map(([px, py]) => `${px * 1000},${py * 1000}`).join(" ")}
+                    fill={isFilled ? color : "transparent"}
+                    fillOpacity={isFilled ? (selected ? 0.35 : 0.22) : 0}
+                    stroke={color}
+                    strokeWidth={isFilled ? 1 : selected ? 2.5 : 1.5}
+                    vectorEffect="non-scaling-stroke"
+                    className={`pointer-events-auto ${spaceMode === "off" && !readOnly ? "cursor-move" : ""}`}
+                    style={{
+                      filter: isFilled
+                        ? undefined
+                        : selected
+                          ? "drop-shadow(0 0 2px rgba(255,255,255,0.8))"
+                          : undefined,
+                    }}
+                  />
+                  {/* Vertex grab handles: invisible in filled mode, visible in outline mode */}
+                  {selected && !readOnly
+                    ? box.points.map(([px, py], vIdx) => (
+                        <circle
+                          key={`${box.key}-v-${px}-${py}`}
+                          data-box={box.key}
+                          data-vertex={vIdx}
+                          cx={px * 1000}
+                          cy={py * 1000}
+                          r={isFilled ? 8 : 5}
+                          className="pointer-events-auto cursor-crosshair"
+                          fill={isFilled ? "transparent" : "#ffffff"}
+                          stroke={isFilled ? "transparent" : "#1c1b19"}
+                          strokeWidth={1.5}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      ))
+                    : null}
+                </g>
+              );
+            })}
+
+            {/* Polygon drafting preview */}
+            {polyDraft && polyDraft.length > 0 && activeClassId != null ? (
+              <g className="pointer-events-none">
+                {polyDraft.length > 1 ? (
+                  <polyline
+                    points={polyDraft.map(([px, py]) => `${px * 1000},${py * 1000}`).join(" ")}
+                    fill="none"
+                    stroke={colorFor(activeClassId)}
+                    strokeWidth={2}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ) : null}
+                {cursorPos ? (
+                  <>
+                    <line
+                      x1={polyDraft[polyDraft.length - 1][0] * 1000}
+                      y1={polyDraft[polyDraft.length - 1][1] * 1000}
+                      x2={cursorPos.x * 1000}
+                      y2={cursorPos.y * 1000}
+                      stroke={colorFor(activeClassId)}
+                      strokeWidth={1.5}
+                      strokeDasharray="4 4"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    {polyDraft.length >= 2 ? (
+                      <line
+                        x1={cursorPos.x * 1000}
+                        y1={cursorPos.y * 1000}
+                        x2={polyDraft[0][0] * 1000}
+                        y2={polyDraft[0][1] * 1000}
+                        stroke={colorFor(activeClassId)}
+                        strokeWidth={1}
+                        strokeDasharray="2 3"
+                        strokeOpacity={0.6}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    ) : null}
+                  </>
+                ) : null}
+                {polyDraft.map(([px, py], idx) => (
+                  <circle
+                    key={`draft-pt-${px}-${py}`}
+                    cx={px * 1000}
+                    cy={py * 1000}
+                    r={idx === 0 && polyDraft.length >= 3 ? 7 : 4}
+                    fill={idx === 0 && polyDraft.length >= 3 ? colorFor(activeClassId) : "#ffffff"}
+                    stroke={
+                      idx === 0 && polyDraft.length >= 3 ? "#ffffff" : colorFor(activeClassId)
+                    }
+                    strokeWidth={2}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+              </g>
+            ) : null}
+          </svg>
+
+          {/* HTML marks for boxes and labels */}
           {boxes.map((box) => {
             if (hiddenKeys?.has(box.key)) return null;
             const selected = box.key === selectedKey;
             const color = colorFor(box.classId);
+            const isPolygon = Boolean(box.points && box.points.length >= 3);
+            const isFilled = renderMode === "filled";
+            const isTop = box.y - box.h / 2 < 0.04;
+
+            if (isPolygon) {
+              return (
+                <div
+                  key={`label-${box.key}`}
+                  data-box={box.key}
+                  className="pointer-events-none absolute z-20"
+                  style={{
+                    left: `${(box.x - box.w / 2) * 100}%`,
+                    top: `${(box.y - box.h / 2) * 100}%`,
+                  }}
+                >
+                  <span
+                    className={`absolute whitespace-nowrap rounded-xs px-1.5 py-0.5 font-mono text-xs shadow-xs ${
+                      isTop ? "top-0 left-0" : "bottom-full left-0 mb-1"
+                    }`}
+                    style={{ background: color, color: inkOn(color) }}
+                  >
+                    {labelFor(box.classId)}
+                  </span>
+                </div>
+              );
+            }
+
             return (
               <div
                 key={box.key}
@@ -535,14 +856,23 @@ export function LabelStage({
                 className={`box-mark absolute ${spaceMode === "off" && !readOnly ? "cursor-move" : ""} ${selected ? "is-selected z-10" : "z-0"}`}
                 style={{
                   ...styleOf(box),
+                  borderWidth: isFilled ? 1 : selected ? 2 : 1.5,
+                  borderStyle: "solid",
                   borderColor: color,
-                  boxShadow: selected
-                    ? `0 0 0 1px #faf9f7, 0 0 0 3px ${color}`
-                    : "0 0 0 1px rgba(28, 27, 25, 0.45)",
+                  backgroundColor: isFilled ? `${color}38` : "transparent",
+                  boxShadow: isFilled
+                    ? selected
+                      ? "0 0 0 1px rgba(0, 0, 0, 0.65)"
+                      : "0 0 0 1px rgba(0, 0, 0, 0.25)"
+                    : selected
+                      ? `0 0 0 1px #faf9f7, 0 0 0 3px ${color}`
+                      : "0 0 0 1px rgba(28, 27, 25, 0.45)",
                 }}
               >
                 <span
-                  className="pointer-events-none absolute bottom-full left-0 mb-1 max-w-full truncate rounded-xs px-1.5 py-0.5 font-mono text-xs"
+                  className={`pointer-events-none absolute whitespace-nowrap rounded-xs px-1.5 py-0.5 font-mono text-xs shadow-xs ${
+                    isTop ? "top-0 left-0" : "bottom-full left-0 mb-1"
+                  }`}
                   style={{ background: color, color: inkOn(color) }}
                 >
                   {labelFor(box.classId)}
@@ -552,14 +882,26 @@ export function LabelStage({
                       <span
                         key={corner}
                         data-corner={corner}
-                        className={`absolute z-20 h-4 w-4 rounded-xs border border-ink bg-surface ${
-                          corner === "nw"
-                            ? "-top-2 -left-2"
-                            : corner === "ne"
-                              ? "-top-2 -right-2"
-                              : corner === "sw"
-                                ? "-bottom-2 -left-2"
-                                : "-right-2 -bottom-2"
+                        className={`absolute z-20 ${
+                          isFilled
+                            ? `h-5 w-5 opacity-0 ${
+                                corner === "nw"
+                                  ? "-top-2.5 -left-2.5"
+                                  : corner === "ne"
+                                    ? "-top-2.5 -right-2.5"
+                                    : corner === "sw"
+                                      ? "-bottom-2.5 -left-2.5"
+                                      : "-right-2.5 -bottom-2.5"
+                              }`
+                            : `h-4 w-4 rounded-xs border border-ink bg-surface ${
+                                corner === "nw"
+                                  ? "-top-2 -left-2"
+                                  : corner === "ne"
+                                    ? "-top-2 -right-2"
+                                    : corner === "sw"
+                                      ? "-bottom-2 -left-2"
+                                      : "-right-2 -bottom-2"
+                              }`
                         } ${
                           spaceMode !== "off"
                             ? ""
@@ -573,11 +915,25 @@ export function LabelStage({
               </div>
             );
           })}
+
           {draftBox ? (
             <div
               className="box-mark pointer-events-none absolute z-20 border-dashed"
-              style={{ ...styleOf(draftBox), borderColor: colorFor(draftBox.classId) }}
+              style={{
+                ...styleOf(draftBox),
+                borderWidth: renderMode === "filled" ? 1 : 2,
+                borderColor: colorFor(draftBox.classId),
+              }}
             />
+          ) : null}
+
+          {/* Polygon drawing helper pill */}
+          {polyDraft && polyDraft.length > 0 ? (
+            <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-full border border-line bg-surface/90 px-3 py-1 font-mono text-xs text-ink shadow-md backdrop-blur-xs">
+              {polyDraft.length < 3
+                ? `Polygon (${polyDraft.length} pts): Click to add vertices • Esc to cancel`
+                : `Polygon (${polyDraft.length} pts): Click start point, double-click, or press Enter to close • Esc to cancel`}
+            </div>
           ) : null}
         </div>
       ) : null}

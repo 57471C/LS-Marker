@@ -31,6 +31,7 @@ import {
   saveLabel,
   submitReviewAction,
   unlockApprovedImage,
+  type Box,
   type Catalogue,
   type ClassRow,
   type ImageRow,
@@ -50,21 +51,24 @@ const btnPrimary =
 const PANE_MIN = 280;
 const PANE_MAX = 640;
 
-function serialize(boxes: StageBox[]): string {
-  return JSON.stringify(
-    boxes.map((box) => ({
-      classId: box.classId,
-      x: round6(box.x),
-      y: round6(box.y),
-      w: round6(box.w),
-      h: round6(box.h),
-    })),
-  );
+function toApiBoxes(boxes: StageBox[]): Box[] {
+  return boxes.map((box) => ({
+    classId: box.classId,
+    x: round6(box.x),
+    y: round6(box.y),
+    w: round6(box.w),
+    h: round6(box.h),
+    ...(box.points && box.points.length >= 3
+      ? { points: box.points.map(([px, py]) => [round6(px), round6(py)]) }
+      : {}),
+  }));
 }
 
-function withKeys(
-  boxes: { classId: number; x: number; y: number; w: number; h: number }[],
-): StageBox[] {
+function serialize(boxes: StageBox[]): string {
+  return JSON.stringify(toApiBoxes(boxes));
+}
+
+function withKeys(boxes: Box[]): StageBox[] {
   return boxes.map((box) => ({
     key: newId(),
     classId: box.classId,
@@ -72,6 +76,9 @@ function withKeys(
     y: round6(box.y),
     w: round6(box.w),
     h: round6(box.h),
+    ...(box.points && box.points.length >= 3
+      ? { points: box.points.map(([px, py]) => [round6(px), round6(py)]) }
+      : {}),
   }));
 }
 
@@ -176,6 +183,8 @@ export function Labeler() {
   const [paneWidth, setPaneWidth] = useState(360);
   const [paneReady, setPaneReady] = useState(false);
   const [indexProject, setIndexProject] = useState<number | null>(null);
+  const [toolMode, setToolMode] = useState<"box" | "polygon">("box");
+  const [renderMode, setRenderMode] = useState<"outline" | "filled">("outline");
   const paneDrag = useRef<{ x: number; width: number } | null>(null);
 
   const [isReviewMode, setIsReviewMode] = useState<boolean>(() => {
@@ -492,16 +501,7 @@ export function Labeler() {
     if (!current) return false;
     setBusy(true);
     try {
-      await saveLabel(
-        current.name,
-        boxes.map((box) => ({
-          classId: box.classId,
-          x: round6(box.x),
-          y: round6(box.y),
-          w: round6(box.w),
-          h: round6(box.h),
-        })),
-      );
+      await saveLabel(current.name, toApiBoxes(boxes));
       setSaved(serialize(boxes));
       setStatus("Saved");
       setCatalogue((prev) =>
@@ -652,10 +652,20 @@ export function Labeler() {
     setBoxes((prev) =>
       prev.map((box) => {
         if (box.key !== selectedKey) return box;
+        const newX = round6(clampUnit(box.x + dx, box.w / 2, 1 - box.w / 2));
+        const newY = round6(clampUnit(box.y + dy, box.h / 2, 1 - box.h / 2));
+        const shiftX = newX - box.x;
+        const shiftY = newY - box.y;
         return {
           ...box,
-          x: round6(clampUnit(box.x + dx, box.w / 2, 1 - box.w / 2)),
-          y: round6(clampUnit(box.y + dy, box.h / 2, 1 - box.h / 2)),
+          x: newX,
+          y: newY,
+          points: box.points
+            ? box.points.map(([px, py]) => [
+                round6(clampUnit(px + shiftX, 0, 1)),
+                round6(clampUnit(py + shiftY, 0, 1)),
+              ])
+            : undefined,
         };
       }),
     );
@@ -675,14 +685,55 @@ export function Labeler() {
       x = source.x - 0.02;
       y = source.y - 0.02;
     }
+    const finalX = round6(clampUnit(x, source.w / 2, 1 - source.w / 2));
+    const finalY = round6(clampUnit(y, source.h / 2, 1 - source.h / 2));
+    const shiftX = finalX - source.x;
+    const shiftY = finalY - source.y;
     const copy: StageBox = {
       ...source,
       key: newId(),
-      x: round6(clampUnit(x, source.w / 2, 1 - source.w / 2)),
-      y: round6(clampUnit(y, source.h / 2, 1 - source.h / 2)),
+      x: finalX,
+      y: finalY,
+      points: source.points
+        ? source.points.map(([px, py]) => [
+            round6(clampUnit(px + shiftX, 0, 1)),
+            round6(clampUnit(py + shiftY, 0, 1)),
+          ])
+        : undefined,
     };
     setBoxes((prev) => [...prev, copy]);
     setSelectedKey(copy.key);
+  }
+
+  const selectedBox = boxes.find((box) => box.key === selectedKey) ?? null;
+
+  function toggleConvertSelected() {
+    if (lockedRef.current || !selectedKey) return;
+    if (!isReviewMode && current && current.claimedBy !== username) {
+      void ensureClaimed();
+    }
+    setBoxes((prev) =>
+      prev.map((box) => {
+        if (box.key !== selectedKey) return box;
+        if (box.points && box.points.length >= 3) {
+          const { points: _removed, ...rest } = box;
+          return rest;
+        }
+        const left = round6(clampUnit(box.x - box.w / 2, 0, 1));
+        const right = round6(clampUnit(box.x + box.w / 2, 0, 1));
+        const top = round6(clampUnit(box.y - box.h / 2, 0, 1));
+        const bottom = round6(clampUnit(box.y + box.h / 2, 0, 1));
+        return {
+          ...box,
+          points: [
+            [left, top],
+            [right, top],
+            [right, bottom],
+            [left, bottom],
+          ],
+        };
+      }),
+    );
   }
 
   async function copyPrevious() {
@@ -784,13 +835,7 @@ export function Labeler() {
     if (!current) return;
     setBusy(true);
     try {
-      const cleaned = boxes.map((box) => ({
-        classId: box.classId,
-        x: round6(box.x),
-        y: round6(box.y),
-        w: round6(box.w),
-        h: round6(box.h),
-      }));
+      const cleaned = toApiBoxes(boxes);
       const res = await submitReviewAction({
         project_id: projectId ?? undefined,
         image_id: current.id,
@@ -1099,13 +1144,7 @@ export function Labeler() {
     if (!current) return;
     setBusy(true);
     try {
-      const cleaned = boxes.map((box) => ({
-        classId: box.classId,
-        x: round6(box.x),
-        y: round6(box.y),
-        w: round6(box.w),
-        h: round6(box.h),
-      }));
+      const cleaned = toApiBoxes(boxes);
       const res = await completeImage(current.name, cleaned);
       setSaved(serialize(boxes));
       await refreshClaims((image) => ({
@@ -1267,13 +1306,127 @@ export function Labeler() {
                   hiddenKeys={hiddenKeys}
                   selectedKey={selectedKey}
                   activeClassId={activeClassId}
+                  toolMode={toolMode}
+                  renderMode={renderMode}
                   labelFor={labelFor}
                   colorFor={colorFor}
                   readOnly={locked}
                   onChange={handleBoxesChange}
                   onSelect={selectBox}
                 />
-                <div className="pointer-events-none absolute top-2 left-2 z-30 flex gap-1">
+                <div className="pointer-events-none absolute top-2 left-2 z-30 flex items-center gap-1">
+                  {/* Tool Mode Toggle: Box ↔ Polygon */}
+                  <button
+                    type="button"
+                    className={`press pointer-events-auto inline-flex h-10 items-center gap-1.5 rounded-sm border px-2.5 text-xs font-medium ${
+                      toolMode === "polygon"
+                        ? "border-amber-400 bg-amber-100 text-amber-950 dark:border-amber-700 dark:bg-amber-950/70 dark:text-amber-200"
+                        : "border-line bg-surface text-ink hover:bg-surface-hover"
+                    }`}
+                    title={
+                      toolMode === "polygon"
+                        ? "Polygon mode (Click to switch to Boxes)"
+                        : "Box mode (Click to switch to Polygons)"
+                    }
+                    aria-label={
+                      toolMode === "polygon" ? "Switch to Box mode" : "Switch to Polygon mode"
+                    }
+                    onClick={() => setToolMode((m) => (m === "box" ? "polygon" : "box"))}
+                  >
+                    {toolMode === "box" ? (
+                      /* Square with corner dots */
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="size-4 shrink-0"
+                        aria-hidden="true"
+                      >
+                        <rect x="5" y="5" width="14" height="14" rx="1" />
+                        <circle cx="5" cy="5" r="1.5" fill="currentColor" />
+                        <circle cx="19" cy="5" r="1.5" fill="currentColor" />
+                        <circle cx="19" cy="19" r="1.5" fill="currentColor" />
+                        <circle cx="5" cy="19" r="1.5" fill="currentColor" />
+                      </svg>
+                    ) : (
+                      /* Polygon with corner dots */
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="size-4 shrink-0"
+                        aria-hidden="true"
+                      >
+                        <polygon points="12,3 21,9 18,20 6,20 3,9" />
+                        <circle cx="12" cy="3" r="1.5" fill="currentColor" />
+                        <circle cx="21" cy="9" r="1.5" fill="currentColor" />
+                        <circle cx="18" cy="20" r="1.5" fill="currentColor" />
+                        <circle cx="6" cy="20" r="1.5" fill="currentColor" />
+                        <circle cx="3" cy="9" r="1.5" fill="currentColor" />
+                      </svg>
+                    )}
+                    <span className="hidden sm:inline">
+                      {toolMode === "polygon" ? "Polygon" : "Box"}
+                    </span>
+                  </button>
+
+                  {/* Precision / Filled Mode Toggle: Outline ↔ Filled */}
+                  <button
+                    type="button"
+                    className={`press pointer-events-auto inline-flex h-10 items-center gap-1.5 rounded-sm border px-2.5 text-xs font-medium ${
+                      renderMode === "filled"
+                        ? "border-sky-400 bg-sky-100 text-sky-950 dark:border-sky-700 dark:bg-sky-950/70 dark:text-sky-200"
+                        : "border-line bg-surface text-ink hover:bg-surface-hover"
+                    }`}
+                    title={
+                      renderMode === "filled"
+                        ? "Precision filled mode (Handles hidden). Click for Outline mode"
+                        : "Outline mode (Handles visible). Click for Precision filled mode"
+                    }
+                    aria-label={
+                      renderMode === "filled"
+                        ? "Switch to Outline mode"
+                        : "Switch to Precision filled mode"
+                    }
+                    onClick={() => setRenderMode((m) => (m === "outline" ? "filled" : "outline"))}
+                  >
+                    {renderMode === "outline" ? (
+                      /* Outline square */
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        className="size-4 shrink-0"
+                        aria-hidden="true"
+                      >
+                        <rect x="4" y="4" width="16" height="16" rx="1.5" />
+                      </svg>
+                    ) : (
+                      /* Solid square */
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        stroke="currentColor"
+                        strokeWidth="1"
+                        className="size-4 shrink-0"
+                        aria-hidden="true"
+                      >
+                        <rect x="4" y="4" width="16" height="16" rx="1.5" />
+                      </svg>
+                    )}
+                    <span className="hidden sm:inline">
+                      {renderMode === "filled" ? "Filled" : "Outline"}
+                    </span>
+                  </button>
+
+                  {/* Duplicate Button */}
                   <button
                     type="button"
                     className="press pointer-events-auto inline-flex h-10 items-center rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-ink disabled:opacity-40"
@@ -1283,6 +1436,8 @@ export function Labeler() {
                   >
                     Duplicate
                   </button>
+
+                  {/* Previous Boxes Button */}
                   <button
                     type="button"
                     className="press pointer-events-auto inline-flex h-10 items-center rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-ink disabled:opacity-40"
@@ -1292,6 +1447,22 @@ export function Labeler() {
                   >
                     Previous boxes
                   </button>
+
+                  {/* Convert shape button when selected */}
+                  {selectedBox && !locked ? (
+                    <button
+                      type="button"
+                      className="press pointer-events-auto inline-flex h-10 items-center rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-ink hover:bg-surface-hover"
+                      title={
+                        selectedBox.points
+                          ? "Convert polygon to rectangle bounding box"
+                          : "Convert rectangle to 4-point polygon"
+                      }
+                      onClick={toggleConvertSelected}
+                    >
+                      {selectedBox.points ? "To Box" : "To Polygon"}
+                    </button>
+                  ) : null}
                 </div>
               </div>
             ) : (
@@ -1528,6 +1699,9 @@ export function Labeler() {
                           } ${box.key === selectedKey ? "bg-ink text-surface" : "bg-bg text-ink"}`}
                           style={{ boxShadow: `inset 4px 0 0 ${colorFor(box.classId)}` }}
                         >
+                          <span className="mr-1.5 opacity-60">
+                            {box.points && box.points.length >= 3 ? "⬠" : "▢"}
+                          </span>
                           {boxIndex + 1} {boxTitle(box.classId)}
                         </button>
                         <button

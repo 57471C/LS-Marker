@@ -1323,13 +1323,23 @@ function buildCocoDatasets(project, classes, items, exportType) {
         bbox_h = Math.round(bbox_h * 100) / 100;
         const area = Math.round(bbox_w * bbox_h * 100) / 100;
 
+        const segmentation =
+          Array.isArray(box.points) && box.points.length >= 3
+            ? [
+                box.points.flatMap(([px, py]) => [
+                  Math.round(px * W * 100) / 100,
+                  Math.round(py * H * 100) / 100,
+                ]),
+              ]
+            : [];
+
         annotations.push({
           id: annotationId++,
           image_id: item.id,
           category_id: box.classId,
           bbox: [x_min, y_min, bbox_w, bbox_h],
           area,
-          segmentation: [],
+          segmentation,
           iscrowd: 0,
         });
       }
@@ -1819,7 +1829,7 @@ async function streamCocoExport(
 function readBoxes(file) {
   if (!fs.existsSync(file)) return [];
   const text = fs.readFileSync(file, "utf8");
-  /** @type {{ classId: number, x: number, y: number, w: number, h: number }[]} */
+  /** @type {{ classId: number, x: number, y: number, w: number, h: number, points?: [number, number][] }[]} */
   const boxes = [];
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -1827,12 +1837,41 @@ function readBoxes(file) {
     const parts = trimmed.split(/\s+/);
     if (parts.length < 5) continue;
     const classId = Number(parts[0]);
-    const x = Number(parts[1]);
-    const y = Number(parts[2]);
-    const w = Number(parts[3]);
-    const h = Number(parts[4]);
-    if (![classId, x, y, w, h].every(Number.isFinite)) continue;
-    boxes.push({ classId, x, y, w, h });
+    if (!Number.isInteger(classId) || classId < 0) continue;
+
+    if (parts.length > 5 && (parts.length - 1) % 2 === 0) {
+      // YOLO segmentation format: classId x1 y1 x2 y2 ... xn yn
+      const coords = parts.slice(1).map(Number);
+      if (!coords.every(Number.isFinite)) continue;
+      /** @type {[number, number][]} */
+      const points = [];
+      let minX = 1;
+      let minY = 1;
+      let maxX = 0;
+      let maxY = 0;
+      for (let i = 0; i < coords.length; i += 2) {
+        const px = Math.min(1, Math.max(0, coords[i]));
+        const py = Math.min(1, Math.max(0, coords[i + 1]));
+        points.push([px, py]);
+        if (px < minX) minX = px;
+        if (px > maxX) maxX = px;
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+      }
+      const w = Math.max(0.001, maxX - minX);
+      const h = Math.max(0.001, maxY - minY);
+      const x = minX + w / 2;
+      const y = minY + h / 2;
+      boxes.push({ classId, x, y, w, h, points });
+    } else {
+      // Standard 5-value bounding box: classId x y w h
+      const x = Number(parts[1]);
+      const y = Number(parts[2]);
+      const w = Number(parts[3]);
+      const h = Number(parts[4]);
+      if (![classId, x, y, w, h].every(Number.isFinite)) continue;
+      boxes.push({ classId, x, y, w, h });
+    }
   }
   return boxes;
 }
@@ -1857,8 +1896,35 @@ function cleanBoxes(input) {
     if (w <= 0 || h <= 0 || w > 1 || h > 1 || x < 0 || y < 0 || x > 1 || y > 1) {
       throw new HttpError(400, `Bad box ${index + 1}`);
     }
-    return { classId, x, y, w, h };
+    /** @type {[number, number][] | undefined} */
+    let points;
+    if (Array.isArray(box.points) && box.points.length >= 3) {
+      points = box.points.map((pt) => {
+        if (!Array.isArray(pt) || pt.length < 2) {
+          throw new HttpError(400, `Bad polygon point in box ${index + 1}`);
+        }
+        const px = Number(pt[0]);
+        const py = Number(pt[1]);
+        if (!Number.isFinite(px) || !Number.isFinite(py) || px < 0 || px > 1 || py < 0 || py > 1) {
+          throw new HttpError(400, `Bad polygon coordinates in box ${index + 1}`);
+        }
+        return [px, py];
+      });
+    }
+    return points ? { classId, x, y, w, h, points } : { classId, x, y, w, h };
   });
+}
+
+/**
+ * Format a box as either YOLO detection (5 numbers) or YOLO segmentation (>5 numbers).
+ * @param {{ classId: number, x: number, y: number, w: number, h: number, points?: [number, number][] }} box
+ */
+function formatBoxLine(box) {
+  if (Array.isArray(box.points) && box.points.length >= 3) {
+    const coords = box.points.flatMap(([px, py]) => [px.toFixed(6), py.toFixed(6)]);
+    return `${box.classId} ${coords.join(" ")}`;
+  }
+  return `${box.classId} ${box.x.toFixed(6)} ${box.y.toFixed(6)} ${box.w.toFixed(6)} ${box.h.toFixed(6)}`;
 }
 
 /**
@@ -2976,10 +3042,7 @@ async function guard(req, res, url, root, method, pathname) {
     if (action === "approve") {
       if (Array.isArray(body.boxes)) {
         const boxes = cleanBoxes(body.boxes);
-        const lines = boxes.map(
-          (box) =>
-            `${box.classId} ${box.x.toFixed(6)} ${box.y.toFixed(6)} ${box.w.toFixed(6)} ${box.h.toFixed(6)}`,
-        );
+        const lines = boxes.map(formatBoxLine);
         fs.writeFileSync(labelPath, lines.length ? `${lines.join("\n")}\n` : "");
       }
       db.prepare(
@@ -3111,10 +3174,7 @@ async function guard(req, res, url, root, method, pathname) {
         }
         if (body.boxes !== undefined) {
           const boxes = cleanBoxes(body.boxes);
-          const lines = boxes.map(
-            (box) =>
-              `${box.classId} ${box.x.toFixed(6)} ${box.y.toFixed(6)} ${box.w.toFixed(6)} ${box.h.toFixed(6)}`,
-          );
+          const lines = boxes.map(formatBoxLine);
           fs.writeFileSync(labelFileFor(imageFull), lines.length ? `${lines.join("\n")}\n` : "");
         }
         const claimedAt = row?.claimed_at || now;
@@ -3980,10 +4040,7 @@ export async function handle(req, res, url, root) {
       const body = await readBody(req);
       const boxes = cleanBoxes(body.boxes);
       claimForWrite(db, project.id, name, user.username);
-      const lines = boxes.map(
-        (box) =>
-          `${box.classId} ${box.x.toFixed(6)} ${box.y.toFixed(6)} ${box.w.toFixed(6)} ${box.h.toFixed(6)}`,
-      );
+      const lines = boxes.map(formatBoxLine);
       fs.writeFileSync(labelFileFor(imageFull), lines.length ? `${lines.join("\n")}\n` : "");
       db.prepare(`
         UPDATE images

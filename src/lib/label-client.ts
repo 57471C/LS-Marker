@@ -22,7 +22,14 @@ export type ImageRow = {
   held_by?: string | null;
   held_minutes_remaining?: number;
 };
-export type Box = { classId: number; x: number; y: number; w: number; h: number };
+export type Box = {
+  classId: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  points?: [number, number][];
+};
 
 export type Catalogue = {
   project: { id: number; name: string };
