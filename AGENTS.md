@@ -50,7 +50,7 @@ Object detection models (YOLO, RT-DETR) pair integer class IDs ($0, 1, 2\dots$) 
 ## 5. Dependency & Refactor Boundaries
 
 * **No Unsolicited Major Version Bumps:** Do not upgrade libraries across major versions (e.g., do not upgrade `recharts` to v3+, do not alter `better-sqlite3` build tools) unless explicitly requested.
-* **Never Commit Binary ONNX Models:** Client-side SAM2.1 ONNX models (`public/models/sam2_hiera_tiny_encoder.onnx` and `sam2_hiera_tiny_decoder.onnx`) are excluded via `.gitignore`. Never force-add `.onnx` model binaries to git. Keep ONNX Runtime Web WASM binaries served locally via the `/ort-wasm/` middleware so LAN annotators do not depend on external CDNs.
+* **Never Commit Binary ONNX Models:** Client-side SAM2.1 ONNX models (`public/models/sam2_hiera_tiny_encoder.onnx` and `sam2_hiera_tiny_decoder.onnx`) are excluded via `.gitignore`. Never force-add `.onnx` model binaries to git. Keep ONNX Runtime Web WASM binaries (`/ort-wasm/`) and model files (`/models/`) served locally via `scripts/labelling-api.mjs` with `Content-Length` headers so LAN annotators do not depend on external CDNs and models persist in browser Cache Storage (`ls-marker-sam2-cache-v1`).
 * **Streaming Over Buffering:** Never buffer entire datasets, multi-megabyte image arrays, or full ZIP archives into Node V8 memory. Keep TAR exports streamed and image dimension reads limited to 64 KB header buffers.
 * **Expose Verification Tests:** Any new backend feature or data sync change must include a standalone verification script in `scripts/` (e.g., `scripts/verify-*.mjs`).
 

@@ -22,7 +22,14 @@ import {
 import { AppHeader } from "@/components/app-header";
 import { LabelStage, newId, round6, type StageBox } from "@/components/label-stage";
 import { classFill } from "@/lib/class-color";
-import { isSam2Loaded, type Sam2Status } from "@/lib/sam2-client";
+import {
+  areAllSamModelsCached,
+  getSamModelState,
+  isSam2Loaded,
+  subscribeSamModelState,
+  type Sam2Status,
+  type SamModelStateSnapshot,
+} from "@/services/samService";
 import {
   claimImage,
   claimImageById,
@@ -195,7 +202,37 @@ export function Labeler() {
   const [crosshairMode, setCrosshairMode] = useState(false);
   const [sam2Enabled, setSam2Enabled] = useState(false);
   const [sam2Status, setSam2Status] = useState<Sam2Status>({ state: "idle" });
+  const [samModelState, setSamModelState] = useState<SamModelStateSnapshot>(() =>
+    getSamModelState(),
+  );
+  const [samModelsCachedOnDisk, setSamModelsCachedOnDisk] = useState(false);
+  const [samCacheToast, setSamCacheToast] = useState<string | null>(null);
   const [showSam2Modal, setShowSam2Modal] = useState(false);
+
+  useEffect(() => {
+    void areAllSamModelsCached().then((cached) => {
+      setSamModelsCachedOnDisk(cached);
+    });
+    let prevStatus = getSamModelState().samModelStatus;
+    return subscribeSamModelState((snapshot) => {
+      setSamModelState(snapshot);
+      if (snapshot.samModelStatus === "ready" && prevStatus !== "ready") {
+        setSamModelsCachedOnDisk(true);
+        if (snapshot.fromCache && snapshot.loadTimeMs != null) {
+          setSamCacheToast(`SAM 2.1 loaded from local storage (${snapshot.loadTimeMs}ms)`);
+        } else {
+          setSamCacheToast("SAM 2.1 models cached to local storage");
+        }
+      }
+      prevStatus = snapshot.samModelStatus;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!samCacheToast) return;
+    const timer = window.setTimeout(() => setSamCacheToast(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [samCacheToast]);
   const paneDrag = useRef<{ x: number; width: number } | null>(null);
   const undoStackRef = useRef<{ boxes: StageBox[]; selectedKey: string | null }[]>([]);
   const committedSnapshotRef = useRef<{ boxes: StageBox[]; selectedKey: string | null }>({
@@ -1525,7 +1562,7 @@ export function Labeler() {
                             sam2Status.state === "decoding"
                               ? sam2Status.provider.toUpperCase()
                               : "ONNX"
-                          }) — Left-click object to trace polygon`
+                          }) — Left-click (+) • Right-click/Shift+click (−) • Enter to commit`
                         : "Enable SAM2.1 AI polygon tracing (Left-click object to trace)"
                     }
                     aria-label="Trace object polygon with SAM2.1"
@@ -1535,7 +1572,7 @@ export function Labeler() {
                         const seen =
                           typeof window !== "undefined" &&
                           window.localStorage.getItem("ls_marker_sam2_notice_seen") === "1";
-                        if (!seen && !isSam2Loaded()) {
+                        if (!seen && !samModelsCachedOnDisk && !isSam2Loaded()) {
                           setShowSam2Modal(true);
                           return;
                         }
@@ -1554,7 +1591,11 @@ export function Labeler() {
                     ) : (
                       <Sparkles className="size-4 shrink-0" aria-hidden="true" />
                     )}
-                    <span>Trace</span>
+                    <span>
+                      {sam2Enabled && samModelState.samModelStatus === "downloading"
+                        ? `Trace ${samModelState.downloadProgress}%`
+                        : "Trace"}
+                    </span>
                   </button>
 
                   {/* Duplicate Button (Icon only) */}
@@ -1602,6 +1643,43 @@ export function Labeler() {
                     </button>
                   ) : null}
                 </div>
+
+                {/* SAM 2.1 model download progress bar or local cache load notification */}
+                {samModelState.samModelStatus === "downloading" ? (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="pointer-events-none absolute top-2 right-2 z-30 flex w-72 flex-col gap-1.5 rounded-md border border-purple-400/70 bg-surface/95 p-2.5 text-xs text-ink shadow-lg backdrop-blur-xs"
+                  >
+                    <div className="flex items-center justify-between gap-2 font-mono">
+                      <span className="flex items-center gap-1.5 font-medium text-purple-900 dark:text-purple-200">
+                        <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
+                        Caching SAM 2.1 models locally:
+                      </span>
+                      <span className="font-semibold tabular-nums">
+                        {samModelState.downloadProgress}%
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-ink/10">
+                      <div
+                        className="h-full bg-purple-600 transition-all duration-150"
+                        style={{ width: `${samModelState.downloadProgress}%` }}
+                      />
+                    </div>
+                  </div>
+                ) : samCacheToast ? (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="pointer-events-none absolute top-2 right-2 z-30 flex items-center gap-1.5 rounded-md border border-emerald-400/70 bg-surface/95 px-3 py-1.5 font-mono text-xs text-ink shadow-md backdrop-blur-xs"
+                  >
+                    <Check
+                      className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
+                      aria-hidden="true"
+                    />
+                    <span>{samCacheToast}</span>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="flex h-full min-h-72 items-center justify-center rounded-lg bg-ink px-6 text-center text-sm text-surface">
@@ -2099,65 +2177,15 @@ export function Labeler() {
               <p>
                 First-time activation downloads the{" "}
                 <strong className="text-ink">SAM2.1 Hiera Tiny</strong> ONNX model weights (
-                <strong className="text-ink">~120 MB</strong>) from the server into your browser to
-                run local WebGPU / WASM inference.
+                <strong className="text-ink">~120 MB</strong>) and caches them permanently on your
+                local disk via the browser Cache Storage API so subsequent visits load in &lt;50 ms.
               </p>
               <p className="text-xs">
                 Once loaded, select a class and <strong className="text-ink">left-click</strong> any
-                part on the canvas to automatically trace its polygon contour.
-              </p>
-            </div>
-            <div className="mt-6 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => setShowSam2Modal(false)}
-                className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-medium text-ink hover:bg-surface-raised"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (typeof window !== "undefined") {
-                    window.localStorage.setItem("ls_marker_sam2_notice_seen", "1");
-                  }
-                  setShowSam2Modal(false);
-                  setSam2Enabled(true);
-                }}
-                className="press inline-flex h-9 items-center justify-center gap-1.5 rounded-sm bg-purple-600 px-4 text-xs font-semibold text-white shadow-xs hover:bg-purple-700"
-              >
-                <Download className="size-3.5" aria-hidden="true" />
-                Download &amp; Enable Trace
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {showSam2Modal ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="sam2-dialog-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
-        >
-          <div className="w-full max-w-md rounded-xl border border-line bg-surface p-6 shadow-2xl">
-            <div className="flex items-center gap-3 text-purple-700 dark:text-purple-300">
-              <Sparkles className="size-6 shrink-0" aria-hidden="true" />
-              <h3 id="sam2-dialog-title" className="text-base font-semibold text-ink">
-                Enable SAM2.1 Auto-Trace
-              </h3>
-            </div>
-            <div className="mt-3 flex flex-col gap-2 text-sm text-muted leading-relaxed">
-              <p>
-                First-time activation downloads the{" "}
-                <strong className="text-ink">SAM2.1 Hiera Tiny</strong> ONNX model weights (
-                <strong className="text-ink">~120 MB</strong>) from the server into your browser to
-                run local WebGPU / WASM inference.
-              </p>
-              <p className="text-xs">
-                Once loaded, select a class and <strong className="text-ink">left-click</strong> any
-                part on the canvas to automatically trace its polygon contour.
+                part on the canvas to add foreground points,{" "}
+                <strong className="text-ink">right-click / Shift+click</strong> to exclude
+                background, and press <strong className="text-ink">Enter</strong> or double-click to
+                commit.
               </p>
             </div>
             <div className="mt-6 flex justify-end gap-3">

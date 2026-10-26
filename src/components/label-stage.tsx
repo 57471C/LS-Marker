@@ -194,10 +194,16 @@ export function LabelStage({
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
   const [crosshairOrigin, setCrosshairOrigin] = useState<{ x: number; y: number } | null>(null);
   const [sam2BusyPoint, setSam2BusyPoint] = useState<{ x: number; y: number } | null>(null);
+  const [samPromptPoints, setSamPromptPoints] = useState<Sam2PromptPoint[]>([]);
+  const [samDraftPolygon, setSamDraftPolygon] = useState<[number, number][] | null>(null);
   const polyDraftRef = useRef(polyDraft);
   polyDraftRef.current = polyDraft;
   const crosshairOriginRef = useRef(crosshairOrigin);
   crosshairOriginRef.current = crosshairOrigin;
+  const samPromptPointsRef = useRef(samPromptPoints);
+  samPromptPointsRef.current = samPromptPoints;
+  const samDraftPolygonRef = useRef(samDraftPolygon);
+  samDraftPolygonRef.current = samDraftPolygon;
 
   const [view, setView] = useState<View>({ zoom: 1, x: 0, y: 0 });
   const [spaceMode, setSpaceMode] = useState<"off" | "ready" | "dragging">("off");
@@ -215,19 +221,37 @@ export function LabelStage({
   const prevSrc = useRef(src);
   const prevToolMode = useRef(toolMode);
   const prevCrosshair = useRef(crosshairMode);
+  const prevSam2Enabled = useRef(sam2Enabled);
   if (
     prevSrc.current !== src ||
     prevToolMode.current !== toolMode ||
-    prevCrosshair.current !== crosshairMode
+    prevCrosshair.current !== crosshairMode ||
+    prevSam2Enabled.current !== sam2Enabled
   ) {
     if (prevSrc.current !== src || prevCrosshair.current !== crosshairMode) {
       if (crosshairOrigin) {
         setCrosshairOrigin(null);
       }
     }
+    if (
+      prevSrc.current !== src ||
+      prevToolMode.current !== toolMode ||
+      prevSam2Enabled.current !== sam2Enabled
+    ) {
+      if (samPromptPoints.length > 0) {
+        setSamPromptPoints([]);
+      }
+      if (samDraftPolygon) {
+        setSamDraftPolygon(null);
+      }
+      if (sam2BusyPoint) {
+        setSam2BusyPoint(null);
+      }
+    }
     prevSrc.current = src;
     prevToolMode.current = toolMode;
     prevCrosshair.current = crosshairMode;
+    prevSam2Enabled.current = sam2Enabled;
     if (polyDraft) {
       setPolyDraft(null);
     }
@@ -376,6 +400,63 @@ export function LabelStage({
   const closePolygonRef = useRef(closePolygon);
   closePolygonRef.current = closePolygon;
 
+  function clearSamSession() {
+    setSamPromptPoints([]);
+    setSamDraftPolygon(null);
+    setSam2BusyPoint(null);
+  }
+
+  function runSamPrompts(nextPrompts: Sam2PromptPoint[], indicatorPt?: { x: number; y: number }) {
+    if (nextPrompts.length === 0 || !imgRef.current) {
+      clearSamSession();
+      return;
+    }
+    const imgEl = imgRef.current;
+    setSamPromptPoints(nextPrompts);
+    setSam2BusyPoint(indicatorPt ?? nextPrompts[nextPrompts.length - 1]);
+    void traceSam2WithPrompts(imgEl, src, nextPrompts, onSam2Status)
+      .then((pts) => {
+        if (!pts || pts.length < 3) {
+          onSam2Error?.("SAM2 could not detect a distinct object boundary for those points.");
+          return;
+        }
+        setSamDraftPolygon(pts);
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : "SAM2 tracing failed";
+        onSam2Status?.({ state: "error", message: msg });
+        onSam2Error?.(msg);
+      })
+      .finally(() => {
+        setSam2BusyPoint(null);
+      });
+  }
+
+  function commitSamDraft() {
+    const pts = samDraftPolygonRef.current;
+    if (!pts || pts.length < 3 || activeClassId == null) {
+      clearSamSession();
+      return;
+    }
+    const bbox = polygonBBox(pts);
+    const newBox: StageBox = {
+      key: newId(),
+      classId: activeClassId,
+      ...bbox,
+      points: pts.map(([px, py]) => [round6(px), round6(py)]),
+    };
+    onChange([...boxesRef.current, newBox]);
+    onSelect(newBox.key);
+    clearSamSession();
+  }
+
+  const commitSamDraftRef = useRef(commitSamDraft);
+  commitSamDraftRef.current = commitSamDraft;
+  const clearSamSessionRef = useRef(clearSamSession);
+  clearSamSessionRef.current = clearSamSession;
+  const runSamPromptsRef = useRef(runSamPrompts);
+  runSamPromptsRef.current = runSamPrompts;
+
   useEffect(() => {
     function typing(target: EventTarget | null): boolean {
       if (!(target instanceof HTMLElement)) return false;
@@ -386,8 +467,15 @@ export function LabelStage({
       if (event.key === "Escape") {
         dragRef.current = null;
         setDraft(null);
+        if (samPromptPointsRef.current.length > 0 || samDraftPolygonRef.current) {
+          event.preventDefault();
+          event.stopPropagation();
+          clearSamSessionRef.current();
+          return;
+        }
         if (polyDraftRef.current) {
           event.preventDefault();
+          event.stopPropagation();
           setPolyDraft(null);
           return;
         }
@@ -399,15 +487,43 @@ export function LabelStage({
       if (typing(event.target)) return;
 
       if (event.key === "Enter") {
+        if (samDraftPolygonRef.current && samDraftPolygonRef.current.length >= 3) {
+          event.preventDefault();
+          event.stopPropagation();
+          commitSamDraftRef.current();
+          return;
+        }
         if (polyDraftRef.current && polyDraftRef.current.length >= 3) {
           event.preventDefault();
+          event.stopPropagation();
           closePolygonRef.current(polyDraftRef.current);
           return;
         }
       }
+
+      if (
+        event.key === "Backspace" ||
+        ((event.ctrlKey || event.metaKey) &&
+          (event.key === "z" || event.key === "Z") &&
+          !event.shiftKey)
+      ) {
+        if (samPromptPointsRef.current.length > 0) {
+          event.preventDefault();
+          event.stopPropagation();
+          const prevPts = samPromptPointsRef.current.slice(0, -1);
+          if (prevPts.length === 0) {
+            clearSamSessionRef.current();
+          } else {
+            runSamPromptsRef.current(prevPts);
+          }
+          return;
+        }
+      }
+
       if (event.key === "Backspace") {
         if (polyDraftRef.current && polyDraftRef.current.length > 0) {
           event.preventDefault();
+          event.stopPropagation();
           if (polyDraftRef.current.length > 1) {
             setPolyDraft(polyDraftRef.current.slice(0, -1));
           } else {
@@ -442,11 +558,11 @@ export function LabelStage({
       spaceRef.current = false;
       if (!panDrag.current) setSpaceMode("off");
     }
-    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
@@ -542,8 +658,8 @@ export function LabelStage({
 
   function onPointerDown(event: PointerEvent<HTMLDivElement>) {
     const isCtrl = event.ctrlKey || event.metaKey;
-    const isSamCtrlRightClick = sam2Enabled && isCtrl && event.button === 2;
-    if (event.button !== 0 && !isSamCtrlRightClick) return;
+    const isSamRightClick = sam2Enabled && event.button === 2;
+    if (event.button !== 0 && !isSamRightClick) return;
     const here = point(event);
     if (!here) return;
     const target = event.target instanceof Element ? event.target : null;
@@ -585,8 +701,15 @@ export function LabelStage({
 
     event.preventDefault();
 
-    // Draggable vertex handle of selected polygon
-    if (event.button === 0 && !isCtrl && vertexHandle && key) {
+    // Draggable vertex handle of selected polygon (when not in an active SAM2 prompt session)
+    if (
+      event.button === 0 &&
+      !isCtrl &&
+      !event.shiftKey &&
+      samPromptPointsRef.current.length === 0 &&
+      vertexHandle &&
+      key
+    ) {
       event.currentTarget.setPointerCapture(event.pointerId);
       const vIdx = Number(vertexHandle.getAttribute("data-vertex"));
       onSelect(key);
@@ -595,7 +718,14 @@ export function LabelStage({
     }
 
     // Draggable corner handle of selected box
-    if (event.button === 0 && !isCtrl && cornerHandle && key) {
+    if (
+      event.button === 0 &&
+      !isCtrl &&
+      !event.shiftKey &&
+      samPromptPointsRef.current.length === 0 &&
+      cornerHandle &&
+      key
+    ) {
       event.currentTarget.setPointerCapture(event.pointerId);
       const box = boxesRef.current.find((item) => item.key === key);
       if (!box) return;
@@ -615,100 +745,35 @@ export function LabelStage({
       return;
     }
 
-    // SAM2.1 object tracing & Ctrl+L-click (add) / Ctrl+R-click (remove) refinement
+    // SAM2.1 interactive multi-point prompt session:
+    // - Left-Click: Add positive/foreground point (label = 1, green indicator)
+    // - Right-Click / Shift+Left-Click: Add negative/background point (label = 0, red indicator)
+    // - Enter or Double-Click: Commit polygon and clear prompt points
+    // - Escape: Cancel prompt session and clear indicators
     if (sam2Enabled) {
-      if (!imgRef.current || sam2BusyPoint) {
+      if (activeClassId == null || !imgRef.current) {
         return;
       }
-      const imgEl = imgRef.current;
-      const currentSelectedBox = selectedKey
-        ? boxesRef.current.find((b) => b.key === selectedKey)
-        : null;
-
-      // Ctrl + Left-Click (add to selection) or Ctrl + Right-Click (remove from selection)
-      if (isCtrl && currentSelectedBox) {
-        const promptLabel: 0 | 1 = event.button === 2 ? 0 : 1;
-        const basePrompts: Sam2PromptPoint[] =
-          currentSelectedBox.samPrompts && currentSelectedBox.samPrompts.length > 0
-            ? currentSelectedBox.samPrompts
-            : [{ x: round6(currentSelectedBox.x), y: round6(currentSelectedBox.y), label: 1 }];
-        const nextPrompts: Sam2PromptPoint[] = [
-          ...basePrompts,
-          { x: round6(here.x), y: round6(here.y), label: promptLabel },
-        ];
-        const targetKey = currentSelectedBox.key;
-
-        setSam2BusyPoint(here);
-        void traceSam2WithPrompts(imgEl, src, nextPrompts, onSam2Status)
-          .then((pts) => {
-            if (!pts || pts.length < 3) {
-              onSam2Error?.("SAM2 could not refine the selection at that point.");
-              return;
-            }
-            const bbox = polygonBBox(pts);
-            onChange(
-              boxesRef.current.map((box) =>
-                box.key === targetKey
-                  ? {
-                      ...box,
-                      ...bbox,
-                      points: pts,
-                      samPrompts: nextPrompts,
-                    }
-                  : box,
-              ),
-            );
-            onSelect(targetKey);
-          })
-          .catch((err: unknown) => {
-            const msg = err instanceof Error ? err.message : "SAM2 refinement failed";
-            onSam2Status?.({ state: "error", message: msg });
-            onSam2Error?.(msg);
-          })
-          .finally(() => {
-            setSam2BusyPoint(null);
-          });
+      // Double-click commits the active SAM2 draft polygon immediately
+      if (
+        event.button === 0 &&
+        event.detail >= 2 &&
+        samDraftPolygonRef.current &&
+        samDraftPolygonRef.current.length >= 3
+      ) {
+        commitSamDraft();
         return;
       }
-
-      if (event.button === 2) {
-        // Right-click without an active selection does nothing
+      if (sam2BusyPoint) {
         return;
       }
-
-      if (activeClassId == null) {
-        return;
-      }
-      const targetClassId = activeClassId;
-      const initialPrompts: Sam2PromptPoint[] = [
-        { x: round6(here.x), y: round6(here.y), label: 1 },
+      const isNegative = event.button === 2 || (event.button === 0 && event.shiftKey);
+      const promptLabel: 0 | 1 = isNegative ? 0 : 1;
+      const nextPrompts: Sam2PromptPoint[] = [
+        ...samPromptPointsRef.current,
+        { x: round6(here.x), y: round6(here.y), label: promptLabel },
       ];
-      setSam2BusyPoint(here);
-      void traceSam2WithPrompts(imgEl, src, initialPrompts, onSam2Status)
-        .then((pts) => {
-          if (!pts || pts.length < 3) {
-            onSam2Error?.("SAM2 could not detect a distinct object boundary at that point.");
-            return;
-          }
-          const bbox = polygonBBox(pts);
-          const newBox: StageBox = {
-            key: newId(),
-            classId: targetClassId,
-            ...bbox,
-            points: pts,
-            samPrompts: initialPrompts,
-          };
-          onChange([...boxesRef.current, newBox]);
-          onSelect(newBox.key);
-        })
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : "SAM2 tracing failed";
-          onSam2Status?.({ state: "error", message: msg });
-          onSam2Error?.(msg);
-        })
-        .finally(() => {
-          setSam2BusyPoint(null);
-        });
+      runSamPrompts(nextPrompts, here);
       return;
     }
 
@@ -820,7 +885,14 @@ export function LabelStage({
   }
 
   function onDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
-    if (readOnly || toolMode !== "polygon") return;
+    if (readOnly) return;
+    if (sam2Enabled && samDraftPolygonRef.current && samDraftPolygonRef.current.length >= 3) {
+      event.preventDefault();
+      event.stopPropagation();
+      commitSamDraft();
+      return;
+    }
+    if (toolMode !== "polygon") return;
     if (polyDraftRef.current && polyDraftRef.current.length >= 3) {
       event.preventDefault();
       event.stopPropagation();
@@ -918,7 +990,7 @@ export function LabelStage({
                           : undefined,
                     }}
                   />
-                  {/* Vertex grab handles: invisible in filled mode, visible in outline mode */}
+                  {/* Vertex grab handles: invisible in filled mode, semi-transparent in outline mode */}
                   {selected && !readOnly
                     ? box.points.map(([px, py], vIdx) => (
                         <circle
@@ -927,27 +999,13 @@ export function LabelStage({
                           data-vertex={vIdx}
                           cx={px * 1000}
                           cy={py * 1000}
-                          r={isFilled ? 8 : 5}
+                          r={(isFilled ? 5 : 2.7) / view.zoom}
                           className="pointer-events-auto cursor-crosshair"
                           fill={isFilled ? "transparent" : "#ffffff"}
+                          fillOpacity={isFilled ? 0 : 0.55}
                           stroke={isFilled ? "transparent" : "#1c1b19"}
-                          strokeWidth={1.5}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      ))
-                    : null}
-                  {/* SAM2 positive (+) and negative (-) prompt point markers on selected polygon */}
-                  {selected && sam2Enabled && box.samPrompts
-                    ? box.samPrompts.map((pt) => (
-                        <circle
-                          key={`${box.key}-sam-pt-${pt.label}-${pt.x}-${pt.y}`}
-                          cx={pt.x * 1000}
-                          cy={pt.y * 1000}
-                          r={4.5}
-                          className="pointer-events-none"
-                          fill={pt.label === 1 ? "#10b981" : "#f43f5e"}
-                          stroke="#ffffff"
-                          strokeWidth={1.5}
+                          strokeOpacity={isFilled ? 0 : 0.65}
+                          strokeWidth={1}
                           vectorEffect="non-scaling-stroke"
                         />
                       ))
@@ -955,6 +1013,39 @@ export function LabelStage({
                 </g>
               );
             })}
+
+            {/* SAM2 live interactive multi-point preview polygon & foreground/background indicators */}
+            {sam2Enabled && (samDraftPolygon || samPromptPoints.length > 0) ? (
+              <g className="pointer-events-none">
+                {samDraftPolygon && samDraftPolygon.length >= 3 && activeClassId != null ? (
+                  <polygon
+                    points={samDraftPolygon
+                      .map(([px, py]) => `${px * 1000},${py * 1000}`)
+                      .join(" ")}
+                    fill={colorFor(activeClassId)}
+                    fillOpacity={0.28}
+                    stroke={colorFor(activeClassId)}
+                    strokeWidth={1.5}
+                    strokeDasharray="5 3"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ) : null}
+                {samPromptPoints.map((pt) => (
+                  <circle
+                    key={`sam-draft-pt-${pt.label}-${pt.x}-${pt.y}`}
+                    cx={pt.x * 1000}
+                    cy={pt.y * 1000}
+                    r={4 / view.zoom}
+                    fill={pt.label === 1 ? "#10b981" : "#ef4444"}
+                    fillOpacity={0.75}
+                    stroke="#ffffff"
+                    strokeOpacity={0.8}
+                    strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+              </g>
+            ) : null}
 
             {/* Polygon drafting preview */}
             {polyDraft && polyDraft.length > 0 && activeClassId != null ? (
@@ -1000,12 +1091,14 @@ export function LabelStage({
                     key={`draft-pt-${px}-${py}`}
                     cx={px * 1000}
                     cy={py * 1000}
-                    r={idx === 0 && polyDraft.length >= 3 ? 7 : 4}
+                    r={(idx === 0 && polyDraft.length >= 3 ? 4.8 : 2.8) / view.zoom}
                     fill={idx === 0 && polyDraft.length >= 3 ? colorFor(activeClassId) : "#ffffff"}
+                    fillOpacity={0.65}
                     stroke={
                       idx === 0 && polyDraft.length >= 3 ? "#ffffff" : colorFor(activeClassId)
                     }
-                    strokeWidth={2}
+                    strokeOpacity={0.75}
+                    strokeWidth={1.25}
                     vectorEffect="non-scaling-stroke"
                   />
                 ))}
@@ -1222,6 +1315,13 @@ export function LabelStage({
               {polyDraft.length < 3
                 ? `Polygon (${polyDraft.length} pts): Click to add vertices • Esc to cancel`
                 : `Polygon (${polyDraft.length} pts): Click start point, double-click, or press Enter to close • Esc to cancel`}
+            </div>
+          ) : null}
+
+          {/* SAM2 multi-point prompt session helper pill */}
+          {sam2Enabled && samPromptPoints.length > 0 ? (
+            <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-full border border-purple-400/60 bg-surface/95 px-3 py-1 font-mono text-xs text-ink shadow-md backdrop-blur-xs">
+              {`SAM2 (${samPromptPoints.length} pt): Left-click (+) add • Right-click / Shift+Click (−) remove • Enter / Double-click commit • Esc cancel`}
             </div>
           ) : null}
 

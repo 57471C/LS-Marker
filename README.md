@@ -21,11 +21,16 @@ Draw bounding boxes and segmentation polygons on part photos, run QA review, aud
 - **Box ↔ Polygon Mode**: Toggle between standard rectangle bounding boxes (`5` tokens: `class_id cx cy w h`) and multi-vertex segmentation polygons (`class_id x1 y1 x2 y2 ... xn yn`). Click the convert button (`Repeat` icon) to convert a selected box to a 4-point polygon or vice versa.
 - **Outline ↔ Precision Filled Mode**: Toggle between standard outline mode (with visible corner/vertex handles) and precision filled mode (semi-transparent fill, thin 1px border, and invisible grab handles for unobstructed nudging and resizing).
 - **Crosshairs & `(0,0)` Pixel Readout**: Toggle full-canvas horizontal and vertical tracking lines with a floating pixel coordinate readout. Left-clicking on the canvas zeros the origin to `(0, 0)` at that point to measure relative pixel offsets `(Δx, Δy) px`. Press `Esc` to reset the origin.
-- **SAM2.1 Auto-Trace (`Trace`)**: Client-side segmentation powered by `onnxruntime-web` (uses **WebGPU** when available and falls back automatically to **WASM/CPU**):
-  - **Left-Click**: Traces the object under the cursor into a simplified polygon for the active class.
-  - **`Ctrl + Left-Click`**: Adds a positive prompt point (`+`, green dot) to expand the currently selected polygon.
-  - **`Ctrl + Right-Click`**: Adds a negative prompt point (`-`, red dot) to subtract/remove unwanted regions from the currently selected polygon.
-  - **`Ctrl + Z`**: Multi-step undo stack that reverts the last selection refinement, move, resize, nudge, or shape creation/deletion.
+- **SAM2.1 Auto-Trace (`Trace`)**: Client-side interactive segmentation powered by `onnxruntime-web` (uses **WebGPU** when available and falls back automatically to **WASM/CPU**):
+  - **Persistent Browser Cache (`ls-marker-sam2-cache-v1`)**: Models are streamed once with a 0–100% progress bar and stored in the browser’s native Cache Storage API (`src/services/samCache.ts`), loading directly from local disk in `<50 ms` on subsequent visits. Use **Settings → Clear Model Cache** to refresh cached weights if updated on disk.
+  - **Multi-Point Interactive Prompting**:
+    - **Left-Click**: Add a positive/foreground point (`label = 1`, green indicator).
+    - **Right-Click / `Shift + Left-Click`**: Add a negative/background point (`label = 0`, red indicator) to exclude bench background halos or adjacent parts in real time.
+    - **`Enter` or Double-Click**: Commit the traced polygon to the active annotations and clear prompt markers.
+    - **`Escape`**: Cancel the current prompt session and clear indicators.
+    - **`Ctrl + Left-Click` / `Ctrl + Right-Click`**: Add positive (`+`) or negative (`-`) refinement points to an already-selected polygon.
+  - **Tighter Boundary Thresholding**: Uses `0.25` logit (`0.58` probability) thresholding, discards internal holes and micro-islands (`< 15 px²`), and simplifies contours with high-quality Douglas-Peucker (`0.9 px` tolerance) to hug physical part boundaries without background halos.
+  - **`Ctrl + Z`**: Multi-step undo stack that reverts the last prompt point, selection refinement, move, resize, nudge, or shape creation/deletion.
 - **Duplicate (`Ctrl+D`) & Previous Boxes**: Copy the selected (or last) shape, or copy all shapes from the previous photo onto an empty photo.
 - **Arrow Keys**: Nudge the selected box or polygon (`Shift + Arrow` for larger steps). With nothing selected, `Left` and `Right` navigate between photos.
 - **No Parts (`N`)**: Saves an empty `.txt` label file (clean bench negative sample) and advances to the next open photo.

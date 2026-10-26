@@ -4421,6 +4421,7 @@ function mount(server) {
         fs.existsSync(filePath) &&
         fs.statSync(filePath).isFile()
       ) {
+        const stat = fs.statSync(filePath);
         const ext = path.extname(fileName).toLowerCase();
         const mime =
           ext === ".wasm"
@@ -4430,8 +4431,34 @@ function mount(server) {
               : "application/octet-stream";
         res.statusCode = 200;
         res.setHeader("Content-Type", mime);
+        res.setHeader("Content-Length", String(stat.size));
         res.setHeader("Cache-Control", "public, max-age=3600");
         fs.createReadStream(filePath).pipe(res);
+        return;
+      }
+    }
+    if (url.pathname.startsWith("/models/")) {
+      const requestedName = path.basename(url.pathname);
+      const modelsDir = path.resolve(server.config.root, "public", "models");
+      const aliasMap = {
+        "image_encoder.onnx": "sam2_hiera_tiny_encoder.onnx",
+        "mask_decoder.onnx": "sam2_hiera_tiny_decoder.onnx",
+      };
+      let candidatePath = path.join(modelsDir, requestedName);
+      if (!fs.existsSync(candidatePath) && aliasMap[requestedName]) {
+        candidatePath = path.join(modelsDir, aliasMap[requestedName]);
+      }
+      if (
+        candidatePath.startsWith(modelsDir) &&
+        fs.existsSync(candidatePath) &&
+        fs.statSync(candidatePath).isFile()
+      ) {
+        const stat = fs.statSync(candidatePath);
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/octet-stream");
+        res.setHeader("Content-Length", String(stat.size));
+        res.setHeader("Cache-Control", "public, max-age=3600");
+        fs.createReadStream(candidatePath).pipe(res);
         return;
       }
     }

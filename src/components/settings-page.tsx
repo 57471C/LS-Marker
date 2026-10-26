@@ -7,6 +7,8 @@ import {
   Download,
   FileText,
   Loader2,
+  Sparkles,
+  Trash2,
   Wrench,
   X,
 } from "lucide-react";
@@ -15,6 +17,11 @@ import { BackupModal } from "@/components/backup-modal";
 import { DatasetHealthModal } from "@/components/dataset-health-modal";
 import { MaintenanceModal } from "@/components/maintenance-modal";
 import { RescanModal } from "@/components/rescan-modal";
+import {
+  areAllSamModelsCached,
+  CACHE_NAME,
+  clearSamModelCacheAndReset,
+} from "@/services/samService";
 import {
   checkProjectExif,
   createUser,
@@ -94,6 +101,9 @@ export function SettingsPage() {
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [isMaintenanceModalOpen, setIsMaintenanceModalOpen] = useState(false);
   const [isMaintenance, setIsMaintenance] = useState(false);
+  const [samCached, setSamCached] = useState<boolean>(false);
+  const [samCacheMessage, setSamCacheMessage] = useState<string | null>(null);
+  const [clearingSamCache, setClearingSamCache] = useState(false);
 
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
@@ -115,10 +125,36 @@ export function SettingsPage() {
         if (!cancel) setIsMaintenance(res.maintenance);
       })
       .catch(() => {});
+    areAllSamModelsCached()
+      .then((cached) => {
+        if (!cancel) setSamCached(cached);
+      })
+      .catch(() => {});
     return () => {
       cancel = true;
     };
   }, []);
+
+  async function handleClearSamCache() {
+    setClearingSamCache(true);
+    setSamCacheMessage(null);
+    try {
+      const deleted = await clearSamModelCacheAndReset();
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem("ls_marker_sam2_notice_seen");
+      }
+      setSamCached(false);
+      setSamCacheMessage(
+        deleted
+          ? `Cleared local model cache (${CACHE_NAME}). Models will re-download on next Trace.`
+          : `Model cache (${CACHE_NAME}) was already empty.`,
+      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to clear SAM 2.1 model cache");
+    } finally {
+      setClearingSamCache(false);
+    }
+  }
 
   async function handleToggleMaintenance(enabled: boolean) {
     const res = await setMaintenanceMode(enabled);
@@ -578,6 +614,60 @@ export function SettingsPage() {
                   <li className="text-sm text-muted">No labellers yet.</li>
                 ) : null}
               </ul>
+            </section>
+
+            <section className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1">
+                <h2 className="text-base font-semibold tracking-tight">
+                  Local AI Model Cache (SAM 2.1)
+                </h2>
+                <p className="text-sm text-muted">
+                  SAM 2.1 Hiera Tiny ONNX weights (~120 MB) are cached in your browser&apos;s native
+                  Cache Storage (<code className="font-mono text-xs">{CACHE_NAME}</code>) for
+                  instant offline loading.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface p-4">
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2 text-sm font-medium text-ink">
+                    <Sparkles className="size-4 text-purple-600 dark:text-purple-400" />
+                    <span>SAM 2.1 Hiera Tiny (Encoder + Decoder)</span>
+                    <span
+                      className={`rounded-sm px-2 py-0.5 font-mono text-xs font-semibold ${
+                        samCached
+                          ? "border border-emerald-300 bg-emerald-100 text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                          : "border border-line bg-bg text-muted"
+                      }`}
+                    >
+                      {samCached ? "Cached on Disk" : "Not Cached"}
+                    </span>
+                  </div>
+                  {samCacheMessage ? (
+                    <p className="font-mono text-xs text-emerald-700 dark:text-emerald-300">
+                      {samCacheMessage}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted">
+                      Clear the local model cache if updated ONNX weights have been deployed to{" "}
+                      <code className="font-mono">/public/models</code>.
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className={btn}
+                  disabled={clearingSamCache}
+                  onClick={() => void handleClearSamCache()}
+                  title="Delete ls-marker-sam2-cache-v1 from browser Cache Storage"
+                >
+                  {clearingSamCache ? (
+                    <Loader2 className="size-4 animate-spin text-muted" aria-hidden="true" />
+                  ) : (
+                    <Trash2 className="size-4 text-muted" aria-hidden="true" />
+                  )}
+                  <span>Clear Model Cache</span>
+                </button>
+              </div>
             </section>
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
