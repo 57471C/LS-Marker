@@ -1,52 +1,52 @@
 # LS-Marker
 
-Draw bounding boxes on part photos and save YOLO `.txt` files next to each image.
+Draw bounding boxes and segmentation polygons on part photos, run QA review, audit dataset health, and stream YOLO / COCO training exports.
 
-## Windows
+## Windows Setup
 
 1. Install [Node.js 22](https://nodejs.org/).
 2. In this folder run `npm install`.  
    `better-sqlite3` ships a prebuild. If install tries to compile and fails, install the Visual Studio Build Tools workload “Desktop development with C++”, then run `npm install` again.
-3. Run `npm run dev`.
-4. Open the address it prints. The app listens on port **8080**.
-5. Sign in, then pick a project or create one. A project is a name plus a photo folder that already exists (`C:/Users/you/Pictures/parts` is fine). Each project has its own parts list.
+3. *(Optional — for AI Auto-Trace)* Place the binary SAM2.1 Hiera Tiny ONNX models in `public/models/` (gitignored):
+   - `public/models/sam2_hiera_tiny_encoder.onnx` (~104 MB)
+   - `public/models/sam2_hiera_tiny_decoder.onnx` (~16 MB)
+4. Run `npm run dev`.
+5. Open the address it prints. The app listens on port **8080**.
+6. Sign in, then pick a project or create one. A project is a name plus a photo folder that already exists (`C:/Users/you/Pictures/parts` is fine). Each project has its own parts catalogue.
 
-`labelling.config.json` only names the first project’s folder (`samples` unless you change it before the first run). After that, projects live in the database.
+`labelling.config.json` only names the first project’s folder (`samples` unless you change it before the first run). After that, projects live in the SQLite database (`data/labels.db`).
 
-The `samples` folder is a small stand-in so the app is usable before you add a real project.
+## Canvas & Labelling Tools
 
-## Labelling
+- **Box ↔ Polygon Mode**: Toggle between standard rectangle bounding boxes (`5` tokens: `class_id cx cy w h`) and multi-vertex segmentation polygons (`class_id x1 y1 x2 y2 ... xn yn`). Click the convert button (`Repeat` icon) to convert a selected box to a 4-point polygon or vice versa.
+- **Outline ↔ Precision Filled Mode**: Toggle between standard outline mode (with visible corner/vertex handles) and precision filled mode (semi-transparent fill, thin 1px border, and invisible grab handles for unobstructed nudging and resizing).
+- **Crosshairs & `(0,0)` Pixel Readout**: Toggle full-canvas horizontal and vertical tracking lines with a floating pixel coordinate readout. Left-clicking on the canvas zeros the origin to `(0, 0)` at that point to measure relative pixel offsets `(Δx, Δy) px`. Press `Esc` to reset the origin.
+- **SAM2.1 Auto-Trace (`Trace`)**: Client-side segmentation powered by `onnxruntime-web` (uses **WebGPU** when available and falls back automatically to **WASM/CPU**):
+  - **Left-Click**: Traces the object under the cursor into a simplified polygon for the active class.
+  - **`Ctrl + Left-Click`**: Adds a positive prompt point (`+`, green dot) to expand the currently selected polygon.
+  - **`Ctrl + Right-Click`**: Adds a negative prompt point (`-`, red dot) to subtract/remove unwanted regions from the currently selected polygon.
+  - **`Ctrl + Z`**: Multi-step undo stack that reverts the last selection refinement, move, resize, nudge, or shape creation/deletion.
+- **Duplicate (`Ctrl+D`) & Previous Boxes**: Copy the selected (or last) shape, or copy all shapes from the previous photo onto an empty photo.
+- **Arrow Keys**: Nudge the selected box or polygon (`Shift + Arrow` for larger steps). With nothing selected, `Left` and `Right` navigate between photos.
+- **No Parts (`N`)**: Saves an empty `.txt` label file (clean bench negative sample) and advances to the next open photo.
 
-- Pick a class, drag a box, press **Save**. Previous and Next also save unsaved work.
-- The header shows **image X of Y** and how many photos in the project are labelled.
-- Select a box and change **Class** to retitle it. With nothing selected, that menu is the class for the next box.
-- **Duplicate** (or Ctrl+D) copies the selected box. **Previous boxes** copies the photo before this one onto an empty photo.
-- Arrows move a selected box. Shift is a bigger step. With nothing selected, Left and Right change photo.
-- **No parts** (or N) writes an empty label and moves to the next unfinished photo. **Open** in the queue limits Previous and Next to those photos.
-- `photo.jpg` gets `photo.txt` in the same folder:
+## Classes & Part Dimensions Metadata
 
-  ```text
-  0 0.512000 0.430000 0.180000 0.220000
-  ```
+- **Classes** manages item codes (`ic`), descriptions (`des`), and colours. Numeric class IDs are permanently anchored (`max(id) + 1`) and never reused or re-sorted.
+- **Part Dimensions (Optional Reference Metadata)**: Each class can optionally specify a `part_type` (`bolt`, `nut`, `washer`, `cable_tie`, or `other`) and measurement values in `mm`, complete with an interactive **`? How to measure`** SVG diagram popover and a status icon next to **Edit** (red ruler when unset/incomplete, green part icon when complete).
+- **Dataset Health**: Audits class balance ($\ge 15$ samples/class target), negative samples, and missing part dimensions without blocking training readiness.
 
-  Values are `class_id x_center y_center width height`, all normalised 0–1.
-- `classes.txt` in the image folder lists item codes. Line order matches the class id (blank lines keep a retired id).
-- **Classes** adds or renames codes. Ids are not reused. A CSV with columns `ic` and `des` can be uploaded; codes already stored are skipped.
-- On an image, paste the item codes you are labelling. The class menu only lists those, so a catalogue of thousands stays usable.
-- Only the chosen folder is read. Nested folders are included, up to 5000 images.
+## People, Claims & QA Workflow
 
-## People
-
-Labellers sign in with a username and password. There is no email check.
-
-**Settings** is locked with the shared password `admin`. From there you add people. A new install has no labellers until you add one. Photo folders are chosen per project, not here. Users are shared across projects.
-
-Opening a free image and saving claims it (`claimed_by`, `claimed_at`). Release it when you are finished. If someone else holds it, take over before editing. The queue filters are All, Open, Mine, and Free.
-
-**Photos** lists the folder, and **Export YOLO** downloads a zip of the photos, their `.txt` files, and `classes.txt`.
+- Labellers sign in with a username and password. **Settings** is locked with the shared password `admin`.
+- Opening or saving a free image claims an atomic 15-minute lease. Queue filters are **All**, **Open**, **Complete**, **Approved**, **Mine**, and **Free**.
+- **QA Review & Approved Freeze**: Once a reviewer approves a photo (`status = 'approved'`), it is frozen in read-only mode on the canvas and excluded from the `Free` queue to protect ground truth. Admins and reviewers can click **Unlock to Edit** to revoke approval and reopen the photo if needed.
+- **Maintenance Mode & Database Backups**: Admins can enable Maintenance Mode from **Settings**, download consistent SQLite `.db` backups, and trigger **Git Pull & Update** with automatic Vite server reload.
+- **Streaming Exports**: Export **YOLO** (`data.yaml` + `.txt` labels) or **COCO JSON** (`instances_train.json` / `instances_val.json`) as a **Labels Only** or **Full Dataset** `.tar` stream, with an optional **Include part dimensions (`dimensions.json`)** metadata checkbox.
 
 ## Scripts
 
-- `npm run dev` — app on port 8080
-- `npm run lint` — Biome
-- `npm run format` — Biome
+- `npm run dev` — start Vite dev server on port 8080
+- `npm run typecheck` — TypeScript check (`tsc --noEmit`)
+- `npm run lint` — Biome check
+- `npm run format` — Biome format
