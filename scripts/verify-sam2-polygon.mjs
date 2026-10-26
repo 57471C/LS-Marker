@@ -2,7 +2,78 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { contours } from "d3-contour";
 import * as ort from "onnxruntime-web";
-import simplify from "simplify-js";
+
+function getSqDist(p1, p2) {
+  const dx = p1.x - p2.x;
+  const dy = p1.y - p2.y;
+  return dx * dx + dy * dy;
+}
+
+function getSqSegDist(p, p1, p2) {
+  let x = p1.x;
+  let y = p1.y;
+  let dx = p2.x - x;
+  let dy = p2.y - y;
+  if (dx !== 0 || dy !== 0) {
+    const t = ((p.x - x) * dx + (p.y - y) * dy) / (dx * dx + dy * dy);
+    if (t > 1) {
+      x = p2.x;
+      y = p2.y;
+    } else if (t > 0) {
+      x += dx * t;
+      y += dy * t;
+    }
+  }
+  dx = p.x - x;
+  dy = p.y - y;
+  return dx * dx + dy * dy;
+}
+
+function simplifyRadialDist(points, sqTolerance) {
+  let prevPoint = points[0];
+  const newPoints = [prevPoint];
+  for (let i = 1, len = points.length; i < len; i++) {
+    const point = points[i];
+    if (getSqDist(point, prevPoint) > sqTolerance) {
+      newPoints.push(point);
+      prevPoint = point;
+    }
+  }
+  if (prevPoint !== points[points.length - 1]) newPoints.push(points[points.length - 1]);
+  return newPoints;
+}
+
+function simplifyDPStep(points, first, last, sqTolerance, simplified) {
+  let maxSqDist = sqTolerance;
+  let index = 0;
+  for (let i = first + 1; i < last; i++) {
+    const sqDist = getSqSegDist(points[i], points[first], points[last]);
+    if (sqDist > maxSqDist) {
+      index = i;
+      maxSqDist = sqDist;
+    }
+  }
+  if (maxSqDist > sqTolerance) {
+    if (index - first > 1) simplifyDPStep(points, first, index, sqTolerance, simplified);
+    simplified.push(points[index]);
+    if (last - index > 1) simplifyDPStep(points, index, last, sqTolerance, simplified);
+  }
+}
+
+function simplifyDouglasPeucker(points, sqTolerance) {
+  const last = points.length - 1;
+  const simplified = [points[0]];
+  simplifyDPStep(points, 0, last, sqTolerance, simplified);
+  simplified.push(points[last]);
+  return simplified;
+}
+
+function simplify(points, tolerance = 1, highestQuality = false) {
+  if (points.length <= 2) return points;
+  const sqTolerance = tolerance * tolerance;
+  const pts = highestQuality ? points : simplifyRadialDist(points, sqTolerance);
+  return simplifyDouglasPeucker(pts, sqTolerance);
+}
 
 console.log("--- Starting SAM2.1 Persistent Cache Storage & Polygon Tracing Verification ---");
 

@@ -1,6 +1,5 @@
 import { contours } from "d3-contour";
 import * as ort from "onnxruntime-web";
-import simplify from "simplify-js";
 import {
   CACHE_NAME,
   clearModelCache,
@@ -10,6 +9,111 @@ import {
 } from "./samCache";
 
 export { CACHE_NAME, clearModelCache, fetchModelWithCache, isModelCached, type FetchModelMeta };
+
+/** Square distance between 2 points */
+function getSqDist(p1: { x: number; y: number }, p2: { x: number; y: number }): number {
+  const dx = p1.x - p2.x;
+  const dy = p1.y - p2.y;
+  return dx * dx + dy * dy;
+}
+
+/** Square distance from a point to a segment */
+function getSqSegDist(
+  p: { x: number; y: number },
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+): number {
+  let x = p1.x;
+  let y = p1.y;
+  let dx = p2.x - x;
+  let dy = p2.y - y;
+
+  if (dx !== 0 || dy !== 0) {
+    const t = ((p.x - x) * dx + (p.y - y) * dy) / (dx * dx + dy * dy);
+    if (t > 1) {
+      x = p2.x;
+      y = p2.y;
+    } else if (t > 0) {
+      x += dx * t;
+      y += dy * t;
+    }
+  }
+
+  dx = p.x - x;
+  dy = p.y - y;
+  return dx * dx + dy * dy;
+}
+
+/** Radial distance simplification pass */
+function simplifyRadialDist(
+  points: { x: number; y: number }[],
+  sqTolerance: number,
+): { x: number; y: number }[] {
+  let prevPoint = points[0];
+  const newPoints = [prevPoint];
+  for (let i = 1, len = points.length; i < len; i++) {
+    const point = points[i];
+    if (getSqDist(point, prevPoint) > sqTolerance) {
+      newPoints.push(point);
+      prevPoint = point;
+    }
+  }
+  if (prevPoint !== points[points.length - 1]) newPoints.push(points[points.length - 1]);
+  return newPoints;
+}
+
+/** Recursive Ramer-Douglas-Peucker step */
+function simplifyDPStep(
+  points: { x: number; y: number }[],
+  first: number,
+  last: number,
+  sqTolerance: number,
+  simplified: { x: number; y: number }[],
+): void {
+  let maxSqDist = sqTolerance;
+  let index = 0;
+
+  for (let i = first + 1; i < last; i++) {
+    const sqDist = getSqSegDist(points[i], points[first], points[last]);
+    if (sqDist > maxSqDist) {
+      index = i;
+      maxSqDist = sqDist;
+    }
+  }
+
+  if (maxSqDist > sqTolerance) {
+    if (index - first > 1) simplifyDPStep(points, first, index, sqTolerance, simplified);
+    simplified.push(points[index]);
+    if (last - index > 1) simplifyDPStep(points, index, last, sqTolerance, simplified);
+  }
+}
+
+/** Ramer-Douglas-Peucker polyline simplification */
+function simplifyDouglasPeucker(
+  points: { x: number; y: number }[],
+  sqTolerance: number,
+): { x: number; y: number }[] {
+  const last = points.length - 1;
+  const simplified = [points[0]];
+  simplifyDPStep(points, 0, last, sqTolerance, simplified);
+  simplified.push(points[last]);
+  return simplified;
+}
+
+/**
+ * High-performance polyline simplification (Ramer-Douglas-Peucker algorithm).
+ * Implemented natively to avoid external CommonJS package resolution issues in Vite/ESM.
+ */
+export function simplify(
+  points: { x: number; y: number }[],
+  tolerance = 1,
+  highestQuality = false,
+): { x: number; y: number }[] {
+  if (points.length <= 2) return points;
+  const sqTolerance = tolerance * tolerance;
+  const pts = highestQuality ? points : simplifyRadialDist(points, sqTolerance);
+  return simplifyDouglasPeucker(pts, sqTolerance);
+}
 
 export type Sam2Provider = "webgpu" | "wasm";
 
