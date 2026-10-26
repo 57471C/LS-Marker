@@ -38,6 +38,7 @@ export function MaintenanceModal({
   const [pulling, setPulling] = useState(false);
   const [pullResult, setPullResult] = useState<GitPullResult | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [forceInstall, setForceInstall] = useState(false);
 
   useEffect(() => {
     if (!isOpen) {
@@ -92,7 +93,7 @@ export function MaintenanceModal({
     setPullResult(null);
     setCountdown(null);
     try {
-      const res = await executeGitPull(true);
+      const res = await executeGitPull({ restart: true, install: forceInstall });
       setPullResult(res);
       if (res.success && res.restarting) {
         let remaining = 3;
@@ -229,6 +230,16 @@ export function MaintenanceModal({
                     <p className="text-xs text-muted">
                       Pull latest code and restart Vite dev server.
                     </p>
+                    <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={forceInstall}
+                        disabled={pulling || submitting}
+                        onChange={(e) => setForceInstall(e.target.checked)}
+                        className="rounded-xs border-line"
+                      />
+                      <span>Run npm install (automatic if package.json changed)</span>
+                    </label>
                   </div>
                 </div>
                 <button
@@ -240,7 +251,9 @@ export function MaintenanceModal({
                   {pulling ? (
                     <>
                       <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                      <span>Pulling &amp; Restarting…</span>
+                      <span>
+                        {forceInstall ? "Pulling & Installing…" : "Pulling & Restarting…"}
+                      </span>
                     </>
                   ) : (
                     <>
@@ -272,10 +285,11 @@ export function MaintenanceModal({
                       </span>
                     ) : null}
                   </div>
-                  {pullResult.packageJsonChanged ? (
-                    <p className="text-[11px] font-medium text-amber-800 dark:text-amber-300">
-                      Note: package.json changed. If dependencies were added, an `npm install` may
-                      be required.
+                  {pullResult.packageJsonChanged || pullResult.installed ? (
+                    <p className="text-[11px] font-medium text-emerald-800 dark:text-emerald-300">
+                      {pullResult.packageJsonChanged
+                        ? "Dependencies changed: `npm install` ran automatically before server restart."
+                        : "`npm install` completed before server restart."}
                     </p>
                   ) : null}
                   {pullResult.output ? (

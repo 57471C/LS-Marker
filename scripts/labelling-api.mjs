@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import tar from "tar-stream";
 
 const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
 
 /**
  * Local labelling API. Vite middleware so `npm run dev` is one process on 8080.
@@ -3900,6 +3901,23 @@ export async function handle(req, res, url, root) {
     }
 
     const packageChanged = output.includes("package.json") || output.includes("package-lock.json");
+    const shouldInstall = body.install === true || (packageChanged && success);
+    if (success && shouldInstall) {
+      try {
+        console.log("[system] Running npm install after git pull...");
+        const installResult = await execAsync("npm install --prefer-offline --no-audit", {
+          cwd: root,
+          timeout: 120000,
+          windowsHide: true,
+        });
+        const installLog = (installResult.stdout || "") + (installResult.stderr || "");
+        output = `${output.trim()}\n\n[npm install]\n${installLog.trim()}`;
+      } catch (installErr) {
+        const installErrLog = `${installErr.stdout || ""}\n${installErr.stderr || ""}\n${installErr.message || ""}`;
+        output = `${output.trim()}\n\n[npm install failed]\n${installErrLog.trim()}`;
+        console.error("[system] npm install after git pull failed:", installErr);
+      }
+    }
     const canRestart = Boolean(activeViteServer && typeof activeViteServer.restart === "function");
 
     send(res, success ? 200 : 500, {
@@ -3907,10 +3925,13 @@ export async function handle(req, res, url, root) {
       success,
       output: output.trim(),
       packageJsonChanged: packageChanged,
+      installed: shouldInstall,
       restarting: success && shouldRestart && canRestart,
       message: success
         ? shouldRestart && canRestart
-          ? "Git pull succeeded. Vite server is restarting."
+          ? packageChanged
+            ? "Git pull and npm install succeeded. Vite server is restarting."
+            : "Git pull succeeded. Vite server is restarting."
           : "Git pull succeeded."
         : "Git pull failed. Check output for details.",
     });

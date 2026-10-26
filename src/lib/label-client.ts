@@ -818,14 +818,21 @@ export type GitPullResult = {
   output: string;
   restarting: boolean;
   packageJsonChanged?: boolean;
+  installed?: boolean;
   message: string;
 };
 
-export async function executeGitPull(restart = true): Promise<GitPullResult> {
+export async function executeGitPull(
+  options: { restart?: boolean; install?: boolean } | boolean = true,
+): Promise<GitPullResult> {
+  const opts = typeof options === "boolean" ? { restart: options } : options;
   const res = await fetch(api("/api/system/git-pull"), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ restart }),
+    body: JSON.stringify({
+      restart: opts.restart !== false,
+      install: opts.install ?? false,
+    }),
   });
   return asJson(res);
 }
