@@ -4412,6 +4412,29 @@ function mount(server) {
       next();
       return;
     }
+    if (url.pathname.startsWith("/ort-wasm/")) {
+      const fileName = path.basename(url.pathname);
+      const distDir = path.resolve(server.config.root, "node_modules", "onnxruntime-web", "dist");
+      const filePath = path.join(distDir, fileName);
+      if (
+        filePath.startsWith(distDir) &&
+        fs.existsSync(filePath) &&
+        fs.statSync(filePath).isFile()
+      ) {
+        const ext = path.extname(fileName).toLowerCase();
+        const mime =
+          ext === ".wasm"
+            ? "application/wasm"
+            : ext === ".mjs" || ext === ".js"
+              ? "text/javascript; charset=utf-8"
+              : "application/octet-stream";
+        res.statusCode = 200;
+        res.setHeader("Content-Type", mime);
+        res.setHeader("Cache-Control", "public, max-age=3600");
+        fs.createReadStream(filePath).pipe(res);
+        return;
+      }
+    }
     if (!url.pathname.startsWith("/api/")) {
       next();
       return;

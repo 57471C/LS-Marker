@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { inkOn } from "@/lib/class-color";
+import {
+  encodeSam2Image,
+  traceSam2WithPrompts,
+  type Sam2PromptPoint,
+  type Sam2Status,
+} from "@/lib/sam2-client";
 
 export type StageBox = {
   key: string;
@@ -9,6 +15,7 @@ export type StageBox = {
   w: number;
   h: number;
   points?: [number, number][];
+  samPrompts?: Sam2PromptPoint[];
 };
 
 export function newId(): string {
@@ -146,6 +153,10 @@ export function LabelStage({
   hiddenKeys,
   toolMode = "box",
   renderMode = "outline",
+  crosshairMode = false,
+  sam2Enabled = false,
+  onSam2Status,
+  onSam2Error,
   onChange,
   onSelect,
 }: {
@@ -160,11 +171,16 @@ export function LabelStage({
   hiddenKeys?: ReadonlySet<string>;
   toolMode?: "box" | "polygon";
   renderMode?: "outline" | "filled";
-  onChange: (boxes: StageBox[]) => void;
+  crosshairMode?: boolean;
+  sam2Enabled?: boolean;
+  onSam2Status?: (status: Sam2Status) => void;
+  onSam2Error?: (message: string) => void;
+  onChange: (boxes: StageBox[], options?: { transient?: boolean }) => void;
   onSelect: (key: string | null) => void;
 }) {
   const frameRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
   const boxesRef = useRef(boxes);
   const dragRef = useRef<Drag | null>(null);
   boxesRef.current = boxes;
@@ -176,8 +192,12 @@ export function LabelStage({
   );
   const [polyDraft, setPolyDraft] = useState<[number, number][] | null>(null);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
+  const [crosshairOrigin, setCrosshairOrigin] = useState<{ x: number; y: number } | null>(null);
+  const [sam2BusyPoint, setSam2BusyPoint] = useState<{ x: number; y: number } | null>(null);
   const polyDraftRef = useRef(polyDraft);
   polyDraftRef.current = polyDraft;
+  const crosshairOriginRef = useRef(crosshairOrigin);
+  crosshairOriginRef.current = crosshairOrigin;
 
   const [view, setView] = useState<View>({ zoom: 1, x: 0, y: 0 });
   const [spaceMode, setSpaceMode] = useState<"off" | "ready" | "dragging">("off");
@@ -194,13 +214,41 @@ export function LabelStage({
 
   const prevSrc = useRef(src);
   const prevToolMode = useRef(toolMode);
-  if (prevSrc.current !== src || prevToolMode.current !== toolMode) {
+  const prevCrosshair = useRef(crosshairMode);
+  if (
+    prevSrc.current !== src ||
+    prevToolMode.current !== toolMode ||
+    prevCrosshair.current !== crosshairMode
+  ) {
+    if (prevSrc.current !== src || prevCrosshair.current !== crosshairMode) {
+      if (crosshairOrigin) {
+        setCrosshairOrigin(null);
+      }
+    }
     prevSrc.current = src;
     prevToolMode.current = toolMode;
+    prevCrosshair.current = crosshairMode;
     if (polyDraft) {
       setPolyDraft(null);
     }
   }
+
+  useEffect(() => {
+    if (!sam2Enabled || !natural || !imgRef.current) return;
+    let cancelled = false;
+    encodeSam2Image(imgRef.current, src, (st) => {
+      if (!cancelled) onSam2Status?.(st);
+    }).catch((err: unknown) => {
+      if (!cancelled) {
+        const msg = err instanceof Error ? err.message : "SAM2 encoding failed";
+        onSam2Status?.({ state: "error", message: msg });
+        onSam2Error?.(msg);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sam2Enabled, natural, src, onSam2Status, onSam2Error]);
 
   useEffect(() => {
     const el = frameRef.current;
@@ -342,6 +390,9 @@ export function LabelStage({
           event.preventDefault();
           setPolyDraft(null);
           return;
+        }
+        if (crosshairOriginRef.current) {
+          setCrosshairOrigin(null);
         }
         return;
       }
@@ -490,7 +541,9 @@ export function LabelStage({
   }
 
   function onPointerDown(event: PointerEvent<HTMLDivElement>) {
-    if (event.button !== 0) return;
+    const isCtrl = event.ctrlKey || event.metaKey;
+    const isSamCtrlRightClick = sam2Enabled && isCtrl && event.button === 2;
+    if (event.button !== 0 && !isSamCtrlRightClick) return;
     const here = point(event);
     if (!here) return;
     const target = event.target instanceof Element ? event.target : null;
@@ -498,6 +551,15 @@ export function LabelStage({
     const vertexHandle = target?.closest("[data-vertex]");
     const boxEl = target?.closest("[data-box]");
     const key = boxEl?.getAttribute("data-box");
+
+    // In crosshair mode, zero (0,0) on first click (or when starting a new measurement outside polygon drafting)
+    if (
+      event.button === 0 &&
+      crosshairMode &&
+      (!polyDraftRef.current || polyDraftRef.current.length === 0)
+    ) {
+      setCrosshairOrigin({ x: here.x, y: here.y });
+    }
 
     if (readOnly) {
       if (key) {
@@ -509,7 +571,7 @@ export function LabelStage({
     }
 
     // Active polygon drafting flow
-    if (polyDraftRef.current && polyDraftRef.current.length > 0) {
+    if (!sam2Enabled && polyDraftRef.current && polyDraftRef.current.length > 0) {
       event.preventDefault();
       const first = polyDraftRef.current[0];
       const d0 = Math.hypot(here.x - first[0], here.y - first[1]);
@@ -522,10 +584,10 @@ export function LabelStage({
     }
 
     event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
 
     // Draggable vertex handle of selected polygon
-    if (vertexHandle && key) {
+    if (event.button === 0 && !isCtrl && vertexHandle && key) {
+      event.currentTarget.setPointerCapture(event.pointerId);
       const vIdx = Number(vertexHandle.getAttribute("data-vertex"));
       onSelect(key);
       dragRef.current = { kind: "vertex", key, index: vIdx };
@@ -533,7 +595,8 @@ export function LabelStage({
     }
 
     // Draggable corner handle of selected box
-    if (cornerHandle && key) {
+    if (event.button === 0 && !isCtrl && cornerHandle && key) {
+      event.currentTarget.setPointerCapture(event.pointerId);
       const box = boxesRef.current.find((item) => item.key === key);
       if (!box) return;
       onSelect(key);
@@ -551,6 +614,105 @@ export function LabelStage({
       dragRef.current = { kind: "resize", key, anchorX: anchor.x, anchorY: anchor.y };
       return;
     }
+
+    // SAM2.1 object tracing & Ctrl+L-click (add) / Ctrl+R-click (remove) refinement
+    if (sam2Enabled) {
+      if (!imgRef.current || sam2BusyPoint) {
+        return;
+      }
+      const imgEl = imgRef.current;
+      const currentSelectedBox = selectedKey
+        ? boxesRef.current.find((b) => b.key === selectedKey)
+        : null;
+
+      // Ctrl + Left-Click (add to selection) or Ctrl + Right-Click (remove from selection)
+      if (isCtrl && currentSelectedBox) {
+        const promptLabel: 0 | 1 = event.button === 2 ? 0 : 1;
+        const basePrompts: Sam2PromptPoint[] =
+          currentSelectedBox.samPrompts && currentSelectedBox.samPrompts.length > 0
+            ? currentSelectedBox.samPrompts
+            : [{ x: round6(currentSelectedBox.x), y: round6(currentSelectedBox.y), label: 1 }];
+        const nextPrompts: Sam2PromptPoint[] = [
+          ...basePrompts,
+          { x: round6(here.x), y: round6(here.y), label: promptLabel },
+        ];
+        const targetKey = currentSelectedBox.key;
+
+        setSam2BusyPoint(here);
+        void traceSam2WithPrompts(imgEl, src, nextPrompts, onSam2Status)
+          .then((pts) => {
+            if (!pts || pts.length < 3) {
+              onSam2Error?.("SAM2 could not refine the selection at that point.");
+              return;
+            }
+            const bbox = polygonBBox(pts);
+            onChange(
+              boxesRef.current.map((box) =>
+                box.key === targetKey
+                  ? {
+                      ...box,
+                      ...bbox,
+                      points: pts,
+                      samPrompts: nextPrompts,
+                    }
+                  : box,
+              ),
+            );
+            onSelect(targetKey);
+          })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : "SAM2 refinement failed";
+            onSam2Status?.({ state: "error", message: msg });
+            onSam2Error?.(msg);
+          })
+          .finally(() => {
+            setSam2BusyPoint(null);
+          });
+        return;
+      }
+
+      if (event.button === 2) {
+        // Right-click without an active selection does nothing
+        return;
+      }
+
+      if (activeClassId == null) {
+        return;
+      }
+      const targetClassId = activeClassId;
+      const initialPrompts: Sam2PromptPoint[] = [
+        { x: round6(here.x), y: round6(here.y), label: 1 },
+      ];
+      setSam2BusyPoint(here);
+      void traceSam2WithPrompts(imgEl, src, initialPrompts, onSam2Status)
+        .then((pts) => {
+          if (!pts || pts.length < 3) {
+            onSam2Error?.("SAM2 could not detect a distinct object boundary at that point.");
+            return;
+          }
+          const bbox = polygonBBox(pts);
+          const newBox: StageBox = {
+            key: newId(),
+            classId: targetClassId,
+            ...bbox,
+            points: pts,
+            samPrompts: initialPrompts,
+          };
+          onChange([...boxesRef.current, newBox]);
+          onSelect(newBox.key);
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : "SAM2 tracing failed";
+          onSam2Status?.({ state: "error", message: msg });
+          onSam2Error?.(msg);
+        })
+        .finally(() => {
+          setSam2BusyPoint(null);
+        });
+      return;
+    }
+
+    event.currentTarget.setPointerCapture(event.pointerId);
 
     // Click on existing shape body
     if (key) {
@@ -615,8 +777,16 @@ export function LabelStage({
             points: box.points
               ? box.points.map(([px, py]) => [clamp(px + shiftX, 0, 1), clamp(py + shiftY, 0, 1)])
               : undefined,
+            samPrompts: box.samPrompts
+              ? box.samPrompts.map((p) => ({
+                  ...p,
+                  x: clamp(p.x + shiftX, 0, 1),
+                  y: clamp(p.y + shiftY, 0, 1),
+                }))
+              : undefined,
           };
         }),
+        { transient: true },
       );
       return;
     }
@@ -636,6 +806,7 @@ export function LabelStage({
             points: nextPoints,
           };
         }),
+        { transient: true },
       );
       return;
     }
@@ -644,6 +815,7 @@ export function LabelStage({
         if (box.key !== drag.key) return box;
         return fromCorners(box, drag.anchorX, drag.anchorY, here.x, here.y);
       }),
+      { transient: true },
     );
   }
 
@@ -678,6 +850,7 @@ export function LabelStage({
       onPointerCancel={endPan}
     >
       <img
+        ref={imgRef}
         src={src}
         alt={alt}
         draggable={false}
@@ -697,13 +870,20 @@ export function LabelStage({
       {placed ? (
         <div
           ref={overlayRef}
-          className="absolute touch-none"
+          className={`absolute touch-none ${
+            spaceMode === "off" && (crosshairMode || sam2Enabled) ? "cursor-crosshair" : ""
+          }`}
           style={placed}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={finish}
           onPointerCancel={finish}
           onDoubleClick={onDoubleClick}
+          onContextMenu={(event) => {
+            if (sam2Enabled || event.ctrlKey || event.metaKey) {
+              event.preventDefault();
+            }
+          }}
           onPointerLeave={() => setCursorPos(null)}
           role="application"
           aria-label="Draw bounding boxes and polygons"
@@ -751,6 +931,22 @@ export function LabelStage({
                           className="pointer-events-auto cursor-crosshair"
                           fill={isFilled ? "transparent" : "#ffffff"}
                           stroke={isFilled ? "transparent" : "#1c1b19"}
+                          strokeWidth={1.5}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      ))
+                    : null}
+                  {/* SAM2 positive (+) and negative (-) prompt point markers on selected polygon */}
+                  {selected && sam2Enabled && box.samPrompts
+                    ? box.samPrompts.map((pt) => (
+                        <circle
+                          key={`${box.key}-sam-pt-${pt.label}-${pt.x}-${pt.y}`}
+                          cx={pt.x * 1000}
+                          cy={pt.y * 1000}
+                          r={4.5}
+                          className="pointer-events-none"
+                          fill={pt.label === 1 ? "#10b981" : "#f43f5e"}
+                          stroke="#ffffff"
                           strokeWidth={1.5}
                           vectorEffect="non-scaling-stroke"
                         />
@@ -813,6 +1009,99 @@ export function LabelStage({
                     vectorEffect="non-scaling-stroke"
                   />
                 ))}
+              </g>
+            ) : null}
+
+            {/* Crosshair H & V tracking lines and (0,0) origin marker */}
+            {crosshairMode && cursorPos ? (
+              <g className="pointer-events-none">
+                {/* Subtle dark backing lines for contrast on bright backgrounds */}
+                <line
+                  x1={0}
+                  y1={cursorPos.y * 1000}
+                  x2={1000}
+                  y2={cursorPos.y * 1000}
+                  stroke="rgba(0, 0, 0, 0.35)"
+                  strokeWidth={1.25}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <line
+                  x1={cursorPos.x * 1000}
+                  y1={0}
+                  x2={cursorPos.x * 1000}
+                  y2={1000}
+                  stroke="rgba(0, 0, 0, 0.35)"
+                  strokeWidth={1.25}
+                  vectorEffect="non-scaling-stroke"
+                />
+                {/* Faint bright H and V crosshair lines */}
+                <line
+                  x1={0}
+                  y1={cursorPos.y * 1000}
+                  x2={1000}
+                  y2={cursorPos.y * 1000}
+                  stroke="rgba(255, 255, 255, 0.55)"
+                  strokeWidth={1}
+                  strokeDasharray="4 3"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <line
+                  x1={cursorPos.x * 1000}
+                  y1={0}
+                  x2={cursorPos.x * 1000}
+                  y2={1000}
+                  stroke="rgba(255, 255, 255, 0.55)"
+                  strokeWidth={1}
+                  strokeDasharray="4 3"
+                  vectorEffect="non-scaling-stroke"
+                />
+                {crosshairOrigin ? (
+                  <>
+                    <line
+                      x1={crosshairOrigin.x * 1000}
+                      y1={crosshairOrigin.y * 1000}
+                      x2={cursorPos.x * 1000}
+                      y2={cursorPos.y * 1000}
+                      stroke="rgba(56, 189, 248, 0.55)"
+                      strokeWidth={1}
+                      strokeDasharray="2 3"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    <circle
+                      cx={crosshairOrigin.x * 1000}
+                      cy={crosshairOrigin.y * 1000}
+                      r={3.5}
+                      fill="rgba(56, 189, 248, 0.9)"
+                      stroke="rgba(0, 0, 0, 0.65)"
+                      strokeWidth={1}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  </>
+                ) : null}
+              </g>
+            ) : null}
+
+            {/* SAM2 active click pulse indicator */}
+            {sam2BusyPoint ? (
+              <g className="pointer-events-none">
+                <circle
+                  cx={sam2BusyPoint.x * 1000}
+                  cy={sam2BusyPoint.y * 1000}
+                  r={10}
+                  fill="none"
+                  stroke="#a855f7"
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <circle
+                  cx={sam2BusyPoint.x * 1000}
+                  cy={sam2BusyPoint.y * 1000}
+                  r={3.5}
+                  fill="#a855f7"
+                  stroke="#ffffff"
+                  strokeWidth={1.5}
+                  vectorEffect="non-scaling-stroke"
+                />
               </g>
             ) : null}
           </svg>
@@ -933,6 +1222,38 @@ export function LabelStage({
               {polyDraft.length < 3
                 ? `Polygon (${polyDraft.length} pts): Click to add vertices • Esc to cancel`
                 : `Polygon (${polyDraft.length} pts): Click start point, double-click, or press Enter to close • Esc to cancel`}
+            </div>
+          ) : null}
+
+          {/* Crosshair (0,0) origin label & floating mouse coordinates */}
+          {crosshairMode && crosshairOrigin ? (
+            <div
+              className="pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full pb-1.5 font-mono text-[9px] text-sky-200/80 drop-shadow-xs"
+              style={{
+                left: `${crosshairOrigin.x * 100}%`,
+                top: `${crosshairOrigin.y * 100}%`,
+              }}
+            >
+              (0, 0)
+            </div>
+          ) : null}
+
+          {crosshairMode && cursorPos && natural ? (
+            <div
+              className="pointer-events-none absolute z-30 rounded-xs bg-ink/65 px-1.5 py-0.5 font-mono text-[10px] leading-tight whitespace-nowrap text-white/85 backdrop-blur-[1px]"
+              style={{
+                left: `${cursorPos.x * 100}%`,
+                top: `${cursorPos.y * 100}%`,
+                transform: `translate(${cursorPos.x > 0.82 ? "calc(-100% - 10px)" : "10px"}, ${
+                  cursorPos.y > 0.9 ? "calc(-100% - 8px)" : "10px"
+                })`,
+              }}
+            >
+              {crosshairOrigin
+                ? `${Math.round((cursorPos.x - crosshairOrigin.x) * natural.w)}, ${Math.round(
+                    (cursorPos.y - crosshairOrigin.y) * natural.h,
+                  )} px`
+                : `${Math.round(cursorPos.x * natural.w)}, ${Math.round(cursorPos.y * natural.h)} px`}
             </div>
           ) : null}
         </div>

@@ -21,6 +21,9 @@ export default defineConfig(() => {
       strictPort: true,
     },
     resolve: { tsconfigPaths: true },
+    optimizeDeps: {
+      exclude: ["onnxruntime-web"],
+    },
     plugins: [labellingApiPlugin(), tailwindcss(), tanstackStart(), viteReact()],
   };
 });

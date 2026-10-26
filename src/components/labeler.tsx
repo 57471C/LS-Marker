@@ -6,9 +6,15 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Copy,
+  Crosshair,
+  Download,
   Eye,
   EyeOff,
+  History,
   Loader2,
+  Repeat,
+  Sparkles,
   Trash2,
   Unlock,
   X,
@@ -16,6 +22,7 @@ import {
 import { AppHeader } from "@/components/app-header";
 import { LabelStage, newId, round6, type StageBox } from "@/components/label-stage";
 import { classFill } from "@/lib/class-color";
+import { isSam2Loaded, type Sam2Status } from "@/lib/sam2-client";
 import {
   claimImage,
   claimImageById,
@@ -185,7 +192,26 @@ export function Labeler() {
   const [indexProject, setIndexProject] = useState<number | null>(null);
   const [toolMode, setToolMode] = useState<"box" | "polygon">("box");
   const [renderMode, setRenderMode] = useState<"outline" | "filled">("outline");
+  const [crosshairMode, setCrosshairMode] = useState(false);
+  const [sam2Enabled, setSam2Enabled] = useState(false);
+  const [sam2Status, setSam2Status] = useState<Sam2Status>({ state: "idle" });
+  const [showSam2Modal, setShowSam2Modal] = useState(false);
   const paneDrag = useRef<{ x: number; width: number } | null>(null);
+  const undoStackRef = useRef<{ boxes: StageBox[]; selectedKey: string | null }[]>([]);
+  const committedSnapshotRef = useRef<{ boxes: StageBox[]; selectedKey: string | null }>({
+    boxes: [],
+    selectedKey: null,
+  });
+
+  function pushUndoSnapshot(nextBoxes: StageBox[], nextSelectedKey: string | null) {
+    const prev = committedSnapshotRef.current;
+    if (JSON.stringify(prev.boxes) === JSON.stringify(nextBoxes)) {
+      committedSnapshotRef.current = { boxes: nextBoxes, selectedKey: nextSelectedKey };
+      return;
+    }
+    undoStackRef.current = [...undoStackRef.current.slice(-49), prev];
+    committedSnapshotRef.current = { boxes: nextBoxes, selectedKey: nextSelectedKey };
+  }
 
   const [isReviewMode, setIsReviewMode] = useState<boolean>(() => {
     if (typeof window !== "undefined") {
@@ -461,6 +487,8 @@ export function Labeler() {
       .then((loaded) => {
         if (cancel) return;
         const next = withKeys(loaded);
+        undoStackRef.current = [];
+        committedSnapshotRef.current = { boxes: next, selectedKey: null };
         setBoxes(next);
         setSaved(serialize(next));
         setSelectedKey(null);
@@ -607,10 +635,13 @@ export function Labeler() {
     }
   }
 
-  function handleBoxesChange(nextBoxes: StageBox[]) {
+  function handleBoxesChange(nextBoxes: StageBox[], options?: { transient?: boolean }) {
     if (lockedRef.current) return;
     if (!isReviewMode && current && current.claimedBy !== username) {
       void ensureClaimed();
+    }
+    if (!options?.transient) {
+      pushUndoSnapshot(nextBoxes, selectedKey);
     }
     setBoxes(nextBoxes);
   }
@@ -621,18 +652,35 @@ export function Labeler() {
     if (!isReviewMode && current && current.claimedBy !== username) {
       void ensureClaimed();
     }
-    setBoxes((prev) => prev.filter((box) => box.key !== selectedKey));
+    const nextBoxes = boxes.filter((box) => box.key !== selectedKey);
+    pushUndoSnapshot(nextBoxes, null);
+    setBoxes(nextBoxes);
     setSelectedKey(null);
   }
 
   function undoLast() {
     if (lockedRef.current) return;
+    const prev = undoStackRef.current.pop();
+    if (prev) {
+      if (!isReviewMode && current && current.claimedBy !== username) {
+        void ensureClaimed();
+      }
+      committedSnapshotRef.current = prev;
+      setBoxes(prev.boxes);
+      setSelectedKey(prev.selectedKey);
+      return;
+    }
     const last = boxes.at(-1);
     if (!last) return;
     if (!isReviewMode && current && current.claimedBy !== username) {
       void ensureClaimed();
     }
-    setBoxes((prev) => prev.filter((box) => box.key !== last.key));
+    const nextBoxes = boxes.filter((box) => box.key !== last.key);
+    committedSnapshotRef.current = {
+      boxes: nextBoxes,
+      selectedKey: selectedKey === last.key ? null : selectedKey,
+    };
+    setBoxes(nextBoxes);
     if (selectedKey === last.key) setSelectedKey(null);
   }
 
@@ -649,26 +697,29 @@ export function Labeler() {
     const dx = key === "ArrowLeft" ? -step : key === "ArrowRight" ? step : 0;
     const dy = key === "ArrowUp" ? -step : key === "ArrowDown" ? step : 0;
     if (dx === 0 && dy === 0) return false;
-    setBoxes((prev) =>
-      prev.map((box) => {
-        if (box.key !== selectedKey) return box;
-        const newX = round6(clampUnit(box.x + dx, box.w / 2, 1 - box.w / 2));
-        const newY = round6(clampUnit(box.y + dy, box.h / 2, 1 - box.h / 2));
-        const shiftX = newX - box.x;
-        const shiftY = newY - box.y;
-        return {
-          ...box,
-          x: newX,
-          y: newY,
-          points: box.points
-            ? box.points.map(([px, py]) => [
-                round6(clampUnit(px + shiftX, 0, 1)),
-                round6(clampUnit(py + shiftY, 0, 1)),
-              ])
-            : undefined,
-        };
-      }),
-    );
+    const nextBoxes = boxes.map((box) => {
+      if (box.key !== selectedKey) return box;
+      const newX = round6(clampUnit(box.x + dx, box.w / 2, 1 - box.w / 2));
+      const newY = round6(clampUnit(box.y + dy, box.h / 2, 1 - box.h / 2));
+      const shiftX = newX - box.x;
+      const shiftY = newY - box.y;
+      return {
+        ...box,
+        x: newX,
+        y: newY,
+        points: box.points
+          ? box.points.map(
+              ([px, py]) =>
+                [round6(clampUnit(px + shiftX, 0, 1)), round6(clampUnit(py + shiftY, 0, 1))] as [
+                  number,
+                  number,
+                ],
+            )
+          : undefined,
+      };
+    });
+    pushUndoSnapshot(nextBoxes, selectedKey);
+    setBoxes(nextBoxes);
     return true;
   }
 
@@ -701,7 +752,9 @@ export function Labeler() {
           ])
         : undefined,
     };
-    setBoxes((prev) => [...prev, copy]);
+    const nextBoxes = [...boxes, copy];
+    pushUndoSnapshot(nextBoxes, copy.key);
+    setBoxes(nextBoxes);
     setSelectedKey(copy.key);
   }
 
@@ -712,28 +765,28 @@ export function Labeler() {
     if (!isReviewMode && current && current.claimedBy !== username) {
       void ensureClaimed();
     }
-    setBoxes((prev) =>
-      prev.map((box) => {
-        if (box.key !== selectedKey) return box;
-        if (box.points && box.points.length >= 3) {
-          const { points: _removed, ...rest } = box;
-          return rest;
-        }
-        const left = round6(clampUnit(box.x - box.w / 2, 0, 1));
-        const right = round6(clampUnit(box.x + box.w / 2, 0, 1));
-        const top = round6(clampUnit(box.y - box.h / 2, 0, 1));
-        const bottom = round6(clampUnit(box.y + box.h / 2, 0, 1));
-        return {
-          ...box,
-          points: [
-            [left, top],
-            [right, top],
-            [right, bottom],
-            [left, bottom],
-          ],
-        };
-      }),
-    );
+    const nextBoxes = boxes.map((box) => {
+      if (box.key !== selectedKey) return box;
+      if (box.points && box.points.length >= 3) {
+        const { points: _removed, ...rest } = box;
+        return rest;
+      }
+      const left = round6(clampUnit(box.x - box.w / 2, 0, 1));
+      const right = round6(clampUnit(box.x + box.w / 2, 0, 1));
+      const top = round6(clampUnit(box.y - box.h / 2, 0, 1));
+      const bottom = round6(clampUnit(box.y + box.h / 2, 0, 1));
+      return {
+        ...box,
+        points: [
+          [left, top],
+          [right, top],
+          [right, bottom],
+          [left, bottom],
+        ] as [number, number][],
+      };
+    });
+    pushUndoSnapshot(nextBoxes, selectedKey);
+    setBoxes(nextBoxes);
   }
 
   async function copyPrevious() {
@@ -1308,6 +1361,15 @@ export function Labeler() {
                   activeClassId={activeClassId}
                   toolMode={toolMode}
                   renderMode={renderMode}
+                  crosshairMode={crosshairMode}
+                  sam2Enabled={sam2Enabled}
+                  onSam2Status={(st) => {
+                    setSam2Status(st);
+                    if (st.state !== "idle") {
+                      setStatus(st.message);
+                    }
+                  }}
+                  onSam2Error={(msg) => setError(msg)}
                   labelFor={labelFor}
                   colorFor={colorFor}
                   readOnly={locked}
@@ -1315,10 +1377,10 @@ export function Labeler() {
                   onSelect={selectBox}
                 />
                 <div className="pointer-events-none absolute top-2 left-2 z-30 flex items-center gap-1">
-                  {/* Tool Mode Toggle: Box ↔ Polygon */}
+                  {/* Tool Mode Toggle: Box ↔ Polygon (Icon only) */}
                   <button
                     type="button"
-                    className={`press pointer-events-auto inline-flex h-10 items-center gap-1.5 rounded-sm border px-2.5 text-xs font-medium ${
+                    className={`press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border ${
                       toolMode === "polygon"
                         ? "border-amber-400 bg-amber-100 text-amber-950 dark:border-amber-700 dark:bg-amber-950/70 dark:text-amber-200"
                         : "border-line bg-surface text-ink hover:bg-surface-hover"
@@ -1329,7 +1391,9 @@ export function Labeler() {
                         : "Box mode (Click to switch to Polygons)"
                     }
                     aria-label={
-                      toolMode === "polygon" ? "Switch to Box mode" : "Switch to Polygon mode"
+                      toolMode === "polygon"
+                        ? "Polygon mode (Click to switch to Boxes)"
+                        : "Box mode (Click to switch to Polygons)"
                     }
                     onClick={() => setToolMode((m) => (m === "box" ? "polygon" : "box"))}
                   >
@@ -1371,15 +1435,12 @@ export function Labeler() {
                         <circle cx="3" cy="9" r="1.5" fill="currentColor" />
                       </svg>
                     )}
-                    <span className="hidden sm:inline">
-                      {toolMode === "polygon" ? "Polygon" : "Box"}
-                    </span>
                   </button>
 
-                  {/* Precision / Filled Mode Toggle: Outline ↔ Filled */}
+                  {/* Precision / Filled Mode Toggle: Outline ↔ Filled (Icon only) */}
                   <button
                     type="button"
-                    className={`press pointer-events-auto inline-flex h-10 items-center gap-1.5 rounded-sm border px-2.5 text-xs font-medium ${
+                    className={`press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border ${
                       renderMode === "filled"
                         ? "border-sky-400 bg-sky-100 text-sky-950 dark:border-sky-700 dark:bg-sky-950/70 dark:text-sky-200"
                         : "border-line bg-surface text-ink hover:bg-surface-hover"
@@ -1391,8 +1452,8 @@ export function Labeler() {
                     }
                     aria-label={
                       renderMode === "filled"
-                        ? "Switch to Outline mode"
-                        : "Switch to Precision filled mode"
+                        ? "Precision filled mode (Handles hidden). Click for Outline mode"
+                        : "Outline mode (Handles visible). Click for Precision filled mode"
                     }
                     onClick={() => setRenderMode((m) => (m === "outline" ? "filled" : "outline"))}
                   >
@@ -1421,46 +1482,123 @@ export function Labeler() {
                         <rect x="4" y="4" width="16" height="16" rx="1.5" />
                       </svg>
                     )}
-                    <span className="hidden sm:inline">
-                      {renderMode === "filled" ? "Filled" : "Outline"}
-                    </span>
                   </button>
 
-                  {/* Duplicate Button */}
+                  {/* Crosshairs & Relative (0,0) Coordinate Readout Toggle (Icon only) */}
                   <button
                     type="button"
-                    className="press pointer-events-auto inline-flex h-10 items-center rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-ink disabled:opacity-40"
+                    className={`press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border ${
+                      crosshairMode
+                        ? "border-emerald-400 bg-emerald-100 text-emerald-950 dark:border-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-200"
+                        : "border-line bg-surface text-ink hover:bg-surface-hover"
+                    }`}
+                    title={
+                      crosshairMode
+                        ? "Crosshairs ON (Click canvas to zero 0,0 • Esc to reset origin)"
+                        : "Enable crosshairs and mouse pixel coordinate readout"
+                    }
+                    aria-label={
+                      crosshairMode
+                        ? "Crosshairs ON (Click canvas to zero 0,0)"
+                        : "Enable crosshairs and mouse pixel coordinate readout"
+                    }
+                    aria-pressed={crosshairMode}
+                    onClick={() => setCrosshairMode((v) => !v)}
+                  >
+                    <Crosshair className="size-4 shrink-0" aria-hidden="true" />
+                  </button>
+
+                  {/* SAM2.1 Client-Side Polygon Tracing Toggle ("Trace") */}
+                  <button
+                    type="button"
+                    disabled={locked}
+                    className={`press pointer-events-auto inline-flex h-9 items-center gap-1.5 rounded-sm border px-2.5 text-xs font-medium disabled:opacity-40 ${
+                      sam2Enabled
+                        ? "border-purple-400 bg-purple-100 text-purple-950 dark:border-purple-700 dark:bg-purple-950/70 dark:text-purple-200"
+                        : "border-line bg-surface text-ink hover:bg-surface-hover"
+                    }`}
+                    title={
+                      sam2Enabled
+                        ? `SAM2.1 Auto-Trace ON (${
+                            sam2Status.state === "ready" ||
+                            sam2Status.state === "encoding" ||
+                            sam2Status.state === "decoding"
+                              ? sam2Status.provider.toUpperCase()
+                              : "ONNX"
+                          }) — Left-click object to trace polygon`
+                        : "Enable SAM2.1 AI polygon tracing (Left-click object to trace)"
+                    }
+                    aria-label="Trace object polygon with SAM2.1"
+                    aria-pressed={sam2Enabled}
+                    onClick={() => {
+                      if (!sam2Enabled) {
+                        const seen =
+                          typeof window !== "undefined" &&
+                          window.localStorage.getItem("ls_marker_sam2_notice_seen") === "1";
+                        if (!seen && !isSam2Loaded()) {
+                          setShowSam2Modal(true);
+                          return;
+                        }
+                        setSam2Enabled(true);
+                      } else {
+                        setSam2Enabled(false);
+                        setSam2Status({ state: "idle" });
+                      }
+                    }}
+                  >
+                    {sam2Enabled &&
+                    (sam2Status.state === "loading_models" ||
+                      sam2Status.state === "encoding" ||
+                      sam2Status.state === "decoding") ? (
+                      <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Sparkles className="size-4 shrink-0" aria-hidden="true" />
+                    )}
+                    <span>Trace</span>
+                  </button>
+
+                  {/* Duplicate Button (Icon only) */}
+                  <button
+                    type="button"
+                    className="press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border border-line bg-surface text-ink hover:bg-surface-hover disabled:opacity-40"
                     disabled={!canDuplicate}
-                    title="Copy the selected box, or the last one. Ctrl+D"
+                    title="Duplicate selected or last shape (Ctrl+D)"
+                    aria-label="Duplicate selected or last shape (Ctrl+D)"
                     onClick={duplicate}
                   >
-                    Duplicate
+                    <Copy className="size-4 shrink-0" aria-hidden="true" />
                   </button>
 
-                  {/* Previous Boxes Button */}
+                  {/* Previous Boxes Button (Icon only) */}
                   <button
                     type="button"
-                    className="press pointer-events-auto inline-flex h-10 items-center rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-ink disabled:opacity-40"
+                    className="press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border border-line bg-surface text-ink hover:bg-surface-hover disabled:opacity-40"
                     disabled={!canCopyPrevious}
-                    title="Copy every box from the previous photo. Only when this photo has none."
+                    title="Copy every box from the previous photo (only when this photo has none)"
+                    aria-label="Copy every box from the previous photo"
                     onClick={() => void copyPrevious()}
                   >
-                    Previous boxes
+                    <History className="size-4 shrink-0" aria-hidden="true" />
                   </button>
 
-                  {/* Convert shape button when selected */}
+                  {/* Convert shape button when selected (Icon only) */}
                   {selectedBox && !locked ? (
                     <button
                       type="button"
-                      className="press pointer-events-auto inline-flex h-10 items-center rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-ink hover:bg-surface-hover"
+                      className="press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border border-line bg-surface text-ink hover:bg-surface-hover"
                       title={
                         selectedBox.points
-                          ? "Convert polygon to rectangle bounding box"
-                          : "Convert rectangle to 4-point polygon"
+                          ? "Convert selected polygon to rectangle bounding box"
+                          : "Convert selected rectangle to 4-point polygon"
+                      }
+                      aria-label={
+                        selectedBox.points
+                          ? "Convert selected polygon to rectangle bounding box"
+                          : "Convert selected rectangle to 4-point polygon"
                       }
                       onClick={toggleConvertSelected}
                     >
-                      {selectedBox.points ? "To Box" : "To Polygon"}
+                      <Repeat className="size-4 shrink-0" aria-hidden="true" />
                     </button>
                   ) : null}
                 </div>
@@ -1937,6 +2075,112 @@ export function Labeler() {
                     Unlock and Edit
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showSam2Modal ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="sam2-dialog-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md rounded-xl border border-line bg-surface p-6 shadow-2xl">
+            <div className="flex items-center gap-3 text-purple-700 dark:text-purple-300">
+              <Sparkles className="size-6 shrink-0" aria-hidden="true" />
+              <h3 id="sam2-dialog-title" className="text-base font-semibold text-ink">
+                Enable SAM2.1 Auto-Trace
+              </h3>
+            </div>
+            <div className="mt-3 flex flex-col gap-2 text-sm text-muted leading-relaxed">
+              <p>
+                First-time activation downloads the{" "}
+                <strong className="text-ink">SAM2.1 Hiera Tiny</strong> ONNX model weights (
+                <strong className="text-ink">~120 MB</strong>) from the server into your browser to
+                run local WebGPU / WASM inference.
+              </p>
+              <p className="text-xs">
+                Once loaded, select a class and <strong className="text-ink">left-click</strong> any
+                part on the canvas to automatically trace its polygon contour.
+              </p>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowSam2Modal(false)}
+                className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-medium text-ink hover:bg-surface-raised"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof window !== "undefined") {
+                    window.localStorage.setItem("ls_marker_sam2_notice_seen", "1");
+                  }
+                  setShowSam2Modal(false);
+                  setSam2Enabled(true);
+                }}
+                className="press inline-flex h-9 items-center justify-center gap-1.5 rounded-sm bg-purple-600 px-4 text-xs font-semibold text-white shadow-xs hover:bg-purple-700"
+              >
+                <Download className="size-3.5" aria-hidden="true" />
+                Download &amp; Enable Trace
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showSam2Modal ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="sam2-dialog-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md rounded-xl border border-line bg-surface p-6 shadow-2xl">
+            <div className="flex items-center gap-3 text-purple-700 dark:text-purple-300">
+              <Sparkles className="size-6 shrink-0" aria-hidden="true" />
+              <h3 id="sam2-dialog-title" className="text-base font-semibold text-ink">
+                Enable SAM2.1 Auto-Trace
+              </h3>
+            </div>
+            <div className="mt-3 flex flex-col gap-2 text-sm text-muted leading-relaxed">
+              <p>
+                First-time activation downloads the{" "}
+                <strong className="text-ink">SAM2.1 Hiera Tiny</strong> ONNX model weights (
+                <strong className="text-ink">~120 MB</strong>) from the server into your browser to
+                run local WebGPU / WASM inference.
+              </p>
+              <p className="text-xs">
+                Once loaded, select a class and <strong className="text-ink">left-click</strong> any
+                part on the canvas to automatically trace its polygon contour.
+              </p>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowSam2Modal(false)}
+                className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-medium text-ink hover:bg-surface-raised"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof window !== "undefined") {
+                    window.localStorage.setItem("ls_marker_sam2_notice_seen", "1");
+                  }
+                  setShowSam2Modal(false);
+                  setSam2Enabled(true);
+                }}
+                className="press inline-flex h-9 items-center justify-center gap-1.5 rounded-sm bg-purple-600 px-4 text-xs font-semibold text-white shadow-xs hover:bg-purple-700"
+              >
+                <Download className="size-3.5" aria-hidden="true" />
+                Download &amp; Enable Trace
               </button>
             </div>
           </div>
