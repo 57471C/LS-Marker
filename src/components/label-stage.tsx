@@ -396,7 +396,7 @@ export function LabelStage({
         cleanPts.push(p);
       } else {
         const last = cleanPts[cleanPts.length - 1];
-        if (Math.hypot(p[0] - last[0], p[1] - last[1]) > 0.002) {
+        if (Math.hypot(p[0] - last[0], p[1] - last[1]) > 0.0003) {
           cleanPts.push(p);
         }
       }
@@ -723,6 +723,7 @@ export function LabelStage({
     const target = event.target instanceof Element ? event.target : null;
     const cornerHandle = target?.closest("[data-corner]");
     const vertexHandle = target?.closest("[data-vertex]");
+    const polyStartHandle = target?.closest("[data-poly-start]");
     const boxEl = target?.closest("[data-box]");
     const key = boxEl?.getAttribute("data-box");
 
@@ -749,7 +750,9 @@ export function LabelStage({
       event.preventDefault();
       const first = polyDraftRef.current[0];
       const d0 = Math.hypot(here.x - first[0], here.y - first[1]);
-      if (polyDraftRef.current.length >= 3 && d0 < 0.025) {
+      // Match the exact visible start handle radius (4.8 / 1000 / zoom)
+      const startHandleRadius = 0.0048 / viewRef.current.zoom;
+      if (polyDraftRef.current.length >= 3 && (polyStartHandle || d0 <= startHandleRadius)) {
         closePolygonRef.current(polyDraftRef.current);
         return;
       }
@@ -1160,22 +1163,25 @@ export function LabelStage({
                     ) : null}
                   </>
                 ) : null}
-                {polyDraft.map(([px, py], idx) => (
-                  <circle
-                    key={`draft-pt-${px}-${py}`}
-                    cx={px * 1000}
-                    cy={py * 1000}
-                    r={(idx === 0 && polyDraft.length >= 3 ? 4.8 : 2.8) / view.zoom}
-                    fill={idx === 0 && polyDraft.length >= 3 ? colorFor(activeClassId) : "#ffffff"}
-                    fillOpacity={0.65}
-                    stroke={
-                      idx === 0 && polyDraft.length >= 3 ? "#ffffff" : colorFor(activeClassId)
-                    }
-                    strokeOpacity={0.75}
-                    strokeWidth={1.25}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ))}
+                {polyDraft.map(([px, py], idx) => {
+                  const isClosableStart = idx === 0 && polyDraft.length >= 3;
+                  return (
+                    <circle
+                      key={`draft-pt-${px}-${py}`}
+                      data-poly-start={isClosableStart ? "true" : undefined}
+                      className={isClosableStart ? "pointer-events-auto cursor-pointer" : undefined}
+                      cx={px * 1000}
+                      cy={py * 1000}
+                      r={(isClosableStart ? 4.8 : 2.8) / view.zoom}
+                      fill={isClosableStart ? colorFor(activeClassId) : "#ffffff"}
+                      fillOpacity={0.65}
+                      stroke={isClosableStart ? "#ffffff" : colorFor(activeClassId)}
+                      strokeOpacity={0.75}
+                      strokeWidth={1.25}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  );
+                })}
               </g>
             ) : null}
 
