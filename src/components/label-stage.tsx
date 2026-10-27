@@ -223,6 +223,7 @@ export function LabelStage({
   samPromptPointsRef.current = samPromptPoints;
   const samDraftPolygonRef = useRef(samDraftPolygon);
   samDraftPolygonRef.current = samDraftPolygon;
+  const samRunSeqRef = useRef(0);
 
   const [view, setView] = useState<View>({ zoom: 1, x: 0, y: 0 });
   const [spaceMode, setSpaceMode] = useState<"off" | "ready" | "dragging">("off");
@@ -419,7 +420,13 @@ export function LabelStage({
   const closePolygonRef = useRef(closePolygon);
   closePolygonRef.current = closePolygon;
 
+  const samTargetKeyRef = useRef<string | null>(null);
+
   function clearSamSession() {
+    samRunSeqRef.current += 1;
+    samTargetKeyRef.current = null;
+    samPromptPointsRef.current = [];
+    samDraftPolygonRef.current = null;
     setSamPromptPoints([]);
     setSamDraftPolygon(null);
     setSam2BusyPoint(null);
@@ -431,23 +438,30 @@ export function LabelStage({
       return;
     }
     const imgEl = imgRef.current;
+    const reqId = ++samRunSeqRef.current;
+    samPromptPointsRef.current = nextPrompts;
     setSamPromptPoints(nextPrompts);
     setSam2BusyPoint(indicatorPt ?? nextPrompts[nextPrompts.length - 1]);
     void traceSam2WithPrompts(imgEl, src, nextPrompts, onSam2Status)
       .then((pts) => {
+        if (reqId !== samRunSeqRef.current) return;
         if (!pts || pts.length < 3) {
           onSam2Error?.("SAM2 could not detect a distinct object boundary for those points.");
           return;
         }
+        samDraftPolygonRef.current = pts;
         setSamDraftPolygon(pts);
       })
       .catch((err: unknown) => {
+        if (reqId !== samRunSeqRef.current) return;
         const msg = err instanceof Error ? err.message : "SAM2 tracing failed";
         onSam2Status?.({ state: "error", message: msg });
         onSam2Error?.(msg);
       })
       .finally(() => {
-        setSam2BusyPoint(null);
+        if (reqId === samRunSeqRef.current) {
+          setSam2BusyPoint(null);
+        }
       });
   }
 
@@ -458,11 +472,31 @@ export function LabelStage({
       return;
     }
     const bbox = polygonBBox(pts);
+    const savedPrompts = [...samPromptPointsRef.current];
+    const targetKey = samTargetKeyRef.current;
+    if (targetKey && boxesRef.current.some((b) => b.key === targetKey)) {
+      onChange(
+        boxesRef.current.map((b) =>
+          b.key === targetKey
+            ? {
+                ...b,
+                ...bbox,
+                points: pts.map(([px, py]) => [round6(px), round6(py)]),
+                samPrompts: savedPrompts,
+              }
+            : b,
+        ),
+      );
+      onSelect(targetKey);
+      clearSamSession();
+      return;
+    }
     const newBox: StageBox = {
       key: newId(),
       classId: activeClassId,
       ...bbox,
       points: pts.map(([px, py]) => [round6(px), round6(py)]),
+      samPrompts: savedPrompts,
     };
     onChange([...boxesRef.current, newBox]);
     onSelect(newBox.key);
@@ -774,7 +808,7 @@ export function LabelStage({
     // - Right-Click / Shift+Left-Click: Add negative/background point (label = 0, red indicator)
     // - Enter or Double-Click: Commit polygon and clear prompt points
     // - Escape: Cancel prompt session and clear indicators
-    if (sam2Enabled) {
+    if (sam2Enabled || (isCtrl && selectedKey && imgRef.current)) {
       if (activeClassId == null || !imgRef.current) {
         return;
       }
@@ -788,13 +822,21 @@ export function LabelStage({
         commitSamDraft();
         return;
       }
-      if (sam2BusyPoint) {
-        return;
-      }
       const isNegative = event.button === 2 || (event.button === 0 && event.shiftKey);
       const promptLabel: 0 | 1 = isNegative ? 0 : 1;
+      let basePrompts = samPromptPointsRef.current;
+      if (basePrompts.length === 0 && (isNegative || isCtrl) && selectedKey) {
+        const selectedBox = boxesRef.current.find((b) => b.key === selectedKey);
+        if (selectedBox) {
+          samTargetKeyRef.current = selectedBox.key;
+          basePrompts =
+            selectedBox.samPrompts && selectedBox.samPrompts.length > 0
+              ? [...selectedBox.samPrompts]
+              : [{ x: round6(selectedBox.x), y: round6(selectedBox.y), label: 1 }];
+        }
+      }
       const nextPrompts: Sam2PromptPoint[] = [
-        ...samPromptPointsRef.current,
+        ...basePrompts,
         { x: round6(here.x), y: round6(here.y), label: promptLabel },
       ];
       runSamPrompts(nextPrompts, here);

@@ -318,7 +318,7 @@ assert.equal(
 const outerRing = validLoops[0].slice(0, -1);
 const simplified = simplify(
   outerRing.map(([x, y]) => ({ x, y })),
-  0.9,
+  1.0,
   true,
 );
 const normPoints = simplified.map((pt) => [
@@ -338,11 +338,103 @@ for (const [px] of normPoints) {
   );
 }
 
+// 4. Verify intra-object negative point exclusion across all 3 output masks (no early return on m=2)
+function pointInRing(px, py, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const intersect = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi + 1e-12) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+const intraPrompts = [
+  { x: 400 / 1024, y: 512 / 1024, label: 1 },
+  { x: 480 / 1024, y: 512 / 1024, label: 0 },
+];
+const intraDecOut = await dec.run({
+  image_embed: encOut.image_embed,
+  high_res_feats_0: encOut.high_res_feats_0,
+  high_res_feats_1: encOut.high_res_feats_1,
+  point_coords: new ort.Tensor("float32", new Float32Array([400, 512, 480, 512]), [1, 2, 2]),
+  point_labels: new ort.Tensor("float32", new Float32Array([1, 0]), [1, 2]),
+  mask_input: new ort.Tensor("float32", new Float32Array(256 * 256), [1, 1, 256, 256]),
+  has_mask_input: new ort.Tensor("float32", new Float32Array([0]), [1]),
+});
+
+const posPtsMask = intraPrompts
+  .filter((p) => p.label === 1)
+  .map((p) => ({ x: p.x * maskW, y: p.y * maskH }));
+const negPtsMask = intraPrompts
+  .filter((p) => p.label === 0)
+  .map((p) => ({ x: p.x * maskW, y: p.y * maskH }));
+
+let bestIntraRing = null;
+let bestIntraScore = Number.NEGATIVE_INFINITY;
+for (let m = 0; m < 3; m++) {
+  const mOffset = m * area;
+  let rawNegViolations = 0;
+  for (const np of negPtsMask) {
+    const ix = Math.min(maskW - 1, Math.max(0, Math.floor(np.x)));
+    const iy = Math.min(maskH - 1, Math.max(0, Math.floor(np.y)));
+    if (intraDecOut.masks.data[mOffset + iy * maskW + ix] > maskThreshold) {
+      rawNegViolations++;
+    }
+  }
+  const mValues = new Array(area);
+  for (let i = 0; i < area; i++) {
+    const rawLogit = intraDecOut.masks.data[mOffset + i];
+    const isFg = rawLogit > maskThreshold;
+    const shifted = Math.max(-15, Math.min(15, rawLogit - maskThreshold));
+    mValues[i] = isFg ? 1 / (1 + Math.exp(-shifted)) : 0;
+  }
+  const gen = contours().size([maskW, maskH]).thresholds([0.5])(mValues);
+  if (!gen.length || !gen[0].coordinates.length) continue;
+  for (const poly of gen[0].coordinates) {
+    const ring = poly[0];
+    if (!ring || ring.length < 4 || polygonSignedArea(ring) < 15) continue;
+    let posHits = 0;
+    for (const pp of posPtsMask) {
+      if (pointInRing(pp.x, pp.y, ring)) posHits++;
+    }
+    let negHits = 0;
+    for (const np of negPtsMask) {
+      if (pointInRing(np.x, np.y, ring)) negHits++;
+    }
+    const score =
+      posHits * 10 -
+      negHits * 15 -
+      rawNegViolations * 8 +
+      Number(intraDecOut.iou_predictions.data[m]);
+    if (score > bestIntraScore) {
+      bestIntraScore = score;
+      bestIntraRing = ring;
+    }
+  }
+}
+
+assert.ok(bestIntraRing, "Intra-object multi-mask evaluation must select a valid contour");
+assert.equal(
+  pointInRing(posPtsMask[0].x, posPtsMask[0].y, bestIntraRing),
+  true,
+  "Selected contour must include the positive prompt point",
+);
+assert.equal(
+  pointInRing(negPtsMask[0].x, negPtsMask[0].y, bestIntraRing),
+  false,
+  "Selected contour must exclude the negative prompt point",
+);
+
 // Verify cache clear
 const deleted = await mockCaches.delete(CACHE_NAME);
 assert.equal(deleted, true, "clearModelCache must delete the cache container");
 
 console.log(
-  `[PASS] Multi-point SAM2.1 ([1,${N},2]) + tighter threshold (0.25) + 0.9px highQuality simplify (${normPoints.length} vertices, IoU=${iou[bestIdx].toFixed(4)})`,
+  `[PASS] Multi-point SAM2.1 ([1,${N},2]) + negative point exclusion + tighter threshold (0.25) + 1.0px highQuality simplify (${normPoints.length} vertices, IoU=${iou[bestIdx].toFixed(4)})`,
 );
 console.log("--- All SAM2.1 Verifications Passed ---");
+process.exit(0);

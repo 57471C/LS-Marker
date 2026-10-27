@@ -1,7 +1,7 @@
 # AGENTS.md — Guardrails & Engineering Standards for LS-Marker
 
 > **MISSION-CRITICAL PRODUCTION ALERT:**  
-> LS-Marker is deployed in active production with paid annotators working in real-time. Unplanned downtime, schema corruption, or accidental data pruning causes immediate operational loss. Every AI agent, assistant, or automated tool operating on this codebase must adhere strictly to these rules.
+> LS-Marker i s deployed in active production with paid annotators working in real-time. Unplanned downtime, schema corruption, or accidental data pruning causes immediate operational loss. Every AI agent, assistant, or automated tool operating on this codebase must adhere strictly to these rules.
 
 ---
 

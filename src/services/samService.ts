@@ -160,7 +160,7 @@ const SAM2_MASK_SIZE = 256;
 
 export const DEFAULT_MASK_LOGIT_THRESHOLD = 0.25;
 export const DEFAULT_MASK_PROB_THRESHOLD = 0.58;
-export const DEFAULT_SIMPLIFY_TOLERANCE = 0.9;
+export const DEFAULT_SIMPLIFY_TOLERANCE = 1.0;
 export const MIN_CONTOUR_AREA_PX = 15;
 
 const IMAGENET_MEAN = [0.485, 0.456, 0.406] as const;
@@ -620,12 +620,42 @@ function round6(n: number): number {
 }
 
 /**
+ * Maps a normalized canvas coordinate `(normX, normY)` in `[0..1]` first to native image pixels
+ * `(imgX, imgY)` and then into the `1024x1024` encoder tensor coordinate space using the exact
+ * same scale factors as `imageElementToSam2Tensor`.
+ */
+export function mapNormalizedPointToTensor(
+  normX: number,
+  normY: number,
+  imgEl?: HTMLImageElement | null,
+): { imgX: number; imgY: number; tensorX: number; tensorY: number } {
+  const naturalW =
+    imgEl?.naturalWidth && imgEl.naturalWidth > 0 ? imgEl.naturalWidth : SAM2_INPUT_SIZE;
+  const naturalH =
+    imgEl?.naturalHeight && imgEl.naturalHeight > 0 ? imgEl.naturalHeight : SAM2_INPUT_SIZE;
+  const clampedX = clampUnit(normX);
+  const clampedY = clampUnit(normY);
+  const imgX = clampedX * naturalW;
+  const imgY = clampedY * naturalH;
+  const scaleX = SAM2_INPUT_SIZE / naturalW;
+  const scaleY = SAM2_INPUT_SIZE / naturalH;
+  return {
+    imgX,
+    imgY,
+    tensorX: imgX * scaleX,
+    tensorY: imgY * scaleY,
+  };
+}
+
+/**
  * Converts SAM2 decoder output logits or probabilities `[1, numMasks, maskH, maskW]` into normalized `[0..1]`
  * polygon vertices matching LS-Marker's `StageBox.points` format (`[number, number][]`).
  *
- * Uses tighter foreground thresholding (`rawLogit > 0.25` or `probability > 0.58`) to eliminate background
- * halos around metallic chamfers, filters out internal holes and micro-islands (`< 15 px²`), and simplifies
- * with Douglas-Peucker (`tolerance = 0.9 px`, `highQuality = true`).
+ * - Evaluates all candidate masks from the decoder alongside `iou_predictions`.
+ * - Enforces negative (`label = 0`) background points so red markers carve out concavities and halos.
+ * - Uses tighter foreground thresholding (`rawLogit > 0.25` or `probability > 0.58`), discards internal holes
+ *   and micro-islands (`< 15 px²`), and simplifies with Douglas-Peucker (`tolerance = 1.0 px`, `highQuality = true`)
+ *   without any convex hull wrapping.
  */
 export function maskToPolygon(
   masksData: Float32Array | number[],
@@ -645,16 +675,39 @@ export function maskToPolygon(
     : [{ x: clickNormX, y: clickNormY, label: 1 as const }];
   const negativePrompts = prompts ? prompts.filter((p) => p.label === 0) : [];
 
-  const anchorX = clampUnit(positivePrompts[0].x) * maskW;
-  const anchorY = clampUnit(positivePrompts[0].y) * maskH;
+  const posMaskPts = positivePrompts.map((p) => ({
+    x: clampUnit(p.x) * maskW,
+    y: clampUnit(p.y) * maskH,
+  }));
+  const negMaskPts = negativePrompts.map((p) => ({
+    x: clampUnit(p.x) * maskW,
+    y: clampUnit(p.y) * maskH,
+  }));
 
-  // Sort candidate mask indices by IoU descending, preferring specific object masks over coarse whole-scene masks
+  const anchorX = posMaskPts[0].x;
+  const anchorY = posMaskPts[0].y;
+
+  // Sort candidate mask indices by IoU descending as initial tie-breaker
   const maskOrder = Array.from({ length: numMasks }, (_, i) => i).sort(
     (a, b) => Number(iouData[b] ?? 0) - Number(iouData[a] ?? 0),
   );
 
+  // Precompute Voronoi-bounded suppression radii for each negative prompt point
+  const negRadii = negMaskPts.map((np) => {
+    let minPosDist = Number.POSITIVE_INFINITY;
+    for (const pp of posMaskPts) {
+      const d = Math.hypot(pp.x - np.x, pp.y - np.y);
+      if (d < minPosDist) minPosDist = d;
+    }
+    return Math.max(4, Math.min(36, minPosDist * 0.55));
+  });
+
+  let globalBestRing: number[][] | null = null;
+  let globalBestScore = Number.NEGATIVE_INFINITY;
+
   for (const maskIdx of maskOrder) {
     const offset = maskIdx * area;
+    const iouScore = Number(iouData[maskIdx] ?? 0);
 
     // Detect whether decoder output is already probability [0.0, 1.0] or raw logits
     let minVal = Number.POSITIVE_INFINITY;
@@ -670,23 +723,60 @@ export function maskToPolygon(
         ? maskThreshold
         : DEFAULT_MASK_PROB_THRESHOLD;
 
+    // Count how many positive and negative prompts the raw decoder mask satisfies
+    let rawPosSatisfied = 0;
+    for (const pp of posMaskPts) {
+      const ix = Math.min(maskW - 1, Math.max(0, Math.round(pp.x)));
+      const iy = Math.min(maskH - 1, Math.max(0, Math.round(pp.y)));
+      const v = Number(masksData[offset + iy * maskW + ix]);
+      const isFg = isProbabilityInput ? v > probCutoff : v > maskThreshold;
+      if (isFg) rawPosSatisfied++;
+    }
+
+    let rawNegViolations = 0;
+    for (const np of negMaskPts) {
+      const ix = Math.min(maskW - 1, Math.max(0, Math.round(np.x)));
+      const iy = Math.min(maskH - 1, Math.max(0, Math.round(np.y)));
+      const v = Number(masksData[offset + iy * maskW + ix]);
+      const isFg = isProbabilityInput ? v > probCutoff : v > maskThreshold;
+      if (isFg) rawNegViolations++;
+    }
+
     const values = new Array<number>(area);
     let positiveCount = 0;
     for (let i = 0; i < area; i++) {
       const val = Number(masksData[offset + i]);
+      let prob: number;
       if (isProbabilityInput) {
-        const probability = val;
-        const isForeground = probability > probCutoff;
-        if (isForeground) positiveCount++;
-        values[i] = isForeground ? 1 : 0;
+        prob = val > probCutoff ? 1 : 0;
       } else {
-        const rawLogit = val;
-        const isForeground = rawLogit > maskThreshold;
-        if (isForeground) positiveCount++;
-        // Shift logit by maskThreshold so the 0.5 iso-surface aligns with rawLogit === maskThreshold
-        const shifted = Math.max(-15, Math.min(15, rawLogit - maskThreshold));
-        values[i] = 1 / (1 + Math.exp(-shifted));
+        const shifted = Math.max(-15, Math.min(15, val - maskThreshold));
+        prob = 1 / (1 + Math.exp(-shifted));
       }
+
+      // If negative prompts are active and this pixel is closer to a negative prompt than any positive prompt
+      // within its suppression radius, suppress it so concave cutouts and background exclusions are respected
+      if (negMaskPts.length > 0 && prob >= 0.5) {
+        const px = (i % maskW) + 0.5;
+        const py = Math.floor(i / maskW) + 0.5;
+        let minPosD2 = Number.POSITIVE_INFINITY;
+        for (const pp of posMaskPts) {
+          const d2 = (px - pp.x) * (px - pp.x) + (py - pp.y) * (py - pp.y);
+          if (d2 < minPosD2) minPosD2 = d2;
+        }
+        for (let nIdx = 0; nIdx < negMaskPts.length; nIdx++) {
+          const np = negMaskPts[nIdx];
+          const r = negRadii[nIdx];
+          const negD2 = (px - np.x) * (px - np.x) + (py - np.y) * (py - np.y);
+          if (negD2 <= r * r && negD2 < minPosD2 * 0.85) {
+            const falloff = Math.sqrt(negD2) / r;
+            prob = Math.min(prob, falloff * 0.42);
+          }
+        }
+      }
+
+      if (prob > 0.5) positiveCount++;
+      values[i] = prob;
     }
 
     // Skip micro-noise (< 15 px²) or full-frame background masks
@@ -702,9 +792,6 @@ export function maskToPolygon(
     const polygons = generated[0].coordinates;
     // Extract only the largest valid external boundary contour loop (poly[0]),
     // discarding internal holes (poly.slice(1)) and micro-islands smaller than 15 px².
-    let bestRing: number[][] | null = null;
-    let bestScore = Number.NEGATIVE_INFINITY;
-
     for (const poly of polygons) {
       const outerRing = poly[0];
       if (!outerRing || outerRing.length < 4) continue;
@@ -712,51 +799,57 @@ export function maskToPolygon(
       if (ringArea < MIN_CONTOUR_AREA_PX) continue;
 
       let posHits = 0;
-      for (const pt of positivePrompts) {
-        if (pointInRing(clampUnit(pt.x) * maskW, clampUnit(pt.y) * maskH, outerRing)) {
+      for (const pp of posMaskPts) {
+        if (pointInRing(pp.x, pp.y, outerRing)) {
           posHits++;
         }
       }
       let negHits = 0;
-      for (const pt of negativePrompts) {
-        if (pointInRing(clampUnit(pt.x) * maskW, clampUnit(pt.y) * maskH, outerRing)) {
+      for (const np of negMaskPts) {
+        if (pointInRing(np.x, np.y, outerRing)) {
           negHits++;
         }
       }
 
       const distPenalty =
-        posHits > 0 ? 0 : Math.sqrt(minDistSqToRing(anchorX, anchorY, outerRing)) * 50;
-      const score = posHits * 1_000_000 - negHits * 200_000 + ringArea - distPenalty;
+        posHits > 0 ? 0 : Math.sqrt(minDistSqToRing(anchorX, anchorY, outerRing)) * 500;
+      const score =
+        posHits * 2_000_000 +
+        rawPosSatisfied * 500_000 -
+        negHits * 4_000_000 -
+        rawNegViolations * 1_500_000 +
+        iouScore * 100_000 +
+        ringArea -
+        distPenalty;
 
-      if (score > bestScore) {
-        bestScore = score;
-        bestRing = outerRing;
+      if (score > globalBestScore) {
+        globalBestScore = score;
+        globalBestRing = outerRing;
       }
     }
-
-    if (!bestRing) continue;
-
-    // Remove duplicate closing point if present
-    const openRing =
-      bestRing.length > 3 &&
-      Math.hypot(
-        bestRing[0][0] - bestRing[bestRing.length - 1][0],
-        bestRing[0][1] - bestRing[bestRing.length - 1][1],
-      ) < 1e-3
-        ? bestRing.slice(0, -1)
-        : bestRing;
-
-    const rawPoints = openRing.map(([x, y]) => ({ x, y }));
-    const clampedTolerance = Math.min(1.2, Math.max(0.8, simplifyTolerance));
-    const simplified = simplify(rawPoints, clampedTolerance, true);
-    const finalPts = simplified.length >= 3 ? simplified : rawPoints;
-
-    if (finalPts.length < 3) continue;
-
-    return finalPts.map((pt) => [round6(clampUnit(pt.x / maskW)), round6(clampUnit(pt.y / maskH))]);
   }
 
-  return null;
+  if (!globalBestRing) return null;
+
+  // Remove duplicate closing point if present
+  const openRing =
+    globalBestRing.length > 3 &&
+    Math.hypot(
+      globalBestRing[0][0] - globalBestRing[globalBestRing.length - 1][0],
+      globalBestRing[0][1] - globalBestRing[globalBestRing.length - 1][1],
+    ) < 1e-3
+      ? globalBestRing.slice(0, -1)
+      : globalBestRing;
+
+  const rawPoints = openRing.map(([x, y]) => ({ x, y }));
+  const clampedTolerance = Math.min(1.2, Math.max(0.8, simplifyTolerance));
+  // High-quality Douglas-Peucker simplification (tolerance = 1.0 px, highQuality = true) — no convex hull
+  const simplified = simplify(rawPoints, clampedTolerance, true);
+  const finalPts = simplified.length >= 3 ? simplified : rawPoints;
+
+  if (finalPts.length < 3) return null;
+
+  return finalPts.map((pt) => [round6(clampUnit(pt.x / maskW)), round6(clampUnit(pt.y / maskH))]);
 }
 
 /**
@@ -783,8 +876,9 @@ export async function traceSam2WithPrompts(
   const coordsArr = new Float32Array(numPts * 2);
   const labelsArr = new Float32Array(numPts);
   for (let i = 0; i < numPts; i++) {
-    coordsArr[i * 2] = clampUnit(prompts[i].x) * SAM2_INPUT_SIZE;
-    coordsArr[i * 2 + 1] = clampUnit(prompts[i].y) * SAM2_INPUT_SIZE;
+    const mapped = mapNormalizedPointToTensor(prompts[i].x, prompts[i].y, imgEl);
+    coordsArr[i * 2] = mapped.tensorX;
+    coordsArr[i * 2 + 1] = mapped.tensorY;
     labelsArr[i] = prompts[i].label;
   }
 
@@ -798,31 +892,34 @@ export async function traceSam2WithPrompts(
   ]);
   const hasMaskInput = new ort.Tensor("float32", new Float32Array([0]), [1]);
 
+  const feeds: ort.InferenceSession.OnnxValueMapType = {
+    image_embed: encoded.image_embed,
+    high_res_feats_0: encoded.high_res_feats_0,
+    high_res_feats_1: encoded.high_res_feats_1,
+    point_coords: pointCoords,
+    point_labels: pointLabels,
+    mask_input: maskInput,
+    has_mask_input: hasMaskInput,
+  };
+
+  console.info(
+    "[SAM2 Decoder] feeds.point_coords.dims:",
+    pointCoords.dims,
+    "feeds.point_labels:",
+    Array.from(pointLabels.data),
+    "feeds.point_coords:",
+    Array.from(pointCoords.data).map((v) => Math.round(v * 10) / 10),
+  );
+
   let decOut: ort.InferenceSession.OnnxValueMapType;
   try {
-    decOut = await sessions.decoder.run({
-      image_embed: encoded.image_embed,
-      high_res_feats_0: encoded.high_res_feats_0,
-      high_res_feats_1: encoded.high_res_feats_1,
-      point_coords: pointCoords,
-      point_labels: pointLabels,
-      mask_input: maskInput,
-      has_mask_input: hasMaskInput,
-    });
+    decOut = await sessions.decoder.run(feeds);
   } catch (err) {
     if (sessions.provider === "webgpu") {
       console.warn("[SAM2] WebGPU decoder failed, falling back to WASM:", err);
       sessionsPromise = fallbackToWasmSessions();
       sessions = await sessionsPromise;
-      decOut = await sessions.decoder.run({
-        image_embed: encoded.image_embed,
-        high_res_feats_0: encoded.high_res_feats_0,
-        high_res_feats_1: encoded.high_res_feats_1,
-        point_coords: pointCoords,
-        point_labels: pointLabels,
-        mask_input: maskInput,
-        has_mask_input: hasMaskInput,
-      });
+      decOut = await sessions.decoder.run(feeds);
     } else {
       throw err;
     }
