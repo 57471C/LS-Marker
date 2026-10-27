@@ -41,7 +41,24 @@ export function round6(n: number): number {
   return Math.round(n * 1e6) / 1e6;
 }
 
-export function polygonBBox(points: [number, number][]): {
+export function getMinDimension(natural?: { w: number; h: number } | null): {
+  minW: number;
+  minH: number;
+} {
+  const w = natural?.w && natural.w > 0 ? natural.w : 1000;
+  const h = natural?.h && natural.h > 0 ? natural.h : 1000;
+  // Allow down to ~4px x 4px (or minimum 0.0005 normalized on high-res sensors)
+  return {
+    minW: Math.max(0.0005, 4 / w),
+    minH: Math.max(0.0005, 4 / h),
+  };
+}
+
+export function polygonBBox(
+  points: [number, number][],
+  minW = 0.001,
+  minH = 0.001,
+): {
   x: number;
   y: number;
   w: number;
@@ -57,8 +74,8 @@ export function polygonBBox(points: [number, number][]): {
     if (py < minY) minY = py;
     if (py > maxY) maxY = py;
   }
-  const w = Math.max(0.008, maxX - minX);
-  const h = Math.max(0.008, maxY - minY);
+  const w = Math.max(minW, maxX - minX);
+  const h = Math.max(minH, maxY - minY);
   return {
     x: round6(minX + w / 2),
     y: round6(minY + h / 2),
@@ -73,13 +90,15 @@ function fromCorners(
   y0: number,
   x1: number,
   y1: number,
+  minW = 0.001,
+  minH = 0.001,
 ): StageBox {
   const left = clamp(Math.min(x0, x1), 0, 1);
   const right = clamp(Math.max(x0, x1), 0, 1);
   const top = clamp(Math.min(y0, y1), 0, 1);
   const bottom = clamp(Math.max(y0, y1), 0, 1);
-  const w = Math.max(right - left, 0.008);
-  const h = Math.max(bottom - top, 0.008);
+  const w = Math.max(right - left, minW);
+  const h = Math.max(bottom - top, minH);
   let x = left;
   let y = top;
   if (x + w > 1) x = 1 - w;
@@ -589,13 +608,18 @@ export function LabelStage({
     if (!drag) return;
     if (drag.kind === "draw") {
       const moved = Math.hypot(drag.x1 - drag.x0, drag.y1 - drag.y0);
-      if (moved < 0.01) return;
+      const { minW, minH } = getMinDimension(natural);
+      // Allow dragging tiny boxes (starting at ~2-3 px move)
+      const minMove = Math.min(0.002, Math.max(minW, minH) * 0.7);
+      if (moved < minMove) return;
       const box = fromCorners(
         { key: newId(), classId: drag.classId },
         drag.x0,
         drag.y0,
         drag.x1,
         drag.y1,
+        minW,
+        minH,
       );
       onChange([...boxesRef.current, box]);
       onSelect(box.key);
@@ -878,7 +902,8 @@ export function LabelStage({
     onChange(
       boxesRef.current.map((box) => {
         if (box.key !== drag.key) return box;
-        return fromCorners(box, drag.anchorX, drag.anchorY, here.x, here.y);
+        const { minW, minH } = getMinDimension(natural);
+        return fromCorners(box, drag.anchorX, drag.anchorY, here.x, here.y, minW, minH);
       }),
       { transient: true },
     );
@@ -900,6 +925,11 @@ export function LabelStage({
     }
   }
 
+  const { minW: currentMinW, minH: currentMinH } = useMemo(
+    () => getMinDimension(natural),
+    [natural],
+  );
+
   const draftBox =
     draft && activeClassId != null
       ? fromCorners(
@@ -908,6 +938,8 @@ export function LabelStage({
           draft.y0,
           draft.x1,
           draft.y1,
+          currentMinW,
+          currentMinH,
         )
       : null;
 
@@ -1163,9 +1195,11 @@ export function LabelStage({
                     <circle
                       cx={crosshairOrigin.x * 1000}
                       cy={crosshairOrigin.y * 1000}
-                      r={3.5}
-                      fill="rgba(56, 189, 248, 0.9)"
-                      stroke="rgba(0, 0, 0, 0.65)"
+                      r={2.2 / view.zoom}
+                      fill="rgba(56, 189, 248, 0.85)"
+                      fillOpacity={0.85}
+                      stroke="#ffffff"
+                      strokeOpacity={0.9}
                       strokeWidth={1}
                       vectorEffect="non-scaling-stroke"
                     />
@@ -1328,7 +1362,7 @@ export function LabelStage({
           {/* Crosshair (0,0) origin label & floating mouse coordinates */}
           {crosshairMode && crosshairOrigin ? (
             <div
-              className="pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full pb-1.5 font-mono text-[9px] text-sky-200/80 drop-shadow-xs"
+              className="pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full pb-1 font-mono text-[8px] leading-none text-sky-200/75 drop-shadow-xs select-none"
               style={{
                 left: `${crosshairOrigin.x * 100}%`,
                 top: `${crosshairOrigin.y * 100}%`,
