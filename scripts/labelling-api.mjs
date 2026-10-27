@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import sharp from "sharp";
 import tar from "tar-stream";
 
 const execFileAsync = promisify(execFile);
@@ -1663,7 +1664,6 @@ export function buildDimensionsJson(project, classes) {
  * @param {"labels_only" | "full_tar"} exportType
  * @param {number} trainSplitPct
  * @param {"all" | "approved"} [exportScope]
- * @param {boolean} [includeDimensions]
  */
 async function streamYoloExport(
   req,
@@ -1674,7 +1674,6 @@ async function streamYoloExport(
   exportType,
   trainSplitPct,
   exportScope = "all",
-  includeDimensions = false,
 ) {
   const { classes, items, manifest } = prepareExportPlan(
     db,
@@ -1734,9 +1733,6 @@ async function streamYoloExport(
   try {
     await addTarBuffer(pack, "data.yaml", dataYaml);
     await addTarBuffer(pack, "export_manifest.json", manifestJson);
-    if (includeDimensions) {
-      await addTarBuffer(pack, "dimensions.json", buildDimensionsJson(project, classes));
-    }
 
     if (exportType === "labels_only") {
       const trainPaths = items
@@ -1804,6 +1800,229 @@ async function streamYoloExport(
 }
 
 /**
+ * Streams DINO Catalogue dataset export directly to response as an uncompressed .tar stream.
+ * For every annotated instance, crops the part from the source image as JPEG (quality 80),
+ * packs them into crops/ folder, and writes catalogue.json with part descriptions, dimensions,
+ * and relative crop paths without any train/val split.
+ * @param {import("http").IncomingMessage} req
+ * @param {import("http").ServerResponse} res
+ * @param {import("better-sqlite3").Database} db
+ * @param {{ id: number, name: string, folder: string }} project
+ * @param {string} resolvedFolder
+ * @param {"all" | "approved"} [exportScope]
+ */
+async function streamDinoCatalogueExport(
+  req,
+  res,
+  db,
+  project,
+  resolvedFolder,
+  exportScope = "all",
+) {
+  const { classes: baseClasses, items } = prepareExportPlan(
+    db,
+    project,
+    resolvedFolder,
+    "full_tar",
+    100,
+    "dino",
+    exportScope,
+  );
+
+  const dbClasses = listClasses(db, project.id);
+  const sourceClasses = dbClasses.length > 0 ? dbClasses : baseClasses;
+  const hasMm = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
+
+  /** @type {Array<{
+   *   id: number,
+   *   ic: string,
+   *   description: string,
+   *   part_type: string | null,
+   *   dimensions: Array<{ name: string, mm: number }>,
+   *   dim1_name: string | null,
+   *   dim1_mm: number | null,
+   *   dim2_name: string | null,
+   *   dim2_mm: number | null,
+   *   dim3_name: string | null,
+   *   dim3_mm: number | null,
+   *   crops: string[],
+   * }>} */
+  const catalogueClasses = sourceClasses.map((c) => {
+    const dimensions = [];
+    if (hasMm(c.dim1_mm)) {
+      dimensions.push({ name: c.dim1_name || "dim1", mm: Number(c.dim1_mm) });
+    }
+    if (hasMm(c.dim2_mm)) {
+      dimensions.push({ name: c.dim2_name || "dim2", mm: Number(c.dim2_mm) });
+    }
+    if (hasMm(c.dim3_mm)) {
+      dimensions.push({ name: c.dim3_name || "dim3", mm: Number(c.dim3_mm) });
+    }
+    return {
+      id: c.id,
+      ic: c.ic,
+      description: c.des || "",
+      part_type: c.part_type || null,
+      dimensions,
+      dim1_name: c.dim1_name ?? null,
+      dim1_mm: hasMm(c.dim1_mm) ? Number(c.dim1_mm) : null,
+      dim2_name: c.dim2_name ?? null,
+      dim2_mm: hasMm(c.dim2_mm) ? Number(c.dim2_mm) : null,
+      dim3_name: c.dim3_name ?? null,
+      dim3_mm: hasMm(c.dim3_mm) ? Number(c.dim3_mm) : null,
+      crops: [],
+    };
+  });
+
+  const classById = new Map();
+  for (const c of catalogueClasses) {
+    classById.set(c.id, c);
+  }
+
+  const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "dino";
+  const fileName = `${safeName}_dino_catalogue.tar`;
+
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/x-tar");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.setHeader("Cache-Control", "no-store");
+
+  let aborted = false;
+  const pack = tar.pack();
+
+  const onDisconnect = () => {
+    if (!res.writableEnded) {
+      aborted = true;
+      pack.destroy();
+    }
+  };
+
+  req.on("aborted", onDisconnect);
+  res.on("close", onDisconnect);
+
+  const streamFinished = new Promise((resolve, reject) => {
+    res.on("finish", resolve);
+    res.on("close", resolve);
+    res.on("error", (err) => {
+      if (aborted) resolve();
+      else reject(err);
+    });
+    pack.on("error", (err) => {
+      if (aborted) resolve();
+      else reject(err);
+    });
+  });
+
+  pack.pipe(res);
+
+  try {
+    await addTarDirectory(pack, "crops/");
+    const createdDirs = new Set(["crops/"]);
+
+    for (const item of items) {
+      if (aborted) break;
+      if (!item.txt_full_path || !fs.existsSync(item.txt_full_path)) continue;
+      const boxes = readBoxes(item.txt_full_path);
+      if (boxes.length === 0) continue;
+      if (!fs.existsSync(item.source_image_path)) continue;
+
+      let meta;
+      try {
+        meta = await sharp(item.source_image_path).rotate().metadata();
+      } catch (err) {
+        console.error(`[export:dino] Failed to read metadata for ${item.source_image_path}:`, err);
+        continue;
+      }
+
+      const W = meta.width || 1;
+      const H = meta.height || 1;
+      const paddedId = String(item.id).padStart(6, "0");
+
+      for (let boxIdx = 0; boxIdx < boxes.length; boxIdx++) {
+        if (aborted) break;
+        const box = boxes[boxIdx];
+        let targetClass = classById.get(box.classId);
+        if (!targetClass) {
+          targetClass = catalogueClasses[box.classId];
+        }
+        if (!targetClass) {
+          targetClass = {
+            id: box.classId,
+            ic: `class_${box.classId}`,
+            description: "",
+            part_type: null,
+            dimensions: [],
+            dim1_name: null,
+            dim1_mm: null,
+            dim2_name: null,
+            dim2_mm: null,
+            dim3_name: null,
+            dim3_mm: null,
+            crops: [],
+          };
+          catalogueClasses.push(targetClass);
+          classById.set(targetClass.id, targetClass);
+        }
+
+        const safeIc = targetClass.ic.replace(/[^a-zA-Z0-9_-]/g, "_") || "unknown";
+        const subDir = `crops/${safeIc}/`;
+        if (!createdDirs.has(subDir)) {
+          createdDirs.add(subDir);
+          await addTarDirectory(pack, subDir);
+        }
+
+        const cropFileName = `${paddedId}_crop_${String(boxIdx + 1).padStart(3, "0")}.jpg`;
+        const relCropPath = `${subDir}${cropFileName}`;
+
+        const x_min = (box.x - box.w / 2) * W;
+        const y_min = (box.y - box.h / 2) * H;
+        const crop_w = box.w * W;
+        const crop_h = box.h * H;
+
+        const left = Math.max(0, Math.min(W - 1, Math.round(x_min)));
+        const top = Math.max(0, Math.min(H - 1, Math.round(y_min)));
+        const width = Math.max(1, Math.min(W - left, Math.round(crop_w)));
+        const height = Math.max(1, Math.min(H - top, Math.round(crop_h)));
+
+        try {
+          const cropBuffer = await sharp(item.source_image_path)
+            .rotate()
+            .extract({ left, top, width, height })
+            .jpeg({ quality: 80 })
+            .toBuffer();
+
+          await addTarBuffer(pack, relCropPath, cropBuffer);
+          targetClass.crops.push(relCropPath);
+        } catch (err) {
+          console.error(
+            `[export:dino] Failed to crop box ${boxIdx} in ${item.source_image_path}:`,
+            err,
+          );
+        }
+      }
+    }
+
+    if (!aborted) {
+      const catalogueData = {
+        project_name: project.name,
+        exported_at: new Date().toISOString(),
+        unit: "mm",
+        total_classes: catalogueClasses.length,
+        total_crops: catalogueClasses.reduce((acc, c) => acc + c.crops.length, 0),
+        classes: catalogueClasses,
+        catalogue: catalogueClasses,
+      };
+      await addTarBuffer(pack, "catalogue.json", `${JSON.stringify(catalogueData, null, 2)}\n`);
+      pack.finalize();
+      await streamFinished;
+    }
+  } finally {
+    req.off("aborted", onDisconnect);
+    res.off("close", onDisconnect);
+  }
+}
+
+/**
  * Streams COCO dataset export directly to response.
  * @param {import("http").IncomingMessage} req
  * @param {import("http").ServerResponse} res
@@ -1812,6 +2031,7 @@ async function streamYoloExport(
  * @param {string} resolvedFolder
  * @param {"labels_only" | "full_tar"} exportType
  * @param {number} trainSplitPct
+ * @param {"all" | "approved"} [exportScope]
  */
 async function streamCocoExport(
   req,
@@ -1822,7 +2042,6 @@ async function streamCocoExport(
   exportType,
   trainSplitPct,
   exportScope = "all",
-  includeDimensions = false,
 ) {
   const { classes, items, manifest } = prepareExportPlan(
     db,
@@ -1881,9 +2100,6 @@ async function streamCocoExport(
 
   try {
     await addTarBuffer(pack, "export_manifest.json", manifestJson);
-    if (includeDimensions) {
-      await addTarBuffer(pack, "dimensions.json", buildDimensionsJson(project, classes));
-    }
     await addTarDirectory(pack, "annotations/");
     await addTarBuffer(pack, "annotations/instances_train.json", trainJson);
     await addTarBuffer(pack, "annotations/instances_val.json", valJson);
@@ -4255,8 +4471,13 @@ export async function handle(req, res, url, root) {
     )
       .trim()
       .toLowerCase();
-    /** @type {"yolo" | "coco"} */
-    const exportFormat = rawFormat === "coco" ? "coco" : "yolo";
+    /** @type {"yolo" | "coco" | "dino"} */
+    const exportFormat =
+      rawFormat === "dino" || rawFormat === "catalogue"
+        ? "dino"
+        : rawFormat === "coco"
+          ? "coco"
+          : "yolo";
 
     const rawScope = (
       url.searchParams.get("scope") ??
@@ -4268,22 +4489,15 @@ export async function handle(req, res, url, root) {
     /** @type {"all" | "approved"} */
     const exportScope = rawScope === "approved" ? "approved" : "all";
 
-    const rawDims = (
-      url.searchParams.get("dimensions") ??
-      url.searchParams.get("include_dimensions") ??
-      ""
-    )
-      .trim()
-      .toLowerCase();
-    const includeDimensions = ["1", "true", "yes"].includes(rawDims);
-
     try {
       writeClassesFile(db, project.id, resolvedFolder);
     } catch (err) {
       console.error("[label-api] classes.txt", err);
     }
 
-    if (exportFormat === "coco") {
+    if (exportFormat === "dino") {
+      await streamDinoCatalogueExport(req, res, db, project, resolvedFolder, exportScope);
+    } else if (exportFormat === "coco") {
       await streamCocoExport(
         req,
         res,
@@ -4293,7 +4507,6 @@ export async function handle(req, res, url, root) {
         exportType,
         trainSplitPct,
         exportScope,
-        includeDimensions,
       );
     } else {
       await streamYoloExport(
@@ -4305,7 +4518,6 @@ export async function handle(req, res, url, root) {
         exportType,
         trainSplitPct,
         exportScope,
-        includeDimensions,
       );
     }
     return;

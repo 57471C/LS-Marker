@@ -47,7 +47,7 @@ Draw bounding boxes and segmentation polygons on part photos, run QA review, aud
 - Opening or saving a free image claims an atomic 15-minute lease. Queue filters are **All**, **Open**, **Complete**, **Approved**, **Mine**, and **Free**.
 - **QA Review & Approved Freeze**: Once a reviewer approves a photo (`status = 'approved'`), it is frozen in read-only mode on the canvas and excluded from the `Free` queue to protect ground truth. Admins and reviewers can click **Unlock to Edit** to revoke approval and reopen the photo if needed.
 - **Maintenance Mode & Database Backups**: Admins can enable Maintenance Mode from **Settings**, download consistent SQLite `.db` backups, and trigger **Git Pull & Update** with automatic Vite server reload.
-- **Streaming Exports**: Export **YOLO** (`data.yaml` + `.txt` labels) or **COCO JSON** (`instances_train.json` / `instances_val.json`) as a **Labels Only** or **Full Dataset** `.tar` stream, with an optional **Include part dimensions (`dimensions.json`)** metadata checkbox.
+- **Streaming Exports**: Export **YOLO** (`data.yaml` + `.txt` labels), **COCO JSON** (`instances_train.json` / `instances_val.json`), or **DINO Catalogue** (`catalogue.json` with part descriptions, dimensions, and cropped JPEG parts at quality 80) as a `.tar` stream.
 
 ## Scripts
 

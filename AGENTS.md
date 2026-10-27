@@ -43,7 +43,7 @@ Object detection models (YOLO, RT-DETR) pair integer class IDs ($0, 1, 2\dots$) 
 * **Never Dynamically Sort Classes on Export:** Never use dynamic queries like `SELECT DISTINCT class_name ORDER BY class_name ASC` to assign export indices. Adding a new IC code in a future kit must never shift the numeric IDs of existing classes.
 * **Export Parity:** The class-to-ID mapping across `data.yaml` (YOLO), `instances_*.json` (COCO), and `export_manifest.json` must be identical.
 * **Box & Polygon Format Integrity:** Label `.txt` files store 5 tokens (`class_id cx cy w h`) for bounding boxes and $\ge 7$ tokens (`class_id x1 y1 x2 y2 ... xn yn`, odd token count) for polygons. Never strip polygon vertices when reading, syncing, or exporting labels.
-* **Reference Metadata Isolation (Part Dimensions):** Optional class part dimensions (`part_type`, `dim1_name`, `dim1_mm`, `dim2_name`, `dim2_mm`, `dim3_name`, `dim3_mm`) are reference metadata only. They must never alter `.txt` label files, `data.yaml`, or COCO `instances_*.json`, and may only be written as a separate `dimensions.json` file when explicitly requested at export time.
+* **Reference Metadata Isolation (Part Dimensions):** Optional class part dimensions (`part_type`, `dim1_name`, `dim1_mm`, `dim2_name`, `dim2_mm`, `dim3_name`, `dim3_mm`) are reference metadata only. They must never alter `.txt` label files, `data.yaml`, or COCO `instances_*.json`, and are packaged inside `catalogue.json` for DINO Catalogue exports.
 
 ---
 

@@ -91,7 +91,7 @@ async function asJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export type ExportFormat = "yolo" | "coco";
+export type ExportFormat = "yolo" | "coco" | "dino";
 export type ExportScope = "all" | "approved";
 
 export type DatasetExportType = "labels_only" | "full_tar";
@@ -103,7 +103,6 @@ export type DatasetExportOptions = {
   format?: ExportFormat;
   trainSplit?: number;
   scope?: ExportScope;
-  includeDimensions?: boolean;
   signal?: AbortSignal;
   onProgress?: (bytesLoaded: number) => void;
 };
@@ -116,7 +115,6 @@ export function datasetExportUrl(
   trainSplit = 80,
   format: ExportFormat = "yolo",
   scope: ExportScope = "all",
-  includeDimensions = false,
 ): string {
   const params = new URLSearchParams({
     id: String(projectId),
@@ -125,9 +123,6 @@ export function datasetExportUrl(
     format,
     scope,
   });
-  if (includeDimensions) {
-    params.set("dimensions", "1");
-  }
   return api(`/api/export?${params.toString()}`);
 }
 
@@ -136,9 +131,8 @@ export function yoloExportUrl(
   exportType: YoloExportType,
   trainSplit = 80,
   scope: ExportScope = "all",
-  includeDimensions = false,
 ): string {
-  return datasetExportUrl(projectId, exportType, trainSplit, "yolo", scope, includeDimensions);
+  return datasetExportUrl(projectId, exportType, trainSplit, "yolo", scope);
 }
 
 export function cocoExportUrl(
@@ -146,9 +140,12 @@ export function cocoExportUrl(
   exportType: DatasetExportType,
   trainSplit = 80,
   scope: ExportScope = "all",
-  includeDimensions = false,
 ): string {
-  return datasetExportUrl(projectId, exportType, trainSplit, "coco", scope, includeDimensions);
+  return datasetExportUrl(projectId, exportType, trainSplit, "coco", scope);
+}
+
+export function dinoExportUrl(projectId: number, scope: ExportScope = "all"): string {
+  return datasetExportUrl(projectId, "full_tar", 100, "dino", scope);
 }
 
 export async function downloadDatasetExport(options: DatasetExportOptions): Promise<void> {
@@ -158,16 +155,12 @@ export async function downloadDatasetExport(options: DatasetExportOptions): Prom
     format = "yolo",
     trainSplit = 80,
     scope = "all",
-    includeDimensions = false,
     signal,
     onProgress,
   } = options;
-  const res = await fetch(
-    datasetExportUrl(projectId, exportType, trainSplit, format, scope, includeDimensions),
-    {
-      signal,
-    },
-  );
+  const res = await fetch(datasetExportUrl(projectId, exportType, trainSplit, format, scope), {
+    signal,
+  });
   if (!res.ok) {
     const message = await failMessage(res);
     if (res.status === 401 && message === "Sign in" && typeof window !== "undefined") {

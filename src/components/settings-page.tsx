@@ -83,7 +83,6 @@ export function SettingsPage() {
   const [exportType, setExportType] = useState<DatasetExportType>("labels_only");
   const [exportScope, setExportScope] = useState<ExportScope>("all");
   const [trainSplit, setTrainSplit] = useState<number>(80);
-  const [includeDimensions, setIncludeDimensions] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [bytesExported, setBytesExported] = useState(0);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -193,10 +192,9 @@ export function SettingsPage() {
   function openExportModal(p: Project, format: ExportFormat = "yolo") {
     setProjectToExport(p);
     setExportFormat(format);
-    setExportType("labels_only");
+    setExportType(format === "dino" ? "full_tar" : "labels_only");
     setExportScope("all");
     setTrainSplit(80);
-    setIncludeDimensions(false);
     setExportError(null);
     setBytesExported(0);
     setIsExporting(false);
@@ -224,10 +222,9 @@ export function SettingsPage() {
       await downloadDatasetExport({
         projectId: projectToExport.id,
         format: exportFormat,
-        exportType,
-        trainSplit,
+        exportType: exportFormat === "dino" ? "full_tar" : exportType,
+        trainSplit: exportFormat === "dino" ? 100 : trainSplit,
         scope: exportScope,
-        includeDimensions,
         signal: controller.signal,
         onProgress: (loaded) => setBytesExported(loaded),
       });
@@ -414,7 +411,7 @@ export function SettingsPage() {
                               className="press inline-flex h-9 items-center rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
                               disabled={!p.folderOk || (p.totalPhotos ?? 0) === 0}
                               onClick={() => openExportModal(p)}
-                              title="Export dataset (YOLO / COCO JSON)"
+                              title="Export dataset (YOLO / COCO / DINO Catalogue)"
                             >
                               Export
                             </button>
@@ -739,8 +736,13 @@ export function SettingsPage() {
                     id="export-dialog-title"
                     className="text-base font-semibold tracking-tight text-ink"
                   >
-                    Export {exportFormat === "coco" ? "COCO JSON" : "YOLO"} Dataset:{" "}
-                    {projectToExport.name}
+                    Export{" "}
+                    {exportFormat === "dino"
+                      ? "DINO Catalogue"
+                      : exportFormat === "coco"
+                        ? "COCO JSON"
+                        : "YOLO"}{" "}
+                    Dataset: {projectToExport.name}
                   </h2>
                   <p className="font-mono text-xs text-muted">
                     {projectToExport.resolvedFolder || projectToExport.folder} &middot;{" "}
@@ -761,7 +763,7 @@ export function SettingsPage() {
               {/* Format selector */}
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-ink">Format</label>
-                <div className="grid grid-cols-2 gap-2 rounded-lg border border-line bg-surface p-1">
+                <div className="grid grid-cols-3 gap-2 rounded-lg border border-line bg-surface p-1">
                   <button
                     type="button"
                     disabled={isExporting}
@@ -785,6 +787,21 @@ export function SettingsPage() {
                     }`}
                   >
                     COCO JSON
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isExporting}
+                    onClick={() => {
+                      setExportFormat("dino");
+                      setExportType("full_tar");
+                    }}
+                    className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
+                      exportFormat === "dino"
+                        ? "bg-emerald-600 text-white shadow-xs"
+                        : "text-muted hover:text-ink"
+                    }`}
+                  >
+                    DINO Catalogue
                   </button>
                 </div>
               </div>
@@ -825,165 +842,162 @@ export function SettingsPage() {
                 ) : null}
               </div>
 
-              <div className="flex flex-col gap-3" role="radiogroup" aria-label="Export Method">
-                <label
-                  className={`flex cursor-pointer items-start gap-3.5 rounded-lg border p-4 transition-colors ${
-                    exportType === "labels_only"
-                      ? "border-blue-500 bg-blue-50/70"
-                      : "border-line bg-surface hover:bg-surface-raised/60"
-                  } ${isExporting ? "pointer-events-none opacity-60" : ""}`}
-                >
-                  <input
-                    type="radio"
-                    name="dataset-export-type"
-                    value="labels_only"
-                    checked={exportType === "labels_only"}
-                    disabled={isExporting}
-                    onChange={() => setExportType("labels_only")}
-                    className="sr-only"
-                  />
-                  <div
-                    className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border ${
-                      exportType === "labels_only"
-                        ? "border-blue-200 bg-blue-100 text-blue-700"
-                        : "border-line bg-bg text-muted"
-                    }`}
-                  >
-                    <FileText className="size-4" aria-hidden="true" />
-                  </div>
-                  <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-ink">
-                        {exportFormat === "coco"
-                          ? "Reference / Annotations Only"
-                          : "Labels Only (Fast / Reference)"}
-                      </span>
-                      {exportType === "labels_only" ? (
-                        <CheckCircle2
-                          className="size-4 shrink-0 text-blue-600"
-                          aria-hidden="true"
-                        />
-                      ) : null}
-                    </div>
-                    <p className="text-xs leading-relaxed text-muted">
-                      {exportFormat === "coco"
-                        ? "Best for Detectron2 / MMDetection on local storage. Exports annotations/instances_train.json and instances_val.json referencing existing image filenames, plus export_manifest.json. Instant download (< 5 MB)."
-                        : "Best if you train on the same machine where images reside. Images remain in their original folders; exports YOLO label files, train/val path lists, and data.yaml. Instant download (< 5 MB)."}
-                    </p>
-                  </div>
-                </label>
-
-                <label
-                  className={`flex cursor-pointer items-start gap-3.5 rounded-lg border p-4 transition-colors ${
-                    exportType === "full_tar"
-                      ? "border-blue-500 bg-blue-50/70"
-                      : "border-line bg-surface hover:bg-surface-raised/60"
-                  } ${isExporting ? "pointer-events-none opacity-60" : ""}`}
-                >
-                  <input
-                    type="radio"
-                    name="dataset-export-type"
-                    value="full_tar"
-                    checked={exportType === "full_tar"}
-                    disabled={isExporting}
-                    onChange={() => setExportType("full_tar")}
-                    className="sr-only"
-                  />
-                  <div
-                    className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border ${
-                      exportType === "full_tar"
-                        ? "border-blue-200 bg-blue-100 text-blue-700"
-                        : "border-line bg-bg text-muted"
-                    }`}
-                  >
+              {exportFormat === "dino" ? (
+                <div className="flex items-start gap-3.5 rounded-lg border border-emerald-500/40 bg-emerald-50/60 p-4 dark:bg-emerald-950/20">
+                  <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border border-emerald-200 bg-emerald-100 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900 dark:text-emerald-300">
                     <Archive className="size-4" aria-hidden="true" />
                   </div>
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-ink">
-                        Full Dataset (.tar stream)
-                      </span>
-                      {exportType === "full_tar" ? (
-                        <CheckCircle2
-                          className="size-4 shrink-0 text-blue-600"
-                          aria-hidden="true"
-                        />
-                      ) : null}
-                    </div>
+                    <span className="text-sm font-semibold text-ink">
+                      DINO Catalogue (.tar stream)
+                    </span>
                     <p className="text-xs leading-relaxed text-muted">
-                      {exportFormat === "coco"
-                        ? "Streams images/train/, images/val/, and annotations/instances_train.json, instances_val.json directly as an uncompressed TAR archive. Ready for immediate remote training runs."
-                        : "Streams images and label pairs directly as an uncompressed TAR archive. Safe for huge datasets, collision-proof filenames, with zero memory overhead."}
+                      Crops every annotated part from source photos as JPEG (quality 80) and streams{" "}
+                      <code className="font-mono text-ink">catalogue.json</code> with part
+                      descriptions, dimensions, and relative crop paths into an uncompressed TAR
+                      archive.
                     </p>
                   </div>
-                </label>
-              </div>
-
-              <div className="flex flex-col gap-2.5 rounded-lg border border-line bg-surface p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <label htmlFor="train-val-split" className="text-xs font-medium text-ink">
-                    Train / Val Split
-                  </label>
-                  <span className="font-mono text-xs font-semibold text-blue-600">
-                    {trainSplit}% Train / {100 - trainSplit}% Val
-                  </span>
                 </div>
-                <div className="flex items-center gap-3">
-                  <input
-                    id="train-val-split"
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={5}
-                    disabled={isExporting}
-                    value={trainSplit}
-                    onChange={(event) => setTrainSplit(Number(event.target.value))}
-                    className="h-2 flex-1 cursor-pointer appearance-none rounded-lg bg-line accent-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                  <div className="flex items-center gap-1">
+              ) : (
+                <div className="flex flex-col gap-3" role="radiogroup" aria-label="Export Method">
+                  <label
+                    className={`flex cursor-pointer items-start gap-3.5 rounded-lg border p-4 transition-colors ${
+                      exportType === "labels_only"
+                        ? "border-blue-500 bg-blue-50/70"
+                        : "border-line bg-surface hover:bg-surface-raised/60"
+                    } ${isExporting ? "pointer-events-none opacity-60" : ""}`}
+                  >
                     <input
-                      type="number"
+                      type="radio"
+                      name="dataset-export-type"
+                      value="labels_only"
+                      checked={exportType === "labels_only"}
+                      disabled={isExporting}
+                      onChange={() => setExportType("labels_only")}
+                      className="sr-only"
+                    />
+                    <div
+                      className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border ${
+                        exportType === "labels_only"
+                          ? "border-blue-200 bg-blue-100 text-blue-700"
+                          : "border-line bg-bg text-muted"
+                      }`}
+                    >
+                      <FileText className="size-4" aria-hidden="true" />
+                    </div>
+                    <div className="flex min-w-0 flex-1 flex-col gap-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-semibold text-ink">
+                          {exportFormat === "coco"
+                            ? "Reference / Annotations Only"
+                            : "Labels Only (Fast / Reference)"}
+                        </span>
+                        {exportType === "labels_only" ? (
+                          <CheckCircle2
+                            className="size-4 shrink-0 text-blue-600"
+                            aria-hidden="true"
+                          />
+                        ) : null}
+                      </div>
+                      <p className="text-xs leading-relaxed text-muted">
+                        {exportFormat === "coco"
+                          ? "Best for Detectron2 / MMDetection on local storage. Exports annotations/instances_train.json and instances_val.json referencing existing image filenames, plus export_manifest.json. Instant download (< 5 MB)."
+                          : "Best if you train on the same machine where images reside. Images remain in their original folders; exports YOLO label files, train/val path lists, and data.yaml. Instant download (< 5 MB)."}
+                      </p>
+                    </div>
+                  </label>
+
+                  <label
+                    className={`flex cursor-pointer items-start gap-3.5 rounded-lg border p-4 transition-colors ${
+                      exportType === "full_tar"
+                        ? "border-blue-500 bg-blue-50/70"
+                        : "border-line bg-surface hover:bg-surface-raised/60"
+                    } ${isExporting ? "pointer-events-none opacity-60" : ""}`}
+                  >
+                    <input
+                      type="radio"
+                      name="dataset-export-type"
+                      value="full_tar"
+                      checked={exportType === "full_tar"}
+                      disabled={isExporting}
+                      onChange={() => setExportType("full_tar")}
+                      className="sr-only"
+                    />
+                    <div
+                      className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border ${
+                        exportType === "full_tar"
+                          ? "border-blue-200 bg-blue-100 text-blue-700"
+                          : "border-line bg-bg text-muted"
+                      }`}
+                    >
+                      <Archive className="size-4" aria-hidden="true" />
+                    </div>
+                    <div className="flex min-w-0 flex-1 flex-col gap-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-semibold text-ink">
+                          Full Dataset (.tar stream)
+                        </span>
+                        {exportType === "full_tar" ? (
+                          <CheckCircle2
+                            className="size-4 shrink-0 text-blue-600"
+                            aria-hidden="true"
+                          />
+                        ) : null}
+                      </div>
+                      <p className="text-xs leading-relaxed text-muted">
+                        {exportFormat === "coco"
+                          ? "Streams images/train/, images/val/, and annotations/instances_train.json, instances_val.json directly as an uncompressed TAR archive. Ready for immediate remote training runs."
+                          : "Streams images and label pairs directly as an uncompressed TAR archive. Safe for huge datasets, collision-proof filenames, with zero memory overhead."}
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              )}
+
+              {exportFormat !== "dino" ? (
+                <div className="flex flex-col gap-2.5 rounded-lg border border-line bg-surface p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <label htmlFor="train-val-split" className="text-xs font-medium text-ink">
+                      Train / Val Split
+                    </label>
+                    <span className="font-mono text-xs font-semibold text-blue-600">
+                      {trainSplit}% Train / {100 - trainSplit}% Val
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <input
+                      id="train-val-split"
+                      type="range"
                       min={0}
                       max={100}
+                      step={5}
                       disabled={isExporting}
-                      aria-label="Train split percentage"
                       value={trainSplit}
-                      onChange={(event) => {
-                        const val = Number(event.target.value);
-                        if (Number.isFinite(val)) {
-                          setTrainSplit(Math.max(0, Math.min(100, Math.round(val))));
-                        }
-                      }}
-                      className="h-8 w-16 rounded-sm border border-line bg-bg px-2 text-right font-mono text-xs text-ink outline-none focus-visible:border-blue-600 disabled:opacity-50"
+                      onChange={(event) => setTrainSplit(Number(event.target.value))}
+                      className="h-2 flex-1 cursor-pointer appearance-none rounded-lg bg-line accent-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
                     />
-                    <span className="font-mono text-xs text-muted">%</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        disabled={isExporting}
+                        aria-label="Train split percentage"
+                        value={trainSplit}
+                        onChange={(event) => {
+                          const val = Number(event.target.value);
+                          if (Number.isFinite(val)) {
+                            setTrainSplit(Math.max(0, Math.min(100, Math.round(val))));
+                          }
+                        }}
+                        className="h-8 w-16 rounded-sm border border-line bg-bg px-2 text-right font-mono text-xs text-ink outline-none focus-visible:border-blue-600 disabled:opacity-50"
+                      />
+                      <span className="font-mono text-xs text-muted">%</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-
-              {(exportFormat === "yolo" || exportFormat === "coco") && (
-                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-line bg-surface p-3.5 hover:bg-surface-raised/60">
-                  <input
-                    type="checkbox"
-                    checked={includeDimensions}
-                    disabled={isExporting}
-                    onChange={(event) => setIncludeDimensions(event.target.checked)}
-                    className="mt-0.5 size-4 rounded border-line accent-blue-600 disabled:opacity-50"
-                  />
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-xs font-semibold text-ink">
-                      Include part dimensions (metadata)
-                    </span>
-                    <span className="text-[11px] leading-relaxed text-muted">
-                      Writes a standalone{" "}
-                      <code className="font-mono text-ink">dimensions.json</code> file alongside the
-                      export archive containing classes with recorded measurements. Label files,{" "}
-                      <code className="font-mono text-ink">data.yaml</code>, and COCO annotations
-                      remain untouched.
-                    </span>
-                  </div>
-                </label>
-              )}
+              ) : null}
 
               {isExporting ? (
                 <div
@@ -995,13 +1009,15 @@ export function SettingsPage() {
                     <Loader2 className="size-4 animate-spin text-blue-600" aria-hidden="true" />
                     <span>
                       Streaming{" "}
-                      {exportFormat === "coco"
-                        ? exportType === "labels_only"
-                          ? "COCO annotations archive"
-                          : "full COCO dataset archive"
-                        : exportType === "labels_only"
-                          ? "YOLO labels-only archive"
-                          : "full YOLO dataset archive"}
+                      {exportFormat === "dino"
+                        ? "DINO catalogue archive"
+                        : exportFormat === "coco"
+                          ? exportType === "labels_only"
+                            ? "COCO annotations archive"
+                            : "full COCO dataset archive"
+                          : exportType === "labels_only"
+                            ? "YOLO labels-only archive"
+                            : "full YOLO dataset archive"}
                       …
                     </span>
                   </div>
