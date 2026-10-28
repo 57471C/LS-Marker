@@ -2025,14 +2025,15 @@ async function streamDinoCatalogueExport(
     }
 
     if (!aborted) {
+      const activeClasses = catalogueClasses.filter((c) => c.crops.length > 0);
       const catalogueData = {
         project_name: project.name,
         exported_at: new Date().toISOString(),
         unit: "mm",
-        total_classes: catalogueClasses.length,
-        total_crops: catalogueClasses.reduce((acc, c) => acc + c.crops.length, 0),
-        classes: catalogueClasses,
-        catalogue: catalogueClasses,
+        total_classes: activeClasses.length,
+        total_crops: activeClasses.reduce((acc, c) => acc + c.crops.length, 0),
+        classes: activeClasses,
+        catalogue: activeClasses,
       };
       await addTarBuffer(pack, "catalogue.json", `${JSON.stringify(catalogueData, null, 2)}\n`);
       pack.finalize();

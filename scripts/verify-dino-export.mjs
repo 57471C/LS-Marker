@@ -80,6 +80,16 @@ if (foundWithDims) {
   }
 }
 
+// Ensure an unused class with no boxes exists to verify exclusion
+const unusedIc = `UNUSED_IC_${Date.now()}`;
+const unusedClassId = db
+  .prepare("SELECT COALESCE(MAX(id), -1) + 1 AS id FROM classes WHERE project_id = ?")
+  .get(project.id).id;
+db.prepare(
+  `INSERT INTO classes (project_id, id, ic, des, color, part_type)
+   VALUES (?, ?, ?, 'Unused Class Without Crops', '#00ff00', 'other')`,
+).run(project.id, unusedClassId, unusedIc);
+
 // 2. Ensure at least one test image and label file exist
 const testImgPath = path.join(projectFolder, "dino_test_image.jpg");
 const testTxtPath = path.join(projectFolder, "dino_test_image.txt");
@@ -156,6 +166,17 @@ try {
   assert(Array.isArray(exportedClass.crops), "exportedClass.crops must be an array");
   assert(exportedClass.crops.length >= 1, "Must have at least 1 crop relative path");
 
+  // Verify that any IC without crops is excluded from catalogue.json
+  assert(
+    catalogue.classes.every((c) => Array.isArray(c.crops) && c.crops.length > 0),
+    "Every class in catalogue.json must have at least one crop",
+  );
+  assert(
+    !catalogue.classes.some((c) => c.id === unusedClassId || c.ic === unusedIc),
+    `Unused class without boxes (${unusedIc}) must be excluded from catalogue.json`,
+  );
+  console.log("✓ ICs with no boxes/crops are excluded from catalogue.json.");
+
   console.log("✓ Class metadata in catalogue.json matches dimensions and part type.");
 
   // Check the crop image file
@@ -224,6 +245,10 @@ try {
     if (fs.existsSync(testTxtPath)) fs.unlinkSync(testTxtPath);
     db.prepare("DELETE FROM images WHERE project_id = ? AND file_path = 'dino_test_image.jpg'").run(
       project.id,
+    );
+    db.prepare("DELETE FROM classes WHERE project_id = ? AND id = ?").run(
+      project.id,
+      unusedClassId,
     );
   } catch {
     /* ignore */
