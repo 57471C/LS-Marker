@@ -55,6 +55,26 @@ console.log("--- Starting Part Dimensions Verification ---");
   });
   assert.equal(computeClassDimensionsStatus(washerMissing), "missing");
 
+  const springComplete = cleanClassDimensions({
+    part_type: "spring",
+    dim1_mm: 35,
+    dim2_mm: 12,
+  });
+  assert.equal(springComplete.part_type, "spring");
+  assert.equal(springComplete.dim1_name, "Height");
+  assert.equal(springComplete.dim1_mm, 35);
+  assert.equal(springComplete.dim2_name, "Diameter");
+  assert.equal(springComplete.dim2_mm, 12);
+  assert.equal(springComplete.dim3_mm, null);
+  assert.equal(computeClassDimensionsStatus(springComplete), "complete");
+
+  const springMissing = cleanClassDimensions({
+    part_type: "spring",
+    dim1_mm: 35,
+    dim2_mm: "",
+  });
+  assert.equal(computeClassDimensionsStatus(springMissing), "missing");
+
   const otherComplete = cleanClassDimensions({
     part_type: "other",
     dim1_name: "Pin length",

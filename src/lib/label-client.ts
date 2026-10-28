@@ -1,4 +1,4 @@
-export type PartType = "none" | "bolt" | "nut" | "washer" | "cable_tie" | "other";
+export type PartType = "none" | "bolt" | "nut" | "washer" | "cable_tie" | "spring" | "other";
 export type ClassRow = {
   id: number;
   ic: string;

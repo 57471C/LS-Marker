@@ -30,6 +30,7 @@ const PART_TYPE_OPTIONS: { value: PartType; label: string }[] = [
   { value: "nut", label: "Nut" },
   { value: "washer", label: "Washer" },
   { value: "cable_tie", label: "Cable tie" },
+  { value: "spring", label: "Spring" },
   { value: "other", label: "Other (custom)" },
 ];
 
@@ -64,7 +65,7 @@ function hasCompleteMeasurements(row: ClassRow): boolean {
     v !== null && v !== undefined && Number.isFinite(Number(v));
   const hasName = (v: string | null | undefined) => typeof v === "string" && v.trim().length > 0;
 
-  if (pt === "bolt" || pt === "nut" || pt === "cable_tie") {
+  if (pt === "bolt" || pt === "nut" || pt === "cable_tie" || pt === "spring") {
     return hasMm(row.dim1_mm) && hasMm(row.dim2_mm);
   }
   if (pt === "washer") {
@@ -196,6 +197,17 @@ function PartDimensionStatusIcon({
             d="M5.8 6.5 H13.5 L14.5 8 L13.5 9.5 H5.8 Z"
             stroke="currentColor"
             strokeWidth="1.4"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : pt === "spring" ? (
+        <svg viewBox="0 0 16 16" className="size-4" fill="none" aria-hidden="true">
+          {/* Spring coil */}
+          <path
+            d="M5 2.5 C11 2.5 11 5 8 5 C5 5 5 7.5 11 7.5 C5 7.5 5 10 11 10 C5 10 5 12.5 11 12.5 C5 12.5 5 13.5 8 13.5"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
             strokeLinejoin="round"
           />
         </svg>
@@ -749,6 +761,35 @@ function ClassList({
                           </label>
                         </>
                       ) : null}
+
+                      {editPartType === "spring" ? (
+                        <>
+                          <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+                            Height (mm)
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              placeholder="e.g. 35"
+                              className={fieldSm}
+                              value={editDim1Mm}
+                              onChange={(e) => onEditDim1Mm(e.target.value)}
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+                            Diameter (mm)
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              placeholder="e.g. 12"
+                              className={fieldSm}
+                              value={editDim2Mm}
+                              onChange={(e) => onEditDim2Mm(e.target.value)}
+                            />
+                          </label>
+                        </>
+                      ) : null}
                     </div>
 
                     {editPartType === "washer" ? (
@@ -1207,6 +1248,59 @@ function PartMeasurementPopover({
           <p className="text-xs text-muted">
             <strong>Length</strong> = total end-to-end length including locking head and tail.{" "}
             <strong>Width</strong> = strap width across the flat body.
+          </p>
+        </div>
+      ) : null}
+
+      {partType === "spring" ? (
+        <div className="flex flex-col gap-2">
+          <svg
+            viewBox="0 0 340 120"
+            className="h-28 w-full rounded bg-bg/80 p-2 text-ink"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+          >
+            {/* Helical compression spring coils */}
+            <path
+              d="M130,25 C170,25 170,39 140,41 C110,43 110,57 170,57 C110,57 110,73 170,73 C110,73 110,89 170,89 C110,89 110,101 150,101"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="none"
+            />
+            {/* Height (Free Length) vertical callout on the right */}
+            <line x1="185" y1="25" x2="225" y2="25" stroke="#0891b2" strokeWidth="1.2" />
+            <line x1="185" y1="101" x2="225" y2="101" stroke="#0891b2" strokeWidth="1.2" />
+            <line x1="215" y1="27" x2="215" y2="99" stroke="#0891b2" strokeWidth="1.75" />
+            <polygon points="215,25 211,33 219,33" fill="#0891b2" stroke="none" />
+            <polygon points="215,101 211,93 219,93" fill="#0891b2" stroke="none" />
+            <text x="228" y="67" fill="#0891b2" fontSize="10" fontFamily="monospace" stroke="none">
+              Height
+            </text>
+
+            {/* Diameter horizontal callout on the top */}
+            <line x1="110" y1="22" x2="110" y2="10" stroke="#d97706" strokeWidth="1.2" />
+            <line x1="170" y1="22" x2="170" y2="10" stroke="#d97706" strokeWidth="1.2" />
+            <line x1="112" y1="14" x2="168" y2="14" stroke="#d97706" strokeWidth="1.75" />
+            <polygon points="110,14 118,10 118,18" fill="#d97706" stroke="none" />
+            <polygon points="170,14 162,10 162,18" fill="#d97706" stroke="none" />
+            <text
+              x="140"
+              y="8"
+              textAnchor="middle"
+              fill="#d97706"
+              fontSize="10"
+              fontFamily="monospace"
+              stroke="none"
+            >
+              Diameter
+            </text>
+          </svg>
+          <p className="text-xs text-muted">
+            <strong>Height</strong> = total free length from end to end without load.{" "}
+            <strong>Diameter</strong> = outer diameter across the coil.
           </p>
         </div>
       ) : null}

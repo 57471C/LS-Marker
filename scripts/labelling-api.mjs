@@ -2377,13 +2377,14 @@ function listClasses(db, projectId) {
     .all(projectId);
 }
 
-const VALID_PART_TYPES = new Set(["none", "bolt", "nut", "washer", "cable_tie", "other"]);
+const VALID_PART_TYPES = new Set(["none", "bolt", "nut", "washer", "cable_tie", "spring", "other"]);
 
 const DEFAULT_DIM_NAMES = {
   bolt: ["Length under head", "Thread diameter", null],
   nut: ["Across flats (A/F)", "Height", null],
   washer: ["Outer diameter", "Inner diameter", "Thickness"],
   cable_tie: ["Length", "Width", null],
+  spring: ["Height", "Diameter", null],
 };
 
 function cleanOptionalDimName(val, maxLen = 60) {
@@ -2468,7 +2469,7 @@ export function computeClassDimensionsStatus(cls) {
   const hasMm = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
   const hasName = (v) => typeof v === "string" && v.trim().length > 0;
 
-  if (pt === "bolt" || pt === "nut" || pt === "cable_tie") {
+  if (pt === "bolt" || pt === "nut" || pt === "cable_tie" || pt === "spring") {
     return hasMm(cls.dim1_mm) && hasMm(cls.dim2_mm) ? "complete" : "missing";
   }
   if (pt === "washer") {
