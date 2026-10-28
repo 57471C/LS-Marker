@@ -40,7 +40,6 @@ import {
   fetchNextImage,
   fetchNextReviewImage,
   imageSrc,
-  lockImage,
   releaseIncomplete,
   saveLabel,
   submitReviewAction,
@@ -465,61 +464,6 @@ export function Labeler() {
     setSelectedKey(null);
     setStatus("Loading");
 
-    const currentStatus = current?.status;
-    if (
-      imageName &&
-      currentStatus !== "complete" &&
-      currentStatus !== "approved" &&
-      !isReviewMode
-    ) {
-      lockImage(imageName)
-        .then((locked) => {
-          if (cancel) return;
-          setCatalogue((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  images: prev.images.map((img) =>
-                    img.name === imageName
-                      ? {
-                          ...img,
-                          claimedBy: locked.claimedBy,
-                          claimedAt: locked.claimedAt,
-                          lockedBy: locked.claimedBy,
-                          lockedAt: locked.claimedAt,
-                        }
-                      : img,
-                  ),
-                }
-              : prev,
-          );
-        })
-        .catch((err: unknown) => {
-          if (cancel) return;
-          const msg = err instanceof Error ? err.message : "";
-          if (msg.includes("Locked by") || msg.includes("Claimed by")) {
-            const match = msg.match(/(?:Locked|Claimed) by ([^\s]+)/);
-            const otherUser = match ? match[1] : "another user";
-            setCatalogue((prev) =>
-              prev
-                ? {
-                    ...prev,
-                    images: prev.images.map((img) =>
-                      img.name === imageName
-                        ? {
-                            ...img,
-                            claimedBy: otherUser,
-                            lockedBy: otherUser,
-                          }
-                        : img,
-                    ),
-                  }
-                : prev,
-            );
-          }
-        });
-    }
-
     fetchLabel(imageName)
       .then((loaded) => {
         if (cancel) return;
@@ -541,7 +485,7 @@ export function Labeler() {
     return () => {
       cancel = true;
     };
-  }, [ready, folderOk, imageName, folderKey, current?.status, isReviewMode]);
+  }, [ready, folderOk, imageName, folderKey]);
 
   function labelFor(classId: number): string {
     const row = classes.find((item) => item.id === classId);
@@ -831,6 +775,10 @@ export function Labeler() {
     const at = allImages.findIndex((image) => image.name === current.name);
     const previous = at > 0 ? allImages[at - 1] : null;
     if (!previous?.labelled) return;
+    if (!isReviewMode && current && current.claimedBy !== username) {
+      const ok = await ensureClaimed();
+      if (!ok) return;
+    }
     setBusy(true);
     try {
       const loaded = await fetchLabel(previous.name);
@@ -851,6 +799,10 @@ export function Labeler() {
 
   async function markNone() {
     if (!current || lockedRef.current || boxes.length > 0) return;
+    if (!isReviewMode && current && current.claimedBy !== username) {
+      const ok = await ensureClaimed();
+      if (!ok) return;
+    }
     const name = current.name;
     const ok = await save();
     if (!ok) return;
@@ -1218,6 +1170,11 @@ export function Labeler() {
         ...image,
         claimedBy: null,
         claimedAt: null,
+        lockedBy: null,
+        lockedAt: null,
+        is_claimed: false,
+        held_by: null,
+        held_minutes_remaining: 0,
         status: res.status,
         completedAt: null,
       }));
@@ -1412,6 +1369,11 @@ export function Labeler() {
                   readOnly={locked}
                   onChange={handleBoxesChange}
                   onSelect={selectBox}
+                  onStartMarkup={() => {
+                    if (!isReviewMode && current && current.claimedBy !== username) {
+                      void ensureClaimed();
+                    }
+                  }}
                 />
                 <div className="pointer-events-none absolute top-2 left-2 z-30 flex items-center gap-1">
                   {/* Tool Mode Toggle: Box ↔ Polygon (Icon only) */}
@@ -2042,7 +2004,7 @@ export function Labeler() {
                             : "You have this image."
                           : holder
                             ? `Claimed by ${holder}. Take over to edit.`
-                            : "Free. Saving claims it for you."}
+                            : "Free. Start marking up or click Claim to claim it."}
                       </p>
                       <StatusBadge status={current.status} />
                     </div>

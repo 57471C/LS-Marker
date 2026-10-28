@@ -1664,6 +1664,7 @@ export function buildDimensionsJson(project, classes) {
  * @param {"labels_only" | "full_tar"} exportType
  * @param {number} trainSplitPct
  * @param {"all" | "approved"} [exportScope]
+ * @param {boolean} [isSegmentationMode]
  */
 async function streamYoloExport(
   req,
@@ -1674,6 +1675,7 @@ async function streamYoloExport(
   exportType,
   trainSplitPct,
   exportScope = "all",
+  isSegmentationMode = false,
 ) {
   const { classes, items, manifest } = prepareExportPlan(
     db,
@@ -1684,6 +1686,26 @@ async function streamYoloExport(
     "yolo",
     exportScope,
   );
+
+  // Strict YOLO-seg compliance: detect if segmentation is explicitly requested
+  // or if the dataset contains mixed annotation types (at least one polygon).
+  let isSegmentation = Boolean(isSegmentationMode);
+  if (!isSegmentation) {
+    for (const item of items) {
+      if (!item.txt_full_path || !fs.existsSync(item.txt_full_path)) continue;
+      const boxes = readBoxes(item.txt_full_path);
+      if (boxes.some((b) => Array.isArray(b.points) && b.points.length >= 3)) {
+        isSegmentation = true;
+        break;
+      }
+    }
+  }
+
+  if (isSegmentation) {
+    manifest.export_format = "yolo-seg";
+    manifest.is_segmentation = true;
+  }
+
   const dataYaml = buildDataYaml(classes, exportType);
   const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
 
@@ -1730,6 +1752,18 @@ async function streamYoloExport(
 
   pack.pipe(res);
 
+  const writeLabelToTar = async (relPath, txtFullPath) => {
+    let labelContent = "";
+    if (txtFullPath && fs.existsSync(txtFullPath)) {
+      const boxes = readBoxes(txtFullPath);
+      const lines = boxes.map((box) =>
+        isSegmentation ? formatYoloSegLine(box) : formatBoxLine(box),
+      );
+      labelContent = lines.length ? `${lines.join("\n")}\n` : "";
+    }
+    await addTarBuffer(pack, relPath, labelContent);
+  };
+
   try {
     await addTarBuffer(pack, "data.yaml", dataYaml);
     await addTarBuffer(pack, "export_manifest.json", manifestJson);
@@ -1749,15 +1783,7 @@ async function streamYoloExport(
 
       for (const item of items) {
         if (aborted) break;
-        await streamFileIntoTar(
-          pack,
-          item.export_label_relative,
-          item.txt_full_path,
-          () => aborted,
-          (s) => {
-            activeReadStream = s;
-          },
-        );
+        await writeLabelToTar(item.export_label_relative, item.txt_full_path);
       }
     } else {
       await addTarDirectory(pack, "images/train/");
@@ -1777,15 +1803,7 @@ async function streamYoloExport(
           },
         );
         if (aborted) break;
-        await streamFileIntoTar(
-          pack,
-          item.export_label_relative,
-          item.txt_full_path,
-          () => aborted,
-          (s) => {
-            activeReadStream = s;
-          },
-        );
+        await writeLabelToTar(item.export_label_relative, item.txt_full_path);
       }
     }
 
@@ -2225,15 +2243,97 @@ function cleanBoxes(input) {
 }
 
 /**
+ * Clamp a normalized coordinate value strictly within [0.0, 1.0].
+ * @param {number | unknown} val
+ * @returns {number}
+ */
+export function clamp(val) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(1.0, Math.max(0.0, n));
+}
+
+/**
+ * Transforms a bounding box into a 4-point polygon contour (Top-Left, Top-Right, Bottom-Right, Bottom-Left).
+ * Strictly clamps all normalized coordinates within [0.0, 1.0].
+ * Supports [cx, cy, w, h] (YOLO standard & LS-Marker internal),
+ * explicit cx/cy, or top-left (x, y) with width and height.
+ * @param {{ x: number, y: number, w: number, h: number, cx?: number, cy?: number, width?: number, height?: number, left?: number, top?: number, isTopLeft?: boolean, format?: string }} box
+ * @returns {[[number, number], [number, number], [number, number], [number, number]]}
+ */
+export function boxTo4PointPolygon(box) {
+  let x_min;
+  let x_max;
+  let y_min;
+  let y_max;
+
+  if (box.isTopLeft || box.format === "xywh" || (box.left !== undefined && box.top !== undefined)) {
+    const x = box.left !== undefined ? Number(box.left) : Number(box.x);
+    const y = box.top !== undefined ? Number(box.top) : Number(box.y);
+    const w = box.width !== undefined ? Number(box.width) : Number(box.w);
+    const h = box.height !== undefined ? Number(box.height) : Number(box.h);
+    x_min = clamp(x);
+    x_max = clamp(x + w);
+    y_min = clamp(y);
+    y_max = clamp(y + h);
+  } else if (box.cx !== undefined && box.cy !== undefined) {
+    const cx = Number(box.cx);
+    const cy = Number(box.cy);
+    const w = box.width !== undefined ? Number(box.width) : Number(box.w);
+    const h = box.height !== undefined ? Number(box.height) : Number(box.h);
+    x_min = clamp(cx - w / 2);
+    x_max = clamp(cx + w / 2);
+    y_min = clamp(cy - h / 2);
+    y_max = clamp(cy + h / 2);
+  } else {
+    // Standard LS-Marker / YOLO internal representation: x and y are cx and cy
+    const cx = Number(box.x);
+    const cy = Number(box.y);
+    const w = Number(box.w);
+    const h = Number(box.h);
+    x_min = clamp(cx - w / 2);
+    x_max = clamp(cx + w / 2);
+    y_min = clamp(cy - h / 2);
+    y_max = clamp(cy + h / 2);
+  }
+
+  return [
+    [x_min, y_min], // Top-Left
+    [x_max, y_min], // Top-Right
+    [x_max, y_max], // Bottom-Right
+    [x_min, y_max], // Bottom-Left
+  ];
+}
+
+/**
+ * Format an annotation line for YOLO-seg compliance.
+ * - Native polygons pass through untouched with their full vertex lists.
+ * - Bounding boxes are converted to 4-point polygon contours (9 tokens: <class_index> <x1> <y1> <x2> <y2> <x3> <y3> <x4> <y4>).
+ * Coordinates are clamped strictly within [0.0, 1.0] and formatted to 6 decimal places.
+ * @param {{ classId: number, x: number, y: number, w: number, h: number, points?: [number, number][] }} box
+ * @returns {string}
+ */
+export function formatYoloSegLine(box) {
+  if (Array.isArray(box.points) && box.points.length >= 3) {
+    // Preservation of Native Polygons: pass through untouched with full vertex list
+    const coords = box.points.flatMap(([px, py]) => [clamp(px).toFixed(6), clamp(py).toFixed(6)]);
+    return `${box.classId} ${coords.join(" ")}`;
+  }
+  const corners = boxTo4PointPolygon(box);
+  const coords = corners.flatMap(([px, py]) => [clamp(px).toFixed(6), clamp(py).toFixed(6)]);
+  return `${box.classId} ${coords.join(" ")}`;
+}
+
+/**
  * Format a box as either YOLO detection (5 numbers) or YOLO segmentation (>5 numbers).
  * @param {{ classId: number, x: number, y: number, w: number, h: number, points?: [number, number][] }} box
  */
-function formatBoxLine(box) {
+export function formatBoxLine(box) {
   if (Array.isArray(box.points) && box.points.length >= 3) {
-    const coords = box.points.flatMap(([px, py]) => [px.toFixed(6), py.toFixed(6)]);
+    const coords = box.points.flatMap(([px, py]) => [clamp(px).toFixed(6), clamp(py).toFixed(6)]);
     return `${box.classId} ${coords.join(" ")}`;
   }
-  return `${box.classId} ${box.x.toFixed(6)} ${box.y.toFixed(6)} ${box.w.toFixed(6)} ${box.h.toFixed(6)}`;
+  return `${box.classId} ${clamp(box.x).toFixed(6)} ${clamp(box.y).toFixed(6)} ${clamp(box.w).toFixed(6)} ${clamp(box.h).toFixed(6)}`;
 }
 
 /**
@@ -3560,7 +3660,9 @@ async function guard(req, res, url, root, method, pathname) {
       const action = typeof body.action === "string" ? body.action : "claim";
 
       const imgRow = db
-        .prepare("SELECT id, status FROM images WHERE project_id = ? AND file_path = ?")
+        .prepare(
+          "SELECT id, status, locked_by, locked_at FROM images WHERE project_id = ? AND file_path = ?",
+        )
         .get(project.id, name);
       if (imgRow && imgRow.status === "approved" && action !== "release-incomplete") {
         throw new HttpError(
@@ -3570,16 +3672,18 @@ async function guard(req, res, url, root, method, pathname) {
       }
 
       if (action === "release-incomplete") {
+        const activeClaimedBy = row?.claimed_by || imgRow?.locked_by;
+        const activeClaimedAt = row?.claimed_at || imgRow?.locked_at;
         const isExpired =
-          row?.claimed_at && new Date(row.claimed_at).getTime() < Date.now() - 15 * 60 * 1000;
+          activeClaimedAt && new Date(activeClaimedAt).getTime() < Date.now() - 15 * 60 * 1000;
         if (
-          row?.claimed_by &&
-          row.claimed_by !== user.username &&
+          activeClaimedBy &&
+          activeClaimedBy !== user.username &&
           !body.takeover &&
           !admin &&
           !isExpired
         ) {
-          throw new HttpError(403, `Claimed by ${row.claimed_by}`);
+          throw new HttpError(403, `Claimed by ${activeClaimedBy}`);
         }
         db.prepare(
           `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
@@ -3679,10 +3783,17 @@ async function guard(req, res, url, root, method, pathname) {
           "SELECT claimed_by, claimed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
         )
         .get(project.id, name);
+      const imgRow = db
+        .prepare(
+          "SELECT id, status, locked_by, locked_at FROM images WHERE project_id = ? AND file_path = ?",
+        )
+        .get(project.id, name);
+      const activeClaimedBy = row?.claimed_by || imgRow?.locked_by;
+      const activeClaimedAt = row?.claimed_at || imgRow?.locked_at;
       const isExpired =
-        row?.claimed_at && new Date(row.claimed_at).getTime() < Date.now() - 15 * 60 * 1000;
-      if (row?.claimed_by && row.claimed_by !== user.username && !admin && !isExpired) {
-        throw new HttpError(403, `Claimed by ${row.claimed_by}`);
+        activeClaimedAt && new Date(activeClaimedAt).getTime() < Date.now() - 15 * 60 * 1000;
+      if (activeClaimedBy && activeClaimedBy !== user.username && !admin && !isExpired) {
+        throw new HttpError(403, `Claimed by ${activeClaimedBy}`);
       }
       db.prepare(
         `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
@@ -4479,6 +4590,14 @@ export async function handle(req, res, url, root) {
           ? "coco"
           : "yolo";
 
+    const isSegmentationMode =
+      rawFormat === "yolo-seg" ||
+      rawFormat === "yolo_seg" ||
+      rawFormat === "yoloseg" ||
+      rawFormat === "seg" ||
+      url.searchParams.get("seg") === "true" ||
+      url.searchParams.get("segmentation") === "true";
+
     const rawScope = (
       url.searchParams.get("scope") ??
       url.searchParams.get("export_scope") ??
@@ -4518,6 +4637,7 @@ export async function handle(req, res, url, root) {
         exportType,
         trainSplitPct,
         exportScope,
+        isSegmentationMode,
       );
     }
     return;

@@ -178,6 +178,7 @@ export function LabelStage({
   onSam2Error,
   onChange,
   onSelect,
+  onStartMarkup,
 }: {
   src: string;
   alt: string;
@@ -196,6 +197,7 @@ export function LabelStage({
   onSam2Error?: (message: string) => void;
   onChange: (boxes: StageBox[], options?: { transient?: boolean }) => void;
   onSelect: (key: string | null) => void;
+  onStartMarkup?: () => void;
 }) {
   const frameRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -756,6 +758,7 @@ export function LabelStage({
         closePolygonRef.current(polyDraftRef.current);
         return;
       }
+      onStartMarkup?.();
       setPolyDraft([...polyDraftRef.current, [round6(here.x), round6(here.y)]]);
       return;
     }
@@ -774,6 +777,7 @@ export function LabelStage({
       event.currentTarget.setPointerCapture(event.pointerId);
       const vIdx = Number(vertexHandle.getAttribute("data-vertex"));
       onSelect(key);
+      onStartMarkup?.();
       dragRef.current = { kind: "vertex", key, index: vIdx };
       return;
     }
@@ -802,6 +806,7 @@ export function LabelStage({
         sw: { x: right, y: top },
         se: { x: left, y: top },
       }[corner];
+      onStartMarkup?.();
       dragRef.current = { kind: "resize", key, anchorX: anchor.x, anchorY: anchor.y };
       return;
     }
@@ -842,6 +847,7 @@ export function LabelStage({
         ...basePrompts,
         { x: round6(here.x), y: round6(here.y), label: promptLabel },
       ];
+      onStartMarkup?.();
       runSamPrompts(nextPrompts, here);
       return;
     }
@@ -865,12 +871,14 @@ export function LabelStage({
 
     if (toolMode === "polygon") {
       onSelect(null);
+      onStartMarkup?.();
       setPolyDraft([[round6(here.x), round6(here.y)]]);
       return;
     }
 
     // Standard box draw
     onSelect(null);
+    onStartMarkup?.();
     dragRef.current = {
       kind: "draw",
       classId: activeClassId,
@@ -897,6 +905,7 @@ export function LabelStage({
       return;
     }
     if (drag.kind === "move") {
+      onStartMarkup?.();
       onChange(
         boxesRef.current.map((box) => {
           if (box.key !== drag.key) return box;

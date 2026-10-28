@@ -91,7 +91,7 @@ async function asJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export type ExportFormat = "yolo" | "coco" | "dino";
+export type ExportFormat = "yolo" | "coco" | "dino" | "yolo-seg";
 export type ExportScope = "all" | "approved";
 
 export type DatasetExportType = "labels_only" | "full_tar";
@@ -198,9 +198,15 @@ export async function downloadDatasetExport(options: DatasetExportOptions): Prom
       ? exportType === "labels_only"
         ? "coco_annotations.tar"
         : "coco.tar"
-      : exportType === "labels_only"
-        ? "yolo_labels.tar"
-        : "yolo.tar";
+      : format === "dino"
+        ? "dino_catalogue.tar"
+        : format === "yolo-seg"
+          ? exportType === "labels_only"
+            ? "yolo_seg_labels.tar"
+            : "yolo_seg.tar"
+          : exportType === "labels_only"
+            ? "yolo_labels.tar"
+            : "yolo.tar";
   if (disposition) {
     const match = disposition.match(/filename="?([^"]+)"?/);
     if (match?.[1]) filename = match[1];
