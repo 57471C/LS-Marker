@@ -2006,6 +2006,10 @@ async function streamDinoCatalogueExport(
           const cropBuffer = await sharp(item.source_image_path)
             .rotate()
             .extract({ left, top, width, height })
+            .resize(224, 224, {
+              fit: "contain",
+              background: { r: 114, g: 114, b: 114 },
+            })
             .jpeg({ quality: 80 })
             .toBuffer();
 

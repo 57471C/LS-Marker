@@ -96,8 +96,8 @@ await sharp({
   .jpeg({ quality: 90 })
   .toFile(testImgPath);
 
-// Create a bounding box for our test class
-fs.writeFileSync(testTxtPath, `${testClassId} 0.5 0.5 0.4 0.4\n`);
+// Create a bounding box with 2:1 aspect ratio to verify letterboxing
+fs.writeFileSync(testTxtPath, `${testClassId} 0.5 0.5 0.6 0.3\n`);
 
 // Mark as completed in DB
 db.prepare(
@@ -166,7 +166,17 @@ try {
   const cropBuf = files.get(firstCropPath).content;
   const cropMeta = await sharp(cropBuf).metadata();
   assert.equal(cropMeta.format, "jpeg", "Crop must be saved as JPEG format");
-  assert(cropMeta.width >= 1 && cropMeta.height >= 1, "Crop dimensions must be valid");
+  assert.equal(cropMeta.width, 224, "Crop width must be 224px (letterboxed)");
+  assert.equal(cropMeta.height, 224, "Crop height must be 224px (letterboxed)");
+
+  // Check that the top-left padding pixel is RGB (114, 114, 114) (allowing +/-2 for JPEG compression)
+  const rawPixelBuf = await sharp(cropBuf).raw().toBuffer();
+  const r = rawPixelBuf[0];
+  const g = rawPixelBuf[1];
+  const b = rawPixelBuf[2];
+  assert(Math.abs(r - 114) <= 2, `Red channel ${r} should be ~114`);
+  assert(Math.abs(g - 114) <= 2, `Green channel ${g} should be ~114`);
+  assert(Math.abs(b - 114) <= 2, `Blue channel ${b} should be ~114`);
   console.log(
     `✓ Crop image verified: format=${cropMeta.format}, width=${cropMeta.width}, height=${cropMeta.height}`,
   );

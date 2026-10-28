@@ -852,7 +852,8 @@ export function SettingsPage() {
                       DINO Catalogue (.tar stream)
                     </span>
                     <p className="text-xs leading-relaxed text-muted">
-                      Crops every annotated part from source photos as JPEG (quality 80) and streams{" "}
+                      Crops every annotated part from source photos, letterboxes to 224×224 (padded
+                      with mid-grey RGB 114,114,114) at JPEG quality 80, and streams{" "}
                       <code className="font-mono text-ink">catalogue.json</code> with part
                       descriptions, dimensions, and relative crop paths into an uncompressed TAR
                       archive.
