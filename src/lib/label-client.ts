@@ -91,7 +91,7 @@ async function asJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export type ExportFormat = "yolo" | "coco" | "dino" | "yolo-seg";
+export type ExportFormat = "yolo" | "coco" | "dino" | "yolo-seg" | "yolo_dino" | "coco_dino";
 export type ExportScope = "all" | "approved";
 
 export type DatasetExportType = "labels_only" | "full_tar";
@@ -99,12 +99,16 @@ export type YoloExportType = DatasetExportType;
 
 export type DatasetExportOptions = {
   projectId: number;
+  projectName?: string;
   exportType: DatasetExportType;
   format?: ExportFormat;
   trainSplit?: number;
   scope?: ExportScope;
+  classMode?: "ic" | "general";
+  filename?: string;
   signal?: AbortSignal;
   onProgress?: (bytesLoaded: number) => void;
+  onStatusChange?: (status: string) => void;
 };
 
 export type YoloExportOptions = DatasetExportOptions;
@@ -115,6 +119,8 @@ export function datasetExportUrl(
   trainSplit = 80,
   format: ExportFormat = "yolo",
   scope: ExportScope = "all",
+  classMode?: "ic" | "general",
+  filename?: string,
 ): string {
   const params = new URLSearchParams({
     id: String(projectId),
@@ -123,6 +129,12 @@ export function datasetExportUrl(
     format,
     scope,
   });
+  if (classMode) {
+    params.set("class_mode", classMode);
+  }
+  if (filename) {
+    params.set("filename", filename);
+  }
   return api(`/api/export?${params.toString()}`);
 }
 
@@ -148,19 +160,14 @@ export function dinoExportUrl(projectId: number, scope: ExportScope = "all"): st
   return datasetExportUrl(projectId, "full_tar", 100, "dino", scope);
 }
 
-export async function downloadDatasetExport(options: DatasetExportOptions): Promise<void> {
-  const {
-    projectId,
-    exportType,
-    format = "yolo",
-    trainSplit = 80,
-    scope = "all",
-    signal,
-    onProgress,
-  } = options;
-  const res = await fetch(datasetExportUrl(projectId, exportType, trainSplit, format, scope), {
-    signal,
-  });
+async function fetchAndSaveTar(
+  url: string,
+  fallbackFilename: string,
+  signal?: AbortSignal,
+  onProgress?: (bytesLoaded: number) => void,
+  initialLoaded = 0,
+): Promise<number> {
+  const res = await fetch(url, { signal });
   if (!res.ok) {
     const message = await failMessage(res);
     if (res.status === 401 && message === "Sign in" && typeof window !== "undefined") {
@@ -170,52 +177,126 @@ export async function downloadDatasetExport(options: DatasetExportOptions): Prom
   }
 
   let blob: Blob;
+  let fileLoaded = 0;
   if (res.body) {
     const reader = res.body.getReader();
     const chunks: BlobPart[] = [];
-    let loaded = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (value) {
         chunks.push(new Uint8Array(value));
-        loaded += value.byteLength;
-        onProgress?.(loaded);
+        fileLoaded += value.byteLength;
+        onProgress?.(initialLoaded + fileLoaded);
       }
     }
     blob = new Blob(chunks, { type: "application/x-tar" });
   } else {
     blob = await res.blob();
-    onProgress?.(blob.size);
+    fileLoaded = blob.size;
+    onProgress?.(initialLoaded + fileLoaded);
   }
 
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
   const disposition = res.headers.get("content-disposition");
-  let filename =
-    format === "coco"
-      ? exportType === "labels_only"
-        ? "coco_annotations.tar"
-        : "coco.tar"
-      : format === "dino"
-        ? "dino_catalogue.tar"
-        : format === "yolo-seg"
-          ? exportType === "labels_only"
-            ? "yolo_seg_labels.tar"
-            : "yolo_seg.tar"
-          : exportType === "labels_only"
-            ? "yolo_labels.tar"
-            : "yolo.tar";
+  let filename = fallbackFilename;
   if (disposition) {
     const match = disposition.match(/filename="?([^"]+)"?/);
     if (match?.[1]) filename = match[1];
   }
+
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
   link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+
+  return fileLoaded;
+}
+
+export async function downloadDatasetExport(options: DatasetExportOptions): Promise<void> {
+  const {
+    projectId,
+    projectName,
+    exportType,
+    format = "yolo",
+    trainSplit = 80,
+    scope = "all",
+    signal,
+    onProgress,
+    onStatusChange,
+  } = options;
+
+  const safeName = (projectName || "project").replace(/[^a-zA-Z0-9_-]/g, "_") || "project";
+
+  if (format === "yolo_dino" || format === "coco_dino") {
+    const baseFmt = format === "yolo_dino" ? "yolo" : "coco";
+    const baseTarName = `${safeName}-${baseFmt}.tar`;
+    const dinoTarName = `${safeName}-dino.tar`;
+
+    onStatusChange?.(
+      baseFmt === "yolo" ? "Streaming YOLO dataset (1 of 2)…" : "Streaming COCO dataset (1 of 2)…",
+    );
+
+    const baseTarUrl = datasetExportUrl(
+      projectId,
+      "full_tar",
+      trainSplit,
+      baseFmt,
+      scope,
+      "general",
+      baseTarName,
+    );
+    const loadedBase = await fetchAndSaveTar(baseTarUrl, baseTarName, signal, onProgress, 0);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    onStatusChange?.("Streaming DINO catalogue (2 of 2)…");
+
+    const dinoTarUrl = datasetExportUrl(
+      projectId,
+      "full_tar",
+      100,
+      "dino",
+      scope,
+      "ic",
+      dinoTarName,
+    );
+    await fetchAndSaveTar(dinoTarUrl, dinoTarName, signal, onProgress, loadedBase);
+    return;
+  }
+
+  let fallbackFilename =
+    format === "coco"
+      ? exportType === "labels_only"
+        ? `${safeName}_coco_annotations.tar`
+        : `${safeName}_coco.tar`
+      : format === "dino"
+        ? `${safeName}_dino_catalogue.tar`
+        : format === "yolo-seg"
+          ? exportType === "labels_only"
+            ? `${safeName}_yolo_seg_labels.tar`
+            : `${safeName}_yolo_seg.tar`
+          : exportType === "labels_only"
+            ? `${safeName}_yolo_labels.tar`
+            : `${safeName}_yolo.tar`;
+
+  if (options.filename) {
+    fallbackFilename = options.filename;
+  }
+
+  const url = datasetExportUrl(
+    projectId,
+    exportType,
+    trainSplit,
+    format,
+    scope,
+    options.classMode,
+    options.filename,
+  );
+  await fetchAndSaveTar(url, fallbackFilename, signal, onProgress, 0);
 }
 
 export async function downloadYoloExport(options: YoloExportOptions): Promise<void> {

@@ -85,6 +85,7 @@ export function SettingsPage() {
   const [trainSplit, setTrainSplit] = useState<number>(80);
   const [isExporting, setIsExporting] = useState(false);
   const [bytesExported, setBytesExported] = useState(0);
+  const [exportStatusText, setExportStatusText] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const exportAbortRef = useRef<AbortController | null>(null);
 
@@ -192,11 +193,13 @@ export function SettingsPage() {
   function openExportModal(p: Project, format: ExportFormat = "yolo") {
     setProjectToExport(p);
     setExportFormat(format);
-    setExportType(format === "dino" ? "full_tar" : "labels_only");
+    const isDual = format === "dino" || format === "yolo_dino" || format === "coco_dino";
+    setExportType(isDual ? "full_tar" : "labels_only");
     setExportScope("all");
     setTrainSplit(80);
     setExportError(null);
     setBytesExported(0);
+    setExportStatusText(null);
     setIsExporting(false);
   }
 
@@ -207,6 +210,7 @@ export function SettingsPage() {
     }
     setIsExporting(false);
     setBytesExported(0);
+    setExportStatusText(null);
     setExportError(null);
     setProjectToExport(null);
   }
@@ -217,16 +221,21 @@ export function SettingsPage() {
     exportAbortRef.current = controller;
     setIsExporting(true);
     setBytesExported(0);
+    setExportStatusText(null);
     setExportError(null);
+    const isDual =
+      exportFormat === "dino" || exportFormat === "yolo_dino" || exportFormat === "coco_dino";
     try {
       await downloadDatasetExport({
         projectId: projectToExport.id,
+        projectName: projectToExport.name,
         format: exportFormat,
-        exportType: exportFormat === "dino" ? "full_tar" : exportType,
+        exportType: isDual ? "full_tar" : exportType,
         trainSplit: exportFormat === "dino" ? 100 : trainSplit,
         scope: exportScope,
         signal: controller.signal,
         onProgress: (loaded) => setBytesExported(loaded),
+        onStatusChange: (status) => setExportStatusText(status),
       });
       setProjectToExport(null);
     } catch (err: unknown) {
@@ -237,6 +246,7 @@ export function SettingsPage() {
     } finally {
       exportAbortRef.current = null;
       setIsExporting(false);
+      setExportStatusText(null);
     }
   }
 
@@ -741,7 +751,11 @@ export function SettingsPage() {
                       ? "DINO Catalogue"
                       : exportFormat === "coco"
                         ? "COCO JSON"
-                        : "YOLO"}{" "}
+                        : exportFormat === "yolo_dino"
+                          ? "YOLO + DINO"
+                          : exportFormat === "coco_dino"
+                            ? "COCO + DINO"
+                            : "YOLO"}{" "}
                     Dataset: {projectToExport.name}
                   </h2>
                   <p className="font-mono text-xs text-muted">
@@ -761,49 +775,88 @@ export function SettingsPage() {
               </div>
 
               {/* Format selector */}
-              <div className="flex flex-col gap-1.5">
+              <div className="flex flex-col gap-2">
                 <label className="text-xs font-medium text-ink">Format</label>
-                <div className="grid grid-cols-3 gap-2 rounded-lg border border-line bg-surface p-1">
-                  <button
-                    type="button"
-                    disabled={isExporting}
-                    onClick={() => setExportFormat("yolo")}
-                    className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
-                      exportFormat === "yolo"
-                        ? "bg-ink text-surface shadow-xs"
-                        : "text-muted hover:text-ink"
-                    }`}
-                  >
-                    YOLO
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isExporting}
-                    onClick={() => setExportFormat("coco")}
-                    className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
-                      exportFormat === "coco"
-                        ? "bg-blue-600 text-white shadow-xs"
-                        : "text-muted hover:text-ink"
-                    }`}
-                  >
-                    COCO JSON
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isExporting}
-                    onClick={() => {
-                      setExportFormat("dino");
-                      setExportType("full_tar");
-                    }}
-                    className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
-                      exportFormat === "dino"
-                        ? "bg-emerald-600 text-white shadow-xs"
-                        : "text-muted hover:text-ink"
-                    }`}
-                  >
-                    DINO Catalogue
-                  </button>
+                <div className="flex flex-col gap-2">
+                  <div className="grid grid-cols-3 gap-2 rounded-lg border border-line bg-surface p-1">
+                    <button
+                      type="button"
+                      disabled={isExporting}
+                      onClick={() => setExportFormat("yolo")}
+                      className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
+                        exportFormat === "yolo"
+                          ? "bg-ink text-surface shadow-xs"
+                          : "text-muted hover:text-ink"
+                      }`}
+                    >
+                      YOLO
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isExporting}
+                      onClick={() => setExportFormat("coco")}
+                      className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
+                        exportFormat === "coco"
+                          ? "bg-blue-600 text-white shadow-xs"
+                          : "text-muted hover:text-ink"
+                      }`}
+                    >
+                      COCO JSON
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isExporting}
+                      onClick={() => {
+                        setExportFormat("dino");
+                        setExportType("full_tar");
+                      }}
+                      className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
+                        exportFormat === "dino"
+                          ? "bg-emerald-600 text-white shadow-xs"
+                          : "text-muted hover:text-ink"
+                      }`}
+                    >
+                      DINO Catalogue
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 rounded-lg border border-line bg-surface p-1">
+                    <button
+                      type="button"
+                      disabled={isExporting}
+                      onClick={() => {
+                        setExportFormat("yolo_dino");
+                        setExportType("full_tar");
+                      }}
+                      className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
+                        exportFormat === "yolo_dino"
+                          ? "bg-purple-600 text-white shadow-xs"
+                          : "text-muted hover:text-ink"
+                      }`}
+                    >
+                      YOLO + DINO
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isExporting}
+                      onClick={() => {
+                        setExportFormat("coco_dino");
+                        setExportType("full_tar");
+                      }}
+                      className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
+                        exportFormat === "coco_dino"
+                          ? "bg-indigo-600 text-white shadow-xs"
+                          : "text-muted hover:text-ink"
+                      }`}
+                    >
+                      COCO + DINO
+                    </button>
+                  </div>
                 </div>
+                {exportFormat === "yolo_dino" || exportFormat === "coco_dino" ? (
+                  <p className="text-[11px] font-medium text-purple-700 dark:text-purple-400">
+                    Exports two .tar files from the same labels.
+                  </p>
+                ) : null}
               </div>
 
               {/* Include Images (Scope) selector */}
@@ -858,6 +911,33 @@ export function SettingsPage() {
                       descriptions, dimensions, and relative crop paths into an uncompressed TAR
                       archive.
                     </p>
+                  </div>
+                </div>
+              ) : exportFormat === "yolo_dino" || exportFormat === "coco_dino" ? (
+                <div className="flex items-start gap-3.5 rounded-lg border border-purple-500/40 bg-purple-50/60 p-4 dark:bg-purple-950/20">
+                  <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border border-purple-200 bg-purple-100 text-purple-700 dark:border-purple-800 dark:bg-purple-900 dark:text-purple-300">
+                    <Archive className="size-4" aria-hidden="true" />
+                  </div>
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="text-sm font-semibold text-ink">
+                      Dual Dataset Export (.tar streams)
+                    </span>
+                    <p className="text-xs leading-relaxed text-muted">
+                      Full datasets only. In a single download action, downloads:
+                    </p>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-muted">
+                      <li>
+                        <strong className="text-ink">
+                          {exportFormat === "yolo_dino" ? "YOLO" : "COCO"} Dataset:
+                        </strong>{" "}
+                        Mapped to general categories (nut, bolt, washer, etc.) with train/val split.
+                      </li>
+                      <li>
+                        <strong className="text-ink">DINO Catalogue:</strong> 224×224 letterboxed
+                        part crops with IC codes and dimensions in{" "}
+                        <code className="font-mono text-ink">catalogue.json</code>.
+                      </li>
+                    </ul>
                   </div>
                 </div>
               ) : (
@@ -966,6 +1046,12 @@ export function SettingsPage() {
                       {trainSplit}% Train / {100 - trainSplit}% Val
                     </span>
                   </div>
+                  {exportFormat === "yolo_dino" || exportFormat === "coco_dino" ? (
+                    <p className="text-[11px] text-muted">
+                      Applies to the {exportFormat === "yolo_dino" ? "YOLO" : "COCO"} dataset
+                      archive.
+                    </p>
+                  ) : null}
                   <div className="flex items-center gap-3">
                     <input
                       id="train-val-split"
@@ -1009,17 +1095,20 @@ export function SettingsPage() {
                   <div className="flex items-center gap-2.5">
                     <Loader2 className="size-4 animate-spin text-blue-600" aria-hidden="true" />
                     <span>
-                      Streaming{" "}
-                      {exportFormat === "dino"
-                        ? "DINO catalogue archive"
-                        : exportFormat === "coco"
-                          ? exportType === "labels_only"
-                            ? "COCO annotations archive"
-                            : "full COCO dataset archive"
-                          : exportType === "labels_only"
-                            ? "YOLO labels-only archive"
-                            : "full YOLO dataset archive"}
-                      …
+                      {exportStatusText ||
+                        (exportFormat === "dino"
+                          ? "Streaming DINO catalogue archive…"
+                          : exportFormat === "yolo_dino"
+                            ? "Streaming YOLO + DINO dual archives…"
+                            : exportFormat === "coco_dino"
+                              ? "Streaming COCO + DINO dual archives…"
+                              : exportFormat === "coco"
+                                ? exportType === "labels_only"
+                                  ? "Streaming COCO annotations archive…"
+                                  : "Streaming full COCO dataset archive…"
+                                : exportType === "labels_only"
+                                  ? "Streaming YOLO labels-only archive…"
+                                  : "Streaming full YOLO dataset archive…")}
                     </span>
                   </div>
                   <span className="font-mono font-semibold text-blue-800">

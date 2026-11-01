@@ -1295,8 +1295,9 @@ function parseTiffOrientation(buf, tiffStart, maxBytes) {
  * @param {{ id: number, ic: string }[]} classes
  * @param {Array<{ id: number, relName: string, source_image_path: string, export_image_relative: string, split: string, txt_full_path: string }>} items
  * @param {"labels_only" | "full_tar"} exportType
+ * @param {Map<number, number> | null} [classMap]
  */
-function buildCocoDatasets(project, classes, items, exportType) {
+function buildCocoDatasets(project, classes, items, exportType, classMap = null) {
   const categories = classes.map((cls) => ({
     id: cls.id,
     name: cls.ic,
@@ -1332,6 +1333,7 @@ function buildCocoDatasets(project, classes, items, exportType) {
         let y_min = (box.y - box.h / 2) * H;
         let bbox_w = box.w * W;
         let bbox_h = box.h * H;
+        const mappedClassId = classMap?.has(box.classId) ? classMap.get(box.classId) : box.classId;
 
         // Clamp to image dimensions
         x_min = Math.max(0, Math.min(W, x_min));
@@ -1358,7 +1360,7 @@ function buildCocoDatasets(project, classes, items, exportType) {
         annotations.push({
           id: annotationId++,
           image_id: item.id,
-          category_id: box.classId,
+          category_id: mappedClassId,
           bbox: [x_min, y_min, bbox_w, bbox_h],
           area,
           segmentation,
@@ -1476,8 +1478,9 @@ async function streamFileIntoTar(pack, entryName, filePath, isAborted, setActive
  * @param {string} resolvedFolder
  * @param {"labels_only" | "full_tar"} exportType
  * @param {number} trainSplitPct
- * @param {"yolo" | "coco"} [exportFormat]
+ * @param {"yolo" | "coco" | "dino"} [exportFormat]
  * @param {"all" | "approved"} [exportScope]
+ * @param {"ic" | "general"} [classMode]
  */
 export function prepareExportPlan(
   db,
@@ -1487,19 +1490,58 @@ export function prepareExportPlan(
   trainSplitPct,
   exportFormat = "yolo",
   exportScope = "all",
+  classMode = "ic",
 ) {
+  const dbClasses = listClasses(db, project.id);
   /** @type {{ id: number, ic: string }[]} */
-  let classes = listClasses(db, project.id).map((c) => ({ id: c.id, ic: c.ic }));
-  if (classes.length === 0) {
-    const classesFile = path.join(resolvedFolder, "classes.txt");
-    if (fs.existsSync(classesFile)) {
-      try {
-        const lines = fs.readFileSync(classesFile, "utf8").split(/\r?\n/);
-        classes = lines
-          .map((line, idx) => ({ id: idx, ic: line.trim() }))
-          .filter((row) => Boolean(row.ic));
-      } catch {
-        /* ignore classes.txt fallback error */
+  let classes = [];
+  /** @type {Map<number, number> | null} */
+  let classMap = null;
+
+  if (classMode === "general") {
+    const generalClassMap = new Map();
+    classMap = new Map();
+    if (dbClasses.length > 0) {
+      for (const c of dbClasses) {
+        const pt = c.part_type ? String(c.part_type).trim().toLowerCase() : "";
+        const generalName = pt && pt !== "none" ? pt : c.ic.trim();
+        if (!generalClassMap.has(generalName)) {
+          const newId = classes.length;
+          generalClassMap.set(generalName, newId);
+          classes.push({ id: newId, ic: generalName });
+        }
+        classMap.set(c.id, generalClassMap.get(generalName));
+      }
+    } else {
+      const classesFile = path.join(resolvedFolder, "classes.txt");
+      if (fs.existsSync(classesFile)) {
+        try {
+          const lines = fs.readFileSync(classesFile, "utf8").split(/\r?\n/);
+          lines
+            .map((line, idx) => ({ id: idx, ic: line.trim() }))
+            .filter((row) => Boolean(row.ic))
+            .forEach((c) => {
+              classes.push(c);
+              classMap.set(c.id, c.id);
+            });
+        } catch {
+          /* ignore classes.txt fallback error */
+        }
+      }
+    }
+  } else {
+    classes = dbClasses.map((c) => ({ id: c.id, ic: c.ic }));
+    if (classes.length === 0) {
+      const classesFile = path.join(resolvedFolder, "classes.txt");
+      if (fs.existsSync(classesFile)) {
+        try {
+          const lines = fs.readFileSync(classesFile, "utf8").split(/\r?\n/);
+          classes = lines
+            .map((line, idx) => ({ id: idx, ic: line.trim() }))
+            .filter((row) => Boolean(row.ic));
+        } catch {
+          /* ignore classes.txt fallback error */
+        }
       }
     }
   }
@@ -1571,6 +1613,7 @@ export function prepareExportPlan(
     export_format: exportFormat,
     export_type: exportType,
     export_scope: exportScope,
+    class_mode: classMode,
     exported_at: new Date().toISOString(),
     total_items: items.length,
     classes: classes.map((c) => c.ic),
@@ -1590,7 +1633,7 @@ export function prepareExportPlan(
     })),
   };
 
-  return { classes, items, manifest };
+  return { classes, items, manifest, classMap };
 }
 
 /**
@@ -1665,6 +1708,8 @@ export function buildDimensionsJson(project, classes) {
  * @param {number} trainSplitPct
  * @param {"all" | "approved"} [exportScope]
  * @param {boolean} [isSegmentationMode]
+ * @param {"ic" | "general"} [classMode]
+ * @param {string | null} [customFileName]
  */
 async function streamYoloExport(
   req,
@@ -1676,8 +1721,10 @@ async function streamYoloExport(
   trainSplitPct,
   exportScope = "all",
   isSegmentationMode = false,
+  classMode = "ic",
+  customFileName = null,
 ) {
-  const { classes, items, manifest } = prepareExportPlan(
+  const { classes, items, manifest, classMap } = prepareExportPlan(
     db,
     project,
     resolvedFolder,
@@ -1685,6 +1732,7 @@ async function streamYoloExport(
     trainSplitPct,
     "yolo",
     exportScope,
+    classMode,
   );
 
   // Strict YOLO-seg compliance: detect if segmentation is explicitly requested
@@ -1711,7 +1759,8 @@ async function streamYoloExport(
 
   const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "yolo";
   const fileName =
-    exportType === "labels_only" ? `${safeName}_labels_yolo.tar` : `${safeName}_yolo.tar`;
+    customFileName ||
+    (exportType === "labels_only" ? `${safeName}_labels_yolo.tar` : `${safeName}_yolo.tar`);
 
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/x-tar");
@@ -1756,7 +1805,13 @@ async function streamYoloExport(
     let labelContent = "";
     if (txtFullPath && fs.existsSync(txtFullPath)) {
       const boxes = readBoxes(txtFullPath);
-      const lines = boxes.map((box) =>
+      const mappedBoxes = classMap
+        ? boxes.map((box) => ({
+            ...box,
+            classId: classMap.has(box.classId) ? classMap.get(box.classId) : box.classId,
+          }))
+        : boxes;
+      const lines = mappedBoxes.map((box) =>
         isSegmentation ? formatYoloSegLine(box) : formatBoxLine(box),
       );
       labelContent = lines.length ? `${lines.join("\n")}\n` : "";
@@ -1828,6 +1883,7 @@ async function streamYoloExport(
  * @param {{ id: number, name: string, folder: string }} project
  * @param {string} resolvedFolder
  * @param {"all" | "approved"} [exportScope]
+ * @param {string | null} [customFileName]
  */
 async function streamDinoCatalogueExport(
   req,
@@ -1836,6 +1892,7 @@ async function streamDinoCatalogueExport(
   project,
   resolvedFolder,
   exportScope = "all",
+  customFileName = null,
 ) {
   const { classes: baseClasses, items } = prepareExportPlan(
     db,
@@ -1898,7 +1955,7 @@ async function streamDinoCatalogueExport(
   }
 
   const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "dino";
-  const fileName = `${safeName}_dino_catalogue.tar`;
+  const fileName = customFileName || `${safeName}_dino_catalogue.tar`;
 
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/x-tar");
@@ -2055,6 +2112,8 @@ async function streamDinoCatalogueExport(
  * @param {"labels_only" | "full_tar"} exportType
  * @param {number} trainSplitPct
  * @param {"all" | "approved"} [exportScope]
+ * @param {"ic" | "general"} [classMode]
+ * @param {string | null} [customFileName]
  */
 async function streamCocoExport(
   req,
@@ -2065,8 +2124,10 @@ async function streamCocoExport(
   exportType,
   trainSplitPct,
   exportScope = "all",
+  classMode = "ic",
+  customFileName = null,
 ) {
-  const { classes, items, manifest } = prepareExportPlan(
+  const { classes, items, manifest, classMap } = prepareExportPlan(
     db,
     project,
     resolvedFolder,
@@ -2074,13 +2135,15 @@ async function streamCocoExport(
     trainSplitPct,
     "coco",
     exportScope,
+    classMode,
   );
-  const { trainJson, valJson } = buildCocoDatasets(project, classes, items, exportType);
+  const { trainJson, valJson } = buildCocoDatasets(project, classes, items, exportType, classMap);
   const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
 
   const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "coco";
   const fileName =
-    exportType === "labels_only" ? `${safeName}_coco_annotations.tar` : `${safeName}_coco.tar`;
+    customFileName ||
+    (exportType === "labels_only" ? `${safeName}_coco_annotations.tar` : `${safeName}_coco.tar`);
 
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/x-tar");
@@ -4614,6 +4677,19 @@ export async function handle(req, res, url, root) {
     /** @type {"all" | "approved"} */
     const exportScope = rawScope === "approved" ? "approved" : "all";
 
+    const rawClassMode = (
+      url.searchParams.get("class_mode") ??
+      url.searchParams.get("classes") ??
+      "ic"
+    )
+      .trim()
+      .toLowerCase();
+    const classMode = rawClassMode === "general" ? "general" : "ic";
+
+    const customFileName = url.searchParams.has("filename")
+      ? path.basename(url.searchParams.get("filename")).replace(/[^a-zA-Z0-9_.-]/g, "_")
+      : null;
+
     try {
       writeClassesFile(db, project.id, resolvedFolder);
     } catch (err) {
@@ -4621,7 +4697,15 @@ export async function handle(req, res, url, root) {
     }
 
     if (exportFormat === "dino") {
-      await streamDinoCatalogueExport(req, res, db, project, resolvedFolder, exportScope);
+      await streamDinoCatalogueExport(
+        req,
+        res,
+        db,
+        project,
+        resolvedFolder,
+        exportScope,
+        customFileName,
+      );
     } else if (exportFormat === "coco") {
       await streamCocoExport(
         req,
@@ -4632,6 +4716,8 @@ export async function handle(req, res, url, root) {
         exportType,
         trainSplitPct,
         exportScope,
+        classMode,
+        customFileName,
       );
     } else {
       await streamYoloExport(
@@ -4644,6 +4730,8 @@ export async function handle(req, res, url, root) {
         trainSplitPct,
         exportScope,
         isSegmentationMode,
+        classMode,
+        customFileName,
       );
     }
     return;
