@@ -58,6 +58,41 @@ function formatPartSummary(row: ClassRow): string | null {
   return pt === "other" ? `${label} (${vals.join(", ")})` : `${label}: ${vals.join(" × ")} mm`;
 }
 
+function ClassPartSummary({ row }: { row: ClassRow }) {
+  const pt = row.part_type;
+  if (!pt || pt === "none") return null;
+  const label = PART_TYPE_OPTIONS.find((o) => o.value === pt)?.label ?? pt;
+  const vals: string[] = [];
+  if (row.dim1_mm != null) {
+    vals.push(
+      pt === "other" && row.dim1_name ? `${row.dim1_name}: ${row.dim1_mm}mm` : `${row.dim1_mm}`,
+    );
+  }
+  if (row.dim2_mm != null) {
+    vals.push(
+      pt === "other" && row.dim2_name ? `${row.dim2_name}: ${row.dim2_mm}mm` : `${row.dim2_mm}`,
+    );
+  }
+  if (row.dim3_mm != null) {
+    vals.push(
+      pt === "other" && row.dim3_name ? `${row.dim3_name}: ${row.dim3_mm}mm` : `${row.dim3_mm}`,
+    );
+  }
+
+  return (
+    <p className="font-mono text-xs">
+      <span className="font-semibold text-ink">{label}</span>
+      {vals.length > 0 ? (
+        <span className="font-medium text-slate-700 dark:text-slate-300">
+          {pt === "other" ? ` (${vals.join(", ")})` : `: ${vals.join(" × ")} mm`}
+        </span>
+      ) : (
+        <span className="text-muted"> (no dimensions)</span>
+      )}
+    </p>
+  );
+}
+
 function hasCompleteMeasurements(row: ClassRow): boolean {
   const pt = row.part_type;
   if (!pt || pt === "none") return false;
@@ -319,7 +354,7 @@ export function ClassesAdmin() {
               {loadingHealth ? (
                 <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
               ) : (
-                <BarChart3 className="size-3.5 text-cyan-500" aria-hidden="true" />
+                <BarChart3 className="size-3.5 text-accent" aria-hidden="true" />
               )}
               <span>Dataset Health</span>
             </button>
@@ -647,7 +682,7 @@ function ClassList({
                           onClick={onToggleDiagramHelp}
                           className={`press inline-flex h-7 items-center gap-1 rounded-sm border px-2 text-xs font-medium transition-colors ${
                             showDiagramHelp
-                              ? "border-cyan-500 bg-cyan-500/15 text-cyan-800 dark:text-cyan-200"
+                              ? "border-blue-600 bg-blue-50 text-blue-900 font-semibold"
                               : "border-line bg-surface text-muted hover:text-ink"
                           }`}
                           title="Show measurement guide diagram"
@@ -931,11 +966,7 @@ function ClassList({
                   <p className="truncate font-mono text-sm">{row.ic}</p>
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <p className="truncate text-sm text-muted">{row.des}</p>
-                    {partSummary ? (
-                      <p className="font-mono text-xs text-cyan-700 dark:text-cyan-300">
-                        {partSummary}
-                      </p>
-                    ) : null}
+                    {partSummary ? <ClassPartSummary row={row} /> : null}
                   </div>
                   <div className="flex items-center gap-2">
                     <PartDimensionStatusIcon
@@ -974,7 +1005,7 @@ function PartMeasurementPopover({
     <div
       role="region"
       aria-label="Part measurement guide"
-      className="relative flex flex-col gap-2 rounded-md border border-cyan-500/40 bg-surface p-3 shadow-md"
+      className="relative flex flex-col gap-2 rounded-md border border-line bg-surface p-3 shadow-md"
     >
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold text-ink">
@@ -1021,16 +1052,16 @@ function PartMeasurementPopover({
             <line x1="225" y1="42" x2="225" y2="68" strokeOpacity="0.4" />
 
             {/* Length under head callout */}
-            <line x1="62" y1="82" x2="62" y2="106" stroke="#0891b2" strokeWidth="1.2" />
-            <line x1="240" y1="68" x2="240" y2="106" stroke="#0891b2" strokeWidth="1.2" />
-            <line x1="64" y1="98" x2="238" y2="98" stroke="#0891b2" strokeWidth="1.75" />
-            <polygon points="62,98 70,94 70,102" fill="#0891b2" stroke="none" />
-            <polygon points="240,98 232,94 232,102" fill="#0891b2" stroke="none" />
+            <line x1="62" y1="82" x2="62" y2="106" stroke="#2563eb" strokeWidth="1.2" />
+            <line x1="240" y1="68" x2="240" y2="106" stroke="#2563eb" strokeWidth="1.2" />
+            <line x1="64" y1="98" x2="238" y2="98" stroke="#2563eb" strokeWidth="1.75" />
+            <polygon points="62,98 70,94 70,102" fill="#2563eb" stroke="none" />
+            <polygon points="240,98 232,94 232,102" fill="#2563eb" stroke="none" />
             <text
               x="151"
               y="113"
               textAnchor="middle"
-              fill="#0891b2"
+              fill="#1e40af"
               fontSize="10"
               fontFamily="monospace"
               stroke="none"
@@ -1073,16 +1104,16 @@ function PartMeasurementPopover({
             <circle cx="95" cy="54" r="14" />
 
             {/* Across Flats callout */}
-            <line x1="115" y1="24" x2="155" y2="24" stroke="#0891b2" strokeWidth="1.2" />
-            <line x1="115" y1="84" x2="155" y2="84" stroke="#0891b2" strokeWidth="1.2" />
-            <line x1="146" y1="26" x2="146" y2="82" stroke="#0891b2" strokeWidth="1.75" />
-            <polygon points="146,24 142,31 150,31" fill="#0891b2" stroke="none" />
-            <polygon points="146,84 142,77 150,77" fill="#0891b2" stroke="none" />
+            <line x1="115" y1="24" x2="155" y2="24" stroke="#2563eb" strokeWidth="1.2" />
+            <line x1="115" y1="84" x2="155" y2="84" stroke="#2563eb" strokeWidth="1.2" />
+            <line x1="146" y1="26" x2="146" y2="82" stroke="#2563eb" strokeWidth="1.75" />
+            <polygon points="146,24 142,31 150,31" fill="#2563eb" stroke="none" />
+            <polygon points="146,84 142,77 150,77" fill="#2563eb" stroke="none" />
             <text
               x="95"
               y="106"
               textAnchor="middle"
-              fill="#0891b2"
+              fill="#1e40af"
               fontSize="10"
               fontFamily="monospace"
               stroke="none"
@@ -1142,16 +1173,16 @@ function PartMeasurementPopover({
             <circle cx="95" cy="54" r="14" fill="var(--color-bg)" />
 
             {/* Outer diameter callout */}
-            <line x1="61" y1="54" x2="61" y2="100" stroke="#0891b2" strokeWidth="1.2" />
-            <line x1="129" y1="54" x2="129" y2="100" stroke="#0891b2" strokeWidth="1.2" />
-            <line x1="63" y1="94" x2="127" y2="94" stroke="#0891b2" strokeWidth="1.75" />
-            <polygon points="61,94 68,90 68,98" fill="#0891b2" stroke="none" />
-            <polygon points="129,94 122,90 122,98" fill="#0891b2" stroke="none" />
+            <line x1="61" y1="54" x2="61" y2="100" stroke="#2563eb" strokeWidth="1.2" />
+            <line x1="129" y1="54" x2="129" y2="100" stroke="#2563eb" strokeWidth="1.2" />
+            <line x1="63" y1="94" x2="127" y2="94" stroke="#2563eb" strokeWidth="1.75" />
+            <polygon points="61,94 68,90 68,98" fill="#2563eb" stroke="none" />
+            <polygon points="129,94 122,90 122,98" fill="#2563eb" stroke="none" />
             <text
               x="95"
               y="110"
               textAnchor="middle"
-              fill="#0891b2"
+              fill="#1e40af"
               fontSize="10"
               fontFamily="monospace"
               stroke="none"
@@ -1222,16 +1253,16 @@ function PartMeasurementPopover({
               fillOpacity="0.06"
             />
             {/* Overall Length callout */}
-            <line x1="28" y1="66" x2="28" y2="98" stroke="#0891b2" strokeWidth="1.2" />
-            <line x1="280" y1="54" x2="280" y2="98" stroke="#0891b2" strokeWidth="1.2" />
-            <line x1="30" y1="90" x2="278" y2="90" stroke="#0891b2" strokeWidth="1.75" />
-            <polygon points="28,90 36,86 36,94" fill="#0891b2" stroke="none" />
-            <polygon points="280,90 272,86 272,94" fill="#0891b2" stroke="none" />
+            <line x1="28" y1="66" x2="28" y2="98" stroke="#2563eb" strokeWidth="1.2" />
+            <line x1="280" y1="54" x2="280" y2="98" stroke="#2563eb" strokeWidth="1.2" />
+            <line x1="30" y1="90" x2="278" y2="90" stroke="#2563eb" strokeWidth="1.75" />
+            <polygon points="28,90 36,86 36,94" fill="#2563eb" stroke="none" />
+            <polygon points="280,90 272,86 272,94" fill="#2563eb" stroke="none" />
             <text
               x="154"
               y="106"
               textAnchor="middle"
-              fill="#0891b2"
+              fill="#1e40af"
               fontSize="10"
               fontFamily="monospace"
               stroke="none"
@@ -1271,12 +1302,12 @@ function PartMeasurementPopover({
               fill="none"
             />
             {/* Height (Free Length) vertical callout on the right */}
-            <line x1="185" y1="25" x2="225" y2="25" stroke="#0891b2" strokeWidth="1.2" />
-            <line x1="185" y1="101" x2="225" y2="101" stroke="#0891b2" strokeWidth="1.2" />
-            <line x1="215" y1="27" x2="215" y2="99" stroke="#0891b2" strokeWidth="1.75" />
-            <polygon points="215,25 211,33 219,33" fill="#0891b2" stroke="none" />
-            <polygon points="215,101 211,93 219,93" fill="#0891b2" stroke="none" />
-            <text x="228" y="67" fill="#0891b2" fontSize="10" fontFamily="monospace" stroke="none">
+            <line x1="185" y1="25" x2="225" y2="25" stroke="#2563eb" strokeWidth="1.2" />
+            <line x1="185" y1="101" x2="225" y2="101" stroke="#2563eb" strokeWidth="1.2" />
+            <line x1="215" y1="27" x2="215" y2="99" stroke="#2563eb" strokeWidth="1.75" />
+            <polygon points="215,25 211,33 219,33" fill="#2563eb" stroke="none" />
+            <polygon points="215,101 211,93 219,93" fill="#2563eb" stroke="none" />
+            <text x="228" y="67" fill="#1e40af" fontSize="10" fontFamily="monospace" stroke="none">
               Height
             </text>
 
@@ -1323,14 +1354,14 @@ function PartMeasurementPopover({
               fill="currentColor"
               fillOpacity="0.07"
             />
-            <line x1="85" y1="78" x2="225" y2="78" stroke="#0891b2" strokeWidth="1.75" />
-            <polygon points="85,78 93,74 93,82" fill="#0891b2" stroke="none" />
-            <polygon points="225,78 217,74 217,82" fill="#0891b2" stroke="none" />
+            <line x1="85" y1="78" x2="225" y2="78" stroke="#2563eb" strokeWidth="1.75" />
+            <polygon points="85,78 93,74 93,82" fill="#2563eb" stroke="none" />
+            <polygon points="225,78 217,74 217,82" fill="#2563eb" stroke="none" />
             <text
               x="155"
               y="92"
               textAnchor="middle"
-              fill="#0891b2"
+              fill="#1e40af"
               fontSize="10"
               fontFamily="monospace"
               stroke="none"
