@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { BarChart3, HelpCircle, Loader2, Ruler, X } from "lucide-react";
 import { AppHeader } from "@/components/app-header";
 import { DatasetHealthModal } from "@/components/dataset-health-modal";
+import { DuplicateCleanupModal } from "@/components/duplicate-cleanup-modal";
 import { classFill } from "@/lib/class-color";
 import {
   createClass,
@@ -11,6 +12,7 @@ import {
   importClasses,
   updateClass,
   type ClassRow,
+  type DuplicateDetectionResult,
   type PartType,
   type ProjectHealthResult,
 } from "@/lib/label-client";
@@ -277,6 +279,7 @@ export function ClassesAdmin() {
 
   const [healthResult, setHealthResult] = useState<ProjectHealthResult | null>(null);
   const [loadingHealth, setLoadingHealth] = useState(false);
+  const [duplicatesResult, setDuplicatesResult] = useState<DuplicateDetectionResult | null>(null);
 
   async function load() {
     const data = await fetchCatalogue();
@@ -534,7 +537,33 @@ export function ClassesAdmin() {
           you can change it.
         </p>
         {healthResult ? (
-          <DatasetHealthModal health={healthResult} onClose={() => setHealthResult(null)} />
+          <DatasetHealthModal
+            health={healthResult}
+            onClose={() => setHealthResult(null)}
+            onOpenDuplicates={() => {
+              if (healthResult.duplicates) {
+                setDuplicatesResult(healthResult.duplicates);
+              }
+            }}
+          />
+        ) : null}
+        {duplicatesResult ? (
+          <DuplicateCleanupModal
+            isOpen={true}
+            projectId={healthResult?.projectId}
+            projectName={healthResult?.projectName}
+            duplicates={duplicatesResult}
+            onClose={() => setDuplicatesResult(null)}
+            onCleanupComplete={async () => {
+              await load();
+              try {
+                const updatedHealth = await fetchProjectHealth();
+                setHealthResult(updatedHealth);
+              } catch {
+                /* ignore */
+              }
+            }}
+          />
         ) : null}
       </main>
     </div>

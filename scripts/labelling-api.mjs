@@ -412,7 +412,7 @@ export function rescanProjectImages(db, root, project) {
 
   const tx = db.transaction(() => {
     // 1. Add New Files
-    for (const diskPath of diskNormalized) {
+    for (const diskPath of diskSet) {
       if (!existingMap.has(diskPath)) {
         const info = insertStmt.run(project.id, diskPath, diskPath);
         if (info.changes > 0) {
@@ -491,6 +491,256 @@ export function syncProjectImages(db, root, project) {
   }
   const resolvedFolder = path.resolve(root, project.folder);
   return listImages(resolvedFolder);
+}
+
+/**
+ * Computes SHA-256 hash of a file on disk using streaming buffers.
+ * @param {string} filePath
+ * @returns {Promise<string>}
+ */
+export function hashFileSha256(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("error", (err) => reject(err));
+  });
+}
+
+/**
+ * Detects duplicate images in a project based on exact SHA-256 hashes.
+ * For each duplicate set, determines the best image to keep (prioritizing approved/completed
+ * annotations, box count, and shallower paths) and lists extras for cleanup.
+ * @param {string} root
+ * @param {{ id: number, folder: string, name?: string }} project
+ * @param {import("better-sqlite3").Database} db
+ */
+export async function detectProjectDuplicates(root, project, db) {
+  const resolvedFolder = path.resolve(root, project.folder);
+  const error = folderError(resolvedFolder);
+  if (error) throw new HttpError(400, error);
+
+  const rawImages = listImages(resolvedFolder, Infinity);
+  if (rawImages.length === 0) {
+    return { duplicateSets: 0, totalDuplicates: 0, totalTxtFiles: 0, groups: [] };
+  }
+
+  // Load image rows from DB for status checking
+  const dbRows = db
+    .prepare("SELECT file_path, status, reviewed_at FROM images WHERE project_id = ?")
+    .all(project.id);
+  const statusMap = new Map();
+  for (const r of dbRows) {
+    statusMap.set(normalizePath(r.file_path), r.status);
+  }
+
+  const concurrency = 16;
+  /** @type {Map<string, Array<{ relPath: string, fullPath: string, size: number, status: string, hasTxt: boolean, boxesCount: number }>>} */
+  const hashMap = new Map();
+
+  let index = 0;
+  async function worker() {
+    while (index < rawImages.length) {
+      const i = index++;
+      const relPath = rawImages[i];
+      const fullPath = resolveInside(resolvedFolder, relPath);
+      try {
+        if (!fs.existsSync(fullPath)) continue;
+        const stat = fs.statSync(fullPath);
+        if (!stat.isFile()) continue;
+        const hash = await hashFileSha256(fullPath);
+        const normRel = normalizePath(relPath);
+        const status = statusMap.get(normRel) || "unlabeled";
+        const txtPath = labelFileFor(fullPath);
+        const hasTxt = fs.existsSync(txtPath);
+        const boxes = hasTxt ? readBoxes(txtPath) : [];
+
+        const fileMeta = {
+          relPath: normRel,
+          fullPath,
+          size: stat.size,
+          status,
+          hasTxt,
+          boxesCount: boxes.length,
+        };
+
+        const existing = hashMap.get(hash);
+        if (existing) {
+          existing.push(fileMeta);
+        } else {
+          hashMap.set(hash, [fileMeta]);
+        }
+      } catch (err) {
+        console.error(`[duplicates] Failed to hash ${relPath}:`, err);
+      }
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, rawImages.length) }, () => worker());
+  await Promise.all(workers);
+
+  const groups = [];
+  let totalDuplicates = 0;
+  let totalTxtFiles = 0;
+
+  for (const [hash, files] of hashMap.entries()) {
+    if (files.length <= 1) continue;
+
+    // Pick best file to KEEP:
+    // 1. approved > completed > unlabeled
+    // 2. most boxes > fewer boxes
+    // 3. hasTxt > noTxt
+    // 4. shallower path (fewer '/' separators)
+    // 5. alphabetical by relPath
+    files.sort((a, b) => {
+      const statusWeight = (s) => (s === "approved" ? 3 : s === "completed" ? 2 : 1);
+      const swDiff = statusWeight(b.status) - statusWeight(a.status);
+      if (swDiff !== 0) return swDiff;
+
+      const boxDiff = b.boxesCount - a.boxesCount;
+      if (boxDiff !== 0) return boxDiff;
+
+      if (a.hasTxt !== b.hasTxt) return b.hasTxt ? 1 : -1;
+
+      const aDepth = a.relPath.split("/").length;
+      const bDepth = b.relPath.split("/").length;
+      if (aDepth !== bDepth) return aDepth - bDepth;
+
+      return a.relPath.localeCompare(b.relPath);
+    });
+
+    const kept = files[0];
+    const extras = files.slice(1);
+
+    totalDuplicates += extras.length;
+    for (const e of extras) {
+      if (e.hasTxt) totalTxtFiles++;
+    }
+
+    groups.push({
+      hash,
+      kept: {
+        relPath: kept.relPath,
+        status: kept.status,
+        boxesCount: kept.boxesCount,
+        hasTxt: kept.hasTxt,
+        size: kept.size,
+      },
+      extras: extras.map((e) => ({
+        relPath: e.relPath,
+        status: e.status,
+        boxesCount: e.boxesCount,
+        hasTxt: e.hasTxt,
+        size: e.size,
+      })),
+    });
+  }
+
+  return {
+    duplicateSets: groups.length,
+    totalDuplicates,
+    totalTxtFiles,
+    groups,
+  };
+}
+
+/**
+ * Removes duplicate images and their corresponding .txt label files on disk and in database.
+ * Preserves the single best image in each duplicate set.
+ * @param {string} root
+ * @param {{ id: number, folder: string, name?: string }} project
+ * @param {import("better-sqlite3").Database} db
+ */
+export async function cleanupProjectDuplicates(root, project, db) {
+  const resolvedFolder = path.resolve(root, project.folder);
+  const error = folderError(resolvedFolder);
+  if (error) throw new HttpError(400, error);
+
+  const { groups } = await detectProjectDuplicates(root, project, db);
+  if (groups.length === 0) {
+    return { ok: true, removedCount: 0, removed: [], message: "No duplicates found." };
+  }
+
+  const removed = [];
+
+  const deleteImageStmt = db.prepare("DELETE FROM images WHERE project_id = ? AND file_path = ?");
+  const deleteClaimStmt = db.prepare(
+    "DELETE FROM image_claims WHERE project_id = ? AND rel_path = ?",
+  );
+
+  const tx = db.transaction(() => {
+    for (const group of groups) {
+      const keptNorm = group.kept.relPath;
+      for (const extra of group.extras) {
+        const extraNorm = extra.relPath;
+        if (extraNorm === keptNorm) continue;
+
+        const imageFull = resolveInside(resolvedFolder, extraNorm);
+        const labelFull = labelFileFor(imageFull);
+        const cropMeta = `${imageFull}.crop.json`;
+
+        let imageDeleted = false;
+        let labelDeleted = false;
+
+        if (fs.existsSync(imageFull)) {
+          try {
+            fs.unlinkSync(imageFull);
+            imageDeleted = true;
+          } catch (err) {
+            console.error(`[duplicates] Failed to delete image ${imageFull}:`, err);
+          }
+        }
+
+        if (fs.existsSync(labelFull)) {
+          try {
+            fs.unlinkSync(labelFull);
+            labelDeleted = true;
+          } catch (err) {
+            console.error(`[duplicates] Failed to delete label ${labelFull}:`, err);
+          }
+        }
+
+        if (fs.existsSync(cropMeta)) {
+          try {
+            fs.unlinkSync(cropMeta);
+          } catch {
+            /* ignore */
+          }
+        }
+
+        deleteImageStmt.run(project.id, extraNorm);
+        deleteImageStmt.run(project.id, extraNorm.replace(/\//g, "\\"));
+        deleteClaimStmt.run(project.id, extraNorm);
+        deleteClaimStmt.run(project.id, extraNorm.replace(/\//g, "\\"));
+
+        removed.push({
+          relPath: extraNorm,
+          imageDeleted,
+          labelDeleted,
+          hasTxt: extra.hasTxt,
+          status: extra.status,
+          kept: keptNorm,
+          hash: group.hash,
+        });
+      }
+    }
+  });
+
+  tx();
+
+  try {
+    rescanProjectImages(db, root, project);
+  } catch (err) {
+    console.error("[duplicates] Post-cleanup rescan failed:", err);
+  }
+
+  return {
+    ok: true,
+    removedCount: removed.length,
+    removed,
+    message: `Successfully removed ${removed.length} duplicate image(s) and their associated files.`,
+  };
 }
 
 function isHexColor(value) {
@@ -970,6 +1220,14 @@ function listImages(folder, limit = MAX_IMAGES) {
       if (ent.name.startsWith(".")) continue;
       const childRel = rel ? `${rel}/${ent.name}` : ent.name;
       if (ent.isDirectory()) {
+        const lower = ent.name.toLowerCase();
+        // Skip known export artifact directories to prevent exported copies or crops from being re-imported as dataset images
+        if (lower === "crops" || lower === "annotations" || lower === "labels") continue;
+        if (
+          (lower === "train" || lower === "val") &&
+          (rel.toLowerCase() === "images" || rel === "")
+        )
+          continue;
         walk(path.join(dir, ent.name), childRel, depth + 1);
       } else if (IMAGE_EXT.has(path.extname(ent.name).toLowerCase())) {
         out.push(childRel);
@@ -1562,13 +1820,17 @@ export function prepareExportPlan(
 
   const allRelImages = listImages(resolvedFolder, Infinity);
   const candidates = [];
+  const seenPaths = new Set();
   for (const relName of allRelImages) {
+    const normRel = normalizePath(relName);
+    if (seenPaths.has(normRel)) continue;
+    seenPaths.add(normRel);
     const imageFull = resolveInside(resolvedFolder, relName);
     if (!fs.existsSync(imageFull)) continue;
     const txtFull = labelFileFor(imageFull);
     const hasTxt = fs.existsSync(txtFull);
-    const claimStatus = claimsMap.get(relName);
-    const dbStatus = imagesMap.get(relName);
+    const claimStatus = claimsMap.get(normRel) ?? claimsMap.get(relName);
+    const dbStatus = imagesMap.get(normRel) ?? imagesMap.get(relName);
     const isApproved = dbStatus === "approved" || claimStatus === "approved";
     const isCompleted =
       isApproved ||
@@ -1576,7 +1838,7 @@ export function prepareExportPlan(
       claimStatus === "complete" ||
       (hasTxt && claimStatus !== "incomplete");
     const eligible = exportScope === "approved" ? isApproved : isCompleted;
-    candidates.push({ relName, imageFull, txtFull, completed: eligible });
+    candidates.push({ relName: normRel, imageFull, txtFull, completed: eligible });
   }
 
   const eligibleOnly = candidates.filter((c) => c.completed);
@@ -2617,7 +2879,7 @@ function publicProject(root, project, db) {
  * @param {{ id: number, name: string, folder: string }} project
  * @param {import("better-sqlite3").Database} db
  */
-export function computeProjectHealth(root, project, db) {
+export async function computeProjectHealth(root, project, db) {
   const resolvedFolder = path.resolve(root, project.folder);
   const error = folderError(resolvedFolder);
   if (error) throw new HttpError(400, error);
@@ -2759,6 +3021,13 @@ export function computeProjectHealth(root, project, db) {
     }
   }
 
+  let duplicates = null;
+  try {
+    duplicates = await detectProjectDuplicates(root, project, db);
+  } catch (err) {
+    console.error("[health] Duplicate detection failed:", err);
+  }
+
   return {
     projectName: project.name,
     projectId: project.id,
@@ -2771,6 +3040,7 @@ export function computeProjectHealth(root, project, db) {
       missingDimensionsCount,
     },
     classes: classesStats,
+    duplicates,
   };
 }
 
@@ -3907,9 +4177,15 @@ async function guard(req, res, url, root, method, pathname) {
       pathname === "/api/projects/sync-images" ||
       pathname === "/api/project/sync" ||
       pathname === "/api/projects/sync" ||
+      pathname === "/api/project/duplicates" ||
+      pathname === "/api/projects/duplicates" ||
+      pathname === "/api/project/cleanup-duplicates" ||
+      pathname === "/api/projects/cleanup-duplicates" ||
       /^\/api\/projects\/\d+\/health$/.test(pathname) ||
       /^\/api\/projects\/\d+\/sync-images$/.test(pathname) ||
-      /^\/api\/projects\/\d+\/sync$/.test(pathname))
+      /^\/api\/projects\/\d+\/sync$/.test(pathname) ||
+      /^\/api\/projects\/\d+\/duplicates$/.test(pathname) ||
+      /^\/api\/projects\/\d+\/cleanup-duplicates$/.test(pathname))
   ) {
     return false;
   }
@@ -3995,7 +4271,7 @@ export async function handle(req, res, url, root) {
     }
 
     if (!project) throw new HttpError(404, "Project not found");
-    const health = computeProjectHealth(root, project, db);
+    const health = await computeProjectHealth(root, project, db);
     send(res, 200, health);
     return;
   }
@@ -4106,6 +4382,65 @@ export async function handle(req, res, url, root) {
 
     if (!project) throw new HttpError(404, "Project not found");
     const result = rescanProjectImages(db, root, project);
+    try {
+      result.duplicates = await detectProjectDuplicates(root, project, db);
+    } catch (err) {
+      console.error("[sync] Duplicate detection failed:", err);
+    }
+    send(res, 200, result);
+    return;
+  }
+
+  const duplicatesMatch = pathname.match(/^\/api\/projects\/(\d+)\/duplicates$/);
+  if (
+    (pathname === "/api/project/duplicates" ||
+      pathname === "/api/projects/duplicates" ||
+      Boolean(duplicatesMatch)) &&
+    (method === "GET" || method === "POST")
+  ) {
+    const db = await getDb(root);
+    let projectId = duplicatesMatch ? Number(duplicatesMatch[1]) : null;
+    if (projectId === null) {
+      if (url.searchParams.has("id")) projectId = Number(url.searchParams.get("id"));
+      else if (url.searchParams.has("projectId"))
+        projectId = Number(url.searchParams.get("projectId"));
+      else if (url.searchParams.has("project_id"))
+        projectId = Number(url.searchParams.get("project_id"));
+    }
+    const project = Number.isInteger(projectId)
+      ? db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId)
+      : currentProject(db, req);
+    if (!project) throw new HttpError(404, "Project not found");
+    const duplicates = await detectProjectDuplicates(root, project, db);
+    send(res, 200, duplicates);
+    return;
+  }
+
+  const cleanupMatch = pathname.match(/^\/api\/projects\/(\d+)\/cleanup-duplicates$/);
+  if (
+    (pathname === "/api/project/cleanup-duplicates" ||
+      pathname === "/api/projects/cleanup-duplicates" ||
+      Boolean(cleanupMatch)) &&
+    method === "POST"
+  ) {
+    const db = await getDb(root);
+    let projectId = cleanupMatch ? Number(cleanupMatch[1]) : null;
+    const body = await readBody(req).catch(() => ({}));
+    if (projectId === null) {
+      if (body.id !== undefined && body.id !== null) projectId = Number(body.id);
+      else if (body.projectId !== undefined && body.projectId !== null)
+        projectId = Number(body.projectId);
+      else if (body.project_id !== undefined && body.project_id !== null)
+        projectId = Number(body.project_id);
+      else if (url.searchParams.has("id")) projectId = Number(url.searchParams.get("id"));
+      else if (url.searchParams.has("projectId"))
+        projectId = Number(url.searchParams.get("projectId"));
+    }
+    const project = Number.isInteger(projectId)
+      ? db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId)
+      : currentProject(db, req);
+    if (!project) throw new HttpError(404, "Project not found");
+    const result = await cleanupProjectDuplicates(root, project, db);
     send(res, 200, result);
     return;
   }

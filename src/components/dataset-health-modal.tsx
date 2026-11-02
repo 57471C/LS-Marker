@@ -3,8 +3,10 @@ import {
   AlertTriangle,
   BarChart3,
   CheckCircle2,
+  Copy,
   Image as ImageIcon,
   Layers,
+  Trash2,
   X,
 } from "lucide-react";
 import type { ProjectHealthResult } from "@/lib/label-client";
@@ -12,9 +14,10 @@ import type { ProjectHealthResult } from "@/lib/label-client";
 type DatasetHealthModalProps = {
   health: ProjectHealthResult;
   onClose: () => void;
+  onOpenDuplicates?: () => void;
 };
 
-export function DatasetHealthModal({ health, onClose }: DatasetHealthModalProps) {
+export function DatasetHealthModal({ health, onClose, onOpenDuplicates }: DatasetHealthModalProps) {
   const { summary, classes } = health;
 
   const missingClasses = classes.filter((c) => c.status === "missing");
@@ -197,6 +200,40 @@ export function DatasetHealthModal({ health, onClose }: DatasetHealthModalProps)
               No classes registered for this project.
             </div>
           )}
+
+          {/* Duplicate Files Warning */}
+          {health.duplicates && health.duplicates.totalDuplicates > 0 ? (
+            <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 p-3.5 text-xs text-amber-950">
+              <div className="flex items-start gap-2.5">
+                <Copy className="mt-0.5 size-4.5 shrink-0 text-amber-600" aria-hidden="true" />
+                <div className="flex flex-col gap-0.5">
+                  <span className="font-semibold uppercase tracking-wide">
+                    {health.duplicates.totalDuplicates} Duplicate Image(s) Detected
+                  </span>
+                  <p className="leading-relaxed text-amber-800">
+                    Found {health.duplicates.totalDuplicates} exact duplicate file(s) across{" "}
+                    {health.duplicates.duplicateSets} set(s)
+                    {health.duplicates.totalTxtFiles > 0
+                      ? ` (and ${health.duplicates.totalTxtFiles} associated .txt file${
+                          health.duplicates.totalTxtFiles > 1 ? "s" : ""
+                        })`
+                      : ""}
+                    . Exact SHA-256 byte matches. Remove them?
+                  </p>
+                </div>
+              </div>
+              {onOpenDuplicates ? (
+                <button
+                  type="button"
+                  onClick={onOpenDuplicates}
+                  className="press inline-flex shrink-0 items-center gap-1.5 rounded-sm bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-amber-700"
+                >
+                  <Trash2 className="size-3.5" aria-hidden="true" />
+                  <span>Clean Up</span>
+                </button>
+              ) : null}
+            </div>
+          ) : null}
 
           {/* Separate Part Dimensions Warning (does not block All Classes Healthy) */}
           {missingDimCount > 0 && (

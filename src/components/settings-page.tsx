@@ -15,6 +15,7 @@ import {
 import { AppHeader } from "@/components/app-header";
 import { BackupModal } from "@/components/backup-modal";
 import { DatasetHealthModal } from "@/components/dataset-health-modal";
+import { DuplicateCleanupModal } from "@/components/duplicate-cleanup-modal";
 import { MaintenanceModal } from "@/components/maintenance-modal";
 import { RescanModal } from "@/components/rescan-modal";
 import {
@@ -29,6 +30,7 @@ import {
   deleteUser,
   downloadDatasetExport,
   fetchAdmin,
+  fetchCurrentProject,
   fetchMaintenanceStatus,
   fetchProjectHealth,
   fetchProjects,
@@ -39,6 +41,7 @@ import {
   syncProjectImages,
   unlockAdmin,
   type DatasetExportType,
+  type DuplicateDetectionResult,
   type ExifCheckResult,
   type ExportFormat,
   type ExportScope,
@@ -97,6 +100,10 @@ export function SettingsPage() {
 
   const [syncingProjectId, setSyncingProjectId] = useState<number | null>(null);
   const [syncResult, setSyncResult] = useState<SyncImagesResult | null>(null);
+
+  const [duplicateProjectId, setDuplicateProjectId] = useState<number | null>(null);
+  const [duplicateProjectName, setDuplicateProjectName] = useState<string | null>(null);
+  const [duplicatesResult, setDuplicatesResult] = useState<DuplicateDetectionResult | null>(null);
 
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [isMaintenanceModalOpen, setIsMaintenanceModalOpen] = useState(false);
@@ -1329,11 +1336,54 @@ export function SettingsPage() {
         ) : null}
 
         {healthResult ? (
-          <DatasetHealthModal health={healthResult} onClose={() => setHealthResult(null)} />
+          <DatasetHealthModal
+            health={healthResult}
+            onClose={() => setHealthResult(null)}
+            onOpenDuplicates={() => {
+              if (healthResult.duplicates) {
+                setDuplicateProjectId(healthResult.projectId ?? null);
+                setDuplicateProjectName(healthResult.projectName);
+                setDuplicatesResult(healthResult.duplicates);
+              }
+            }}
+          />
         ) : null}
 
         {syncResult ? (
-          <RescanModal result={syncResult} onClose={() => setSyncResult(null)} />
+          <RescanModal
+            result={syncResult}
+            onClose={() => setSyncResult(null)}
+            onOpenDuplicates={() => {
+              if (syncResult.duplicates) {
+                setDuplicateProjectId(syncResult.projectId);
+                setDuplicateProjectName(syncResult.projectName);
+                setDuplicatesResult(syncResult.duplicates);
+              }
+            }}
+          />
+        ) : null}
+
+        {duplicatesResult ? (
+          <DuplicateCleanupModal
+            isOpen={true}
+            projectId={duplicateProjectId ?? undefined}
+            projectName={duplicateProjectName ?? undefined}
+            duplicates={duplicatesResult}
+            onClose={() => setDuplicatesResult(null)}
+            onCleanupComplete={async () => {
+              const nextProjects = await fetchProjects();
+              setProjects(nextProjects);
+              await fetchCurrentProject().catch(() => null);
+              if (duplicateProjectId) {
+                try {
+                  const updatedHealth = await fetchProjectHealth(duplicateProjectId);
+                  setHealthResult(updatedHealth);
+                } catch {
+                  /* ignore */
+                }
+              }
+            }}
+          />
         ) : null}
 
         <BackupModal isOpen={isBackupModalOpen} onClose={() => setIsBackupModalOpen(false)} />

@@ -778,11 +778,50 @@ export type ProjectHealthSummary = {
   missingDimensionsCount?: number;
 };
 
+export type DuplicateFileMeta = {
+  relPath: string;
+  status: string;
+  boxesCount: number;
+  hasTxt: boolean;
+  size: number;
+};
+
+export type DuplicateGroup = {
+  hash: string;
+  kept: DuplicateFileMeta;
+  extras: DuplicateFileMeta[];
+};
+
+export type DuplicateDetectionResult = {
+  duplicateSets: number;
+  totalDuplicates: number;
+  totalTxtFiles: number;
+  groups: DuplicateGroup[];
+};
+
+export type DuplicateCleanupLogItem = {
+  relPath: string;
+  imageDeleted: boolean;
+  labelDeleted: boolean;
+  hasTxt: boolean;
+  status: string;
+  kept: string;
+  hash: string;
+};
+
+export type DuplicateCleanupResult = {
+  ok: boolean;
+  removedCount: number;
+  removed: DuplicateCleanupLogItem[];
+  message: string;
+};
+
 export type ProjectHealthResult = {
   projectName: string;
   projectId?: number;
   summary: ProjectHealthSummary;
   classes: ClassHealthStat[];
+  duplicates?: DuplicateDetectionResult | null;
 };
 
 export async function fetchProjectHealth(projectId?: number): Promise<ProjectHealthResult> {
@@ -801,6 +840,7 @@ export type SyncImagesResult = {
   missingCompleted: number;
   restored: number;
   totalInProject: number;
+  duplicates?: DuplicateDetectionResult | null;
 };
 
 export async function syncProjectImages(projectId: number): Promise<SyncImagesResult> {
@@ -813,6 +853,25 @@ export async function syncProjectImages(projectId: number): Promise<SyncImagesRe
 }
 
 export const rescanProjectImages = syncProjectImages;
+
+export async function fetchProjectDuplicates(
+  projectId?: number,
+): Promise<DuplicateDetectionResult> {
+  const qs = projectId ? `?id=${projectId}` : "";
+  const res = await fetch(api(`/api/project/duplicates${qs}`));
+  return asJson<DuplicateDetectionResult>(res);
+}
+
+export async function cleanupProjectDuplicates(
+  projectId?: number,
+): Promise<DuplicateCleanupResult> {
+  const res = await fetch(api("/api/project/cleanup-duplicates"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(projectId ? { id: projectId, projectId } : {}),
+  });
+  return asJson<DuplicateCleanupResult>(res);
+}
 
 export type BackupStatusResult = {
   activeCount: number;
