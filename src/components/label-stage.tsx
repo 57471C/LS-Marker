@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { Check, Loader2, RotateCcw, Scissors, X } from "lucide-react";
 import { inkOn } from "@/lib/class-color";
 import {
   encodeSam2Image,
@@ -31,7 +32,57 @@ type Drag =
   | { kind: "draw"; classId: number; x0: number; y0: number; x1: number; y1: number }
   | { kind: "move"; key: string; dx: number; dy: number }
   | { kind: "resize"; key: string; anchorX: number; anchorY: number }
-  | { kind: "vertex"; key: string; index: number };
+  | { kind: "vertex"; key: string; index: number }
+  | { kind: "crop"; x0: number; y0: number; x1: number; y1: number };
+
+export type CropRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export function computeSnappedCrop(
+  draft: { x0: number; y0: number; x1: number; y1: number },
+  natural: { w: number; h: number },
+): CropRect {
+  const x0Px = draft.x0 * natural.w;
+  const y0Px = draft.y0 * natural.h;
+  const x1Px = draft.x1 * natural.w;
+  const y1Px = draft.y1 * natural.h;
+
+  const rawW = Math.abs(x1Px - x0Px);
+  const rawH = Math.abs(y1Px - y0Px);
+
+  let snappedW = Math.floor(rawW / 32) * 32;
+  if (snappedW < 32) {
+    snappedW = Math.min(32, Math.floor(natural.w / 32) * 32 || natural.w);
+  }
+  let snappedH = Math.floor(rawH / 32) * 32;
+  if (snappedH < 32) {
+    snappedH = Math.min(32, Math.floor(natural.h / 32) * 32 || natural.h);
+  }
+
+  const minX = Math.min(x0Px, x1Px);
+  const minY = Math.min(y0Px, y1Px);
+
+  let cropX = Math.round(minX);
+  let cropY = Math.round(minY);
+
+  if (cropX + snappedW > natural.w) {
+    cropX = Math.max(0, natural.w - snappedW);
+  }
+  if (cropY + snappedH > natural.h) {
+    cropY = Math.max(0, natural.h - snappedH);
+  }
+
+  return {
+    x: cropX,
+    y: cropY,
+    width: snappedW,
+    height: snappedH,
+  };
+}
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
@@ -174,6 +225,13 @@ export function LabelStage({
   renderMode = "outline",
   crosshairMode = false,
   sam2Enabled = false,
+  cropMode = false,
+  isCropped = false,
+  cropOriginalDims = null,
+  isCropping = false,
+  onCropConfirm,
+  onCropCancel,
+  onCropReset,
   onSam2Status,
   onSam2Error,
   onChange,
@@ -193,6 +251,13 @@ export function LabelStage({
   renderMode?: "outline" | "filled";
   crosshairMode?: boolean;
   sam2Enabled?: boolean;
+  cropMode?: boolean;
+  isCropped?: boolean;
+  cropOriginalDims?: { width: number; height: number } | null;
+  isCropping?: boolean;
+  onCropConfirm?: (rect: CropRect) => void;
+  onCropCancel?: () => void;
+  onCropReset?: () => void;
   onSam2Status?: (status: Sam2Status) => void;
   onSam2Error?: (message: string) => void;
   onChange: (boxes: StageBox[], options?: { transient?: boolean }) => void;
@@ -211,6 +276,15 @@ export function LabelStage({
   const [draft, setDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(
     null,
   );
+  const [cropDraft, setCropDraft] = useState<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null>(null);
+  const [pendingCrop, setPendingCrop] = useState<CropRect | null>(null);
+  const pendingCropRef = useRef(pendingCrop);
+  pendingCropRef.current = pendingCrop;
   const [polyDraft, setPolyDraft] = useState<[number, number][] | null>(null);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
   const [crosshairOrigin, setCrosshairOrigin] = useState<{ x: number; y: number } | null>(null);
@@ -244,21 +318,28 @@ export function LabelStage({
   const prevToolMode = useRef(toolMode);
   const prevCrosshair = useRef(crosshairMode);
   const prevSam2Enabled = useRef(sam2Enabled);
+  const prevCropMode = useRef(cropMode);
   if (
     prevSrc.current !== src ||
     prevToolMode.current !== toolMode ||
     prevCrosshair.current !== crosshairMode ||
-    prevSam2Enabled.current !== sam2Enabled
+    prevSam2Enabled.current !== sam2Enabled ||
+    prevCropMode.current !== cropMode
   ) {
     if (prevSrc.current !== src || prevCrosshair.current !== crosshairMode) {
       if (crosshairOrigin) {
         setCrosshairOrigin(null);
       }
     }
+    if (prevSrc.current !== src || !cropMode) {
+      if (cropDraft) setCropDraft(null);
+      if (pendingCrop) setPendingCrop(null);
+    }
     if (
       prevSrc.current !== src ||
       prevToolMode.current !== toolMode ||
-      prevSam2Enabled.current !== sam2Enabled
+      prevSam2Enabled.current !== sam2Enabled ||
+      cropMode
     ) {
       if (samPromptPoints.length > 0) {
         setSamPromptPoints([]);
@@ -274,6 +355,7 @@ export function LabelStage({
     prevToolMode.current = toolMode;
     prevCrosshair.current = crosshairMode;
     prevSam2Enabled.current = sam2Enabled;
+    prevCropMode.current = cropMode;
     if (polyDraft) {
       setPolyDraft(null);
     }
@@ -512,6 +594,13 @@ export function LabelStage({
   const runSamPromptsRef = useRef(runSamPrompts);
   runSamPromptsRef.current = runSamPrompts;
 
+  const cropModeRef = useRef(cropMode);
+  cropModeRef.current = cropMode;
+  const onCropCancelRef = useRef(onCropCancel);
+  onCropCancelRef.current = onCropCancel;
+  const onCropConfirmRef = useRef(onCropConfirm);
+  onCropConfirmRef.current = onCropConfirm;
+
   useEffect(() => {
     function typing(target: EventTarget | null): boolean {
       if (!(target instanceof HTMLElement)) return false;
@@ -519,6 +608,27 @@ export function LabelStage({
       return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
     }
     function onKeyDown(event: KeyboardEvent) {
+      if (cropModeRef.current) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          dragRef.current = null;
+          setCropDraft(null);
+          if (pendingCropRef.current) {
+            setPendingCrop(null);
+          } else {
+            onCropCancelRef.current?.();
+          }
+          return;
+        }
+        if (event.key === "Enter" && pendingCropRef.current) {
+          event.preventDefault();
+          event.stopPropagation();
+          onCropConfirmRef.current?.(pendingCropRef.current);
+          return;
+        }
+      }
+
       if (event.key === "Escape") {
         dragRef.current = null;
         setDraft(null);
@@ -642,6 +752,19 @@ export function LabelStage({
     dragRef.current = null;
     setDraft(null);
     if (!drag) return;
+    if (drag.kind === "crop") {
+      setCropDraft(null);
+      if (natural) {
+        const snapped = computeSnappedCrop(
+          { x0: drag.x0, y0: drag.y0, x1: drag.x1, y1: drag.y1 },
+          natural,
+        );
+        if (snapped.width >= 32 && snapped.height >= 32) {
+          setPendingCrop(snapped);
+        }
+      }
+      return;
+    }
     if (drag.kind === "draw") {
       const moved = Math.hypot(drag.x1 - drag.x0, drag.y1 - drag.y0);
       const { minW, minH } = getMinDimension(natural);
@@ -736,6 +859,22 @@ export function LabelStage({
       (!polyDraftRef.current || polyDraftRef.current.length === 0)
     ) {
       setCrosshairOrigin({ x: here.x, y: here.y });
+    }
+
+    if (cropMode) {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      dragRef.current = {
+        kind: "crop",
+        x0: here.x,
+        y0: here.y,
+        x1: here.x,
+        y1: here.y,
+      };
+      setCropDraft({ x0: here.x, y0: here.y, x1: here.x, y1: here.y });
+      setPendingCrop(null);
+      return;
     }
 
     if (readOnly) {
@@ -898,6 +1037,12 @@ export function LabelStage({
     const drag = dragRef.current;
     if (!drag) return;
 
+    if (drag.kind === "crop") {
+      drag.x1 = here.x;
+      drag.y1 = here.y;
+      setCropDraft({ x0: drag.x0, y0: drag.y0, x1: here.x, y1: here.y });
+      return;
+    }
     if (drag.kind === "draw") {
       drag.x1 = here.x;
       drag.y1 = here.y;
@@ -984,6 +1129,13 @@ export function LabelStage({
     [natural],
   );
 
+  const activeCrop =
+    cropMode && natural ? (cropDraft ? computeSnappedCrop(cropDraft, natural) : pendingCrop) : null;
+  const normCropX = activeCrop && natural && natural.w > 0 ? activeCrop.x / natural.w : 0;
+  const normCropY = activeCrop && natural && natural.h > 0 ? activeCrop.y / natural.h : 0;
+  const normCropW = activeCrop && natural && natural.w > 0 ? activeCrop.width / natural.w : 0;
+  const normCropH = activeCrop && natural && natural.h > 0 ? activeCrop.height / natural.h : 0;
+
   const draftBox =
     draft && activeClassId != null
       ? fromCorners(
@@ -1029,7 +1181,9 @@ export function LabelStage({
         <div
           ref={overlayRef}
           className={`absolute touch-none ${
-            spaceMode === "off" && (crosshairMode || sam2Enabled) ? "cursor-crosshair" : ""
+            spaceMode === "off" && (crosshairMode || sam2Enabled || cropMode)
+              ? "cursor-crosshair"
+              : ""
           }`}
           style={placed}
           onPointerDown={onPointerDown}
@@ -1288,6 +1442,59 @@ export function LabelStage({
                 />
               </g>
             ) : null}
+
+            {/* Lossless Crop Selection Preview */}
+            {cropMode && activeCrop && natural ? (
+              <g className="pointer-events-none">
+                {/* Darkened overlay outside the crop region */}
+                <path
+                  d={`M0,0 L1000,0 L1000,1000 L0,1000 Z M${normCropX * 1000},${normCropY * 1000} L${normCropX * 1000},${(normCropY + normCropH) * 1000} L${(normCropX + normCropW) * 1000},${(normCropY + normCropH) * 1000} L${(normCropX + normCropW) * 1000},${normCropY * 1000} Z`}
+                  fillRule="evenodd"
+                  fill="rgba(0, 0, 0, 0.65)"
+                />
+                {/* Snapped crop rectangle */}
+                <rect
+                  x={normCropX * 1000}
+                  y={normCropY * 1000}
+                  width={normCropW * 1000}
+                  height={normCropH * 1000}
+                  fill="none"
+                  stroke="#f59e0b"
+                  strokeWidth={2 / view.zoom}
+                  strokeDasharray={`${6 / view.zoom} ${3 / view.zoom}`}
+                  vectorEffect="non-scaling-stroke"
+                />
+                {/* Corner crop tick marks */}
+                <path
+                  d={`M${normCropX * 1000},${(normCropY + Math.min(normCropH * 0.15, 0.04)) * 1000} L${normCropX * 1000},${normCropY * 1000} L${(normCropX + Math.min(normCropW * 0.15, 0.04)) * 1000},${normCropY * 1000}`}
+                  fill="none"
+                  stroke="#fbbf24"
+                  strokeWidth={3.5 / view.zoom}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <path
+                  d={`M${(normCropX + normCropW - Math.min(normCropW * 0.15, 0.04)) * 1000},${normCropY * 1000} L${(normCropX + normCropW) * 1000},${normCropY * 1000} L${(normCropX + normCropW) * 1000},${(normCropY + Math.min(normCropH * 0.15, 0.04)) * 1000}`}
+                  fill="none"
+                  stroke="#fbbf24"
+                  strokeWidth={3.5 / view.zoom}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <path
+                  d={`M${normCropX * 1000},${(normCropY + normCropH - Math.min(normCropH * 0.15, 0.04)) * 1000} L${normCropX * 1000},${(normCropY + normCropH) * 1000} L${(normCropX + Math.min(normCropW * 0.15, 0.04)) * 1000},${(normCropY + normCropH) * 1000}`}
+                  fill="none"
+                  stroke="#fbbf24"
+                  strokeWidth={3.5 / view.zoom}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <path
+                  d={`M${(normCropX + normCropW - Math.min(normCropW * 0.15, 0.04)) * 1000},${(normCropY + normCropH) * 1000} L${(normCropX + normCropW) * 1000},${(normCropY + normCropH) * 1000} L${(normCropX + normCropW) * 1000},${(normCropY + normCropH - Math.min(normCropH * 0.15, 0.04)) * 1000}`}
+                  fill="none"
+                  stroke="#fbbf24"
+                  strokeWidth={3.5 / view.zoom}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </g>
+            ) : null}
           </svg>
 
           {/* HTML marks for boxes and labels */}
@@ -1447,6 +1654,101 @@ export function LabelStage({
                 : `${Math.round(cursorPos.x * natural.w)}, ${Math.round(cursorPos.y * natural.h)} px`}
             </div>
           ) : null}
+
+          {/* HTML live size badge for active crop */}
+          {cropMode && activeCrop && natural ? (
+            <div
+              className="pointer-events-none absolute z-40 select-none font-mono text-xs"
+              style={{
+                left: `${normCropX * 100}%`,
+                top: `${normCropY * 100}%`,
+                transform: "translateY(-100%) translateY(-6px)",
+              }}
+            >
+              <div className="inline-flex items-center gap-1.5 rounded-sm border border-amber-500/80 bg-ink/90 px-2 py-0.5 text-[11px] font-semibold text-amber-300 shadow-md backdrop-blur-xs">
+                <span>
+                  {activeCrop.width} × {activeCrop.height} px
+                </span>
+                <span className="font-normal text-amber-400/70">
+                  ({activeCrop.width / 32}×{activeCrop.height / 32} grid • ÷32)
+                </span>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Floating Crop Control Bar (docked in frameRef so it does not scale with pan/zoom) */}
+      {cropMode ? (
+        <div className="pointer-events-auto absolute bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-line bg-surface/95 px-3.5 py-2 shadow-2xl backdrop-blur-md">
+          {pendingCrop ? (
+            <>
+              <div className="flex items-center gap-1.5 pr-1 font-mono text-xs">
+                <span className="font-semibold text-ink">
+                  {pendingCrop.width} × {pendingCrop.height} px
+                </span>
+                <span className="text-[11px] text-muted">
+                  ({pendingCrop.width / 32}×{pendingCrop.height / 32} grid)
+                </span>
+              </div>
+              <button
+                type="button"
+                disabled={isCropping}
+                onClick={() => onCropConfirm?.(pendingCrop)}
+                className="press inline-flex h-8 items-center gap-1.5 rounded-sm bg-amber-500 px-3 text-xs font-semibold text-ink hover:bg-amber-400 disabled:opacity-50"
+              >
+                {isCropping ? (
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Check className="size-3.5" aria-hidden="true" />
+                )}
+                <span>Confirm Crop</span>
+              </button>
+              <button
+                type="button"
+                disabled={isCropping}
+                onClick={() => {
+                  setPendingCrop(null);
+                  onCropCancel?.();
+                }}
+                className="press inline-flex h-8 items-center gap-1 rounded-sm border border-line bg-surface px-2.5 text-xs text-muted hover:bg-surface-hover hover:text-ink disabled:opacity-50"
+              >
+                <X className="size-3.5" aria-hidden="true" />
+                <span>Cancel</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-1.5 text-xs text-muted">
+                <Scissors className="size-3.5 text-amber-500" aria-hidden="true" />
+                <span>Draw rectangle on image to crop (snaps to ÷32)</span>
+              </div>
+              {isCropped ? (
+                <button
+                  type="button"
+                  disabled={isCropping}
+                  onClick={() => onCropReset?.()}
+                  className="press ml-1 inline-flex h-8 items-center gap-1.5 rounded-sm border border-amber-600/50 bg-amber-500/10 px-2.5 text-xs font-medium text-amber-400 hover:bg-amber-500/20 disabled:opacity-50"
+                  title="Reset to original uncropped photo"
+                >
+                  <RotateCcw className="size-3.5" aria-hidden="true" />
+                  <span>
+                    Reset to Original
+                    {cropOriginalDims
+                      ? ` (${cropOriginalDims.width}×${cropOriginalDims.height})`
+                      : ""}
+                  </span>
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => onCropCancel?.()}
+                className="press inline-flex h-8 items-center rounded-sm px-2 text-xs text-muted hover:bg-surface-hover hover:text-ink"
+              >
+                Cancel (Esc)
+              </button>
+            </>
+          )}
         </div>
       ) : null}
     </div>

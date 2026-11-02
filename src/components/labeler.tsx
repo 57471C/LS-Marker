@@ -14,6 +14,7 @@ import {
   History,
   Loader2,
   Repeat,
+  Scissors,
   Sparkles,
   Trash2,
   Unlock,
@@ -34,8 +35,10 @@ import {
   claimImage,
   claimImageById,
   completeImage,
+  cropImage,
   fetchAdmin,
   fetchCatalogue,
+  fetchCropInfo,
   fetchLabel,
   fetchNextImage,
   fetchNextReviewImage,
@@ -43,10 +46,13 @@ import {
   releaseIncomplete,
   saveLabel,
   submitReviewAction,
+  uncropImage,
   unlockApprovedImage,
   type Box,
   type Catalogue,
   type ClassRow,
+  type CropInfo,
+  type CropRect,
   type ImageRow,
   type PhotoStatus,
 } from "@/lib/label-client";
@@ -199,6 +205,10 @@ export function Labeler() {
   const [toolMode, setToolMode] = useState<"box" | "polygon">("box");
   const [renderMode, setRenderMode] = useState<"outline" | "filled">("outline");
   const [crosshairMode, setCrosshairMode] = useState(false);
+  const [cropMode, setCropMode] = useState(false);
+  const [isCropping, setIsCropping] = useState(false);
+  const [cropInfo, setCropInfo] = useState<CropInfo | null>(null);
+  const [imageVersion, setImageVersion] = useState<number>(0);
   const [sam2Enabled, setSam2Enabled] = useState(false);
   const [sam2Status, setSam2Status] = useState<Sam2Status>({ state: "idle" });
   const [samModelState, setSamModelState] = useState<SamModelStateSnapshot>(() =>
@@ -487,6 +497,26 @@ export function Labeler() {
     };
   }, [ready, folderOk, imageName, folderKey]);
 
+  useEffect(() => {
+    void imageVersion;
+    setCropMode(false);
+    if (!imageName) {
+      setCropInfo(null);
+      return;
+    }
+    let cancel = false;
+    fetchCropInfo(imageName)
+      .then((info) => {
+        if (!cancel) setCropInfo(info);
+      })
+      .catch(() => {
+        if (!cancel) setCropInfo(null);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [imageName, imageVersion]);
+
   function labelFor(classId: number): string {
     const row = classes.find((item) => item.id === classId);
     return row ? row.ic : `#${classId}`;
@@ -585,6 +615,58 @@ export function Labeler() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Image claimed by another user");
       return false;
+    }
+  }
+
+  async function handleCropConfirm(rect: CropRect) {
+    if (!current || isCropping) return;
+    if (!isReviewMode && current.claimedBy !== username) {
+      await ensureClaimed();
+    }
+    setIsCropping(true);
+    setStatus("Cropping image losslessly…");
+    try {
+      const result = await cropImage(current.name, rect);
+      setImageVersion(Date.now());
+      setCropMode(false);
+      const nextBoxes = result.boxes.map((b) => ({ ...b, key: newId() }));
+      undoStackRef.current = [];
+      committedSnapshotRef.current = { boxes: nextBoxes, selectedKey: null };
+      setBoxes(nextBoxes);
+      setSaved(serialize(nextBoxes));
+      const info = await fetchCropInfo(current.name);
+      setCropInfo(info);
+      setStatus(`Image cropped to ${result.width} × ${result.height} px`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Crop failed");
+    } finally {
+      setIsCropping(false);
+    }
+  }
+
+  async function handleCropReset() {
+    if (!current || isCropping) return;
+    if (!isReviewMode && current.claimedBy !== username) {
+      await ensureClaimed();
+    }
+    setIsCropping(true);
+    setStatus("Restoring original image…");
+    try {
+      const result = await uncropImage(current.name);
+      setImageVersion(Date.now());
+      setCropMode(false);
+      const nextBoxes = result.boxes.map((b) => ({ ...b, key: newId() }));
+      undoStackRef.current = [];
+      committedSnapshotRef.current = { boxes: nextBoxes, selectedKey: null };
+      setBoxes(nextBoxes);
+      setSaved(serialize(nextBoxes));
+      const info = await fetchCropInfo(current.name);
+      setCropInfo(info);
+      setStatus("Image restored to original uncropped dimensions");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Reset failed");
+    } finally {
+      setIsCropping(false);
     }
   }
 
@@ -1346,8 +1428,8 @@ export function Labeler() {
             {current && catalogue?.folderOk ? (
               <div className="relative h-full min-h-72">
                 <LabelStage
-                  key={`${folderKey}/${current.name}`}
-                  src={imageSrc(current.name)}
+                  key={`${folderKey}/${current.name}/${imageVersion}`}
+                  src={imageSrc(current.name) + (imageVersion ? `&v=${imageVersion}` : "")}
                   alt={current.name}
                   boxes={boxes}
                   hiddenKeys={hiddenKeys}
@@ -1357,6 +1439,13 @@ export function Labeler() {
                   renderMode={renderMode}
                   crosshairMode={crosshairMode}
                   sam2Enabled={sam2Enabled}
+                  cropMode={cropMode}
+                  isCropped={Boolean(cropInfo?.isCropped)}
+                  cropOriginalDims={cropInfo?.original ?? null}
+                  isCropping={isCropping}
+                  onCropConfirm={handleCropConfirm}
+                  onCropCancel={() => setCropMode(false)}
+                  onCropReset={handleCropReset}
                   onSam2Status={(st) => {
                     setSam2Status(st);
                     if (st.state !== "idle") {
@@ -1505,6 +1594,31 @@ export function Labeler() {
                     onClick={() => setCrosshairMode((v) => !v)}
                   >
                     <Crosshair className="size-4 shrink-0" aria-hidden="true" />
+                  </button>
+
+                  {/* Lossless ROI Crop Tool (Scissors) */}
+                  <button
+                    type="button"
+                    disabled={locked}
+                    className={`press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border ${
+                      cropMode
+                        ? "border-amber-400 bg-amber-100 text-amber-950 dark:border-amber-700 dark:bg-amber-950/70 dark:text-amber-200"
+                        : cropInfo?.isCropped
+                          ? "border-amber-500/60 bg-amber-500/15 text-amber-500 hover:bg-amber-500/25"
+                          : "border-line bg-surface text-ink hover:bg-surface-hover"
+                    } disabled:opacity-40`}
+                    title={
+                      cropMode
+                        ? "Crop mode active (Drag on canvas to define ROI • Esc to cancel)"
+                        : cropInfo?.isCropped
+                          ? `Crop ROI (Currently cropped to ${cropInfo.current.width}×${cropInfo.current.height} • Click to adjust or reset)`
+                          : "Crop ROI (Trim image to relevant region before labeling)"
+                    }
+                    aria-label="Crop ROI tool"
+                    aria-pressed={cropMode}
+                    onClick={() => setCropMode((v) => !v)}
+                  >
+                    <Scissors className="size-4 shrink-0" aria-hidden="true" />
                   </button>
 
                   {/* SAM2.1 Client-Side Polygon Tracing Toggle ("Trace") */}

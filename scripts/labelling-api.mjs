@@ -3008,6 +3008,8 @@ export async function catalogue(root, project) {
           : row.status === "incomplete"
             ? "incomplete"
             : "open";
+      const origPath = path.join(resolvedFolder, ".originals", row.file_path);
+      const isCropped = fs.existsSync(origPath);
       return {
         id: row.id,
         project_id: row.project_id,
@@ -3030,6 +3032,7 @@ export async function catalogue(root, project) {
         is_claimed: isClaimed,
         held_by: activeHolder,
         held_minutes_remaining: heldMinutes,
+        is_cropped: isCropped,
       };
     });
   }
@@ -4734,6 +4737,258 @@ export async function handle(req, res, url, root) {
         customFileName,
       );
     }
+    return;
+  }
+
+  if (pathname === "/api/image/crop-info" && method === "GET") {
+    const db = await getDb(root);
+    const project = requireProject(db, req);
+    const resolvedFolder = path.resolve(root, project.folder);
+    const error = folderError(resolvedFolder);
+    if (error) throw new HttpError(400, error);
+
+    const name = url.searchParams.get("name") || "";
+    const imageFull = resolveInside(resolvedFolder, name);
+    if (!fs.existsSync(imageFull)) throw new HttpError(404, "Image not found");
+
+    const originalsDir = path.join(resolvedFolder, ".originals");
+    const origFull = path.join(originalsDir, name);
+    const isCropped = fs.existsSync(origFull);
+
+    const currentMeta = await sharp(imageFull).rotate().metadata();
+    let originalMeta = null;
+    if (isCropped) {
+      originalMeta = await sharp(origFull).rotate().metadata();
+    }
+
+    send(res, 200, {
+      isCropped,
+      current: { width: currentMeta.width || 0, height: currentMeta.height || 0 },
+      original: originalMeta
+        ? { width: originalMeta.width || 0, height: originalMeta.height || 0 }
+        : null,
+    });
+    return;
+  }
+
+  if (pathname === "/api/image/crop" && method === "POST") {
+    const db = await getDb(root);
+    const user = currentUser(db, req);
+    if (!user) throw new HttpError(401, "Sign in");
+
+    const project = requireProject(db, req);
+    const resolvedFolder = path.resolve(root, project.folder);
+    const error = folderError(resolvedFolder);
+    if (error) throw new HttpError(400, error);
+
+    const body = await readBody(req);
+    const name = body.name || "";
+    const imageFull = resolveInside(resolvedFolder, name);
+    if (!fs.existsSync(imageFull) || !fs.statSync(imageFull).isFile()) {
+      throw new HttpError(404, "Image not found");
+    }
+
+    const imgRow = db
+      .prepare("SELECT id, status FROM images WHERE project_id = ? AND file_path = ?")
+      .get(project.id, name);
+    if (imgRow && imgRow.status === "approved") {
+      throw new HttpError(
+        403,
+        "Photo is approved and locked. Must be unlocked by an admin or reviewer to edit.",
+      );
+    }
+
+    const rect = body.rect;
+    if (!rect || typeof rect.width !== "number" || typeof rect.height !== "number") {
+      throw new HttpError(400, "Missing or invalid crop rectangle");
+    }
+
+    // Inspect image metadata
+    const meta = await sharp(imageFull).rotate().metadata();
+    const origW = meta.width;
+    const origH = meta.height;
+    if (!origW || !origH) throw new HttpError(400, "Cannot read image dimensions");
+
+    // Preserve untouched original in .originals folder for lossless reversibility
+    const originalsDir = path.join(resolvedFolder, ".originals");
+    const origFull = path.join(originalsDir, name);
+    if (!fs.existsSync(origFull)) {
+      fs.mkdirSync(path.dirname(origFull), { recursive: true });
+      fs.copyFileSync(imageFull, origFull);
+      const labelFile = labelFileFor(imageFull);
+      if (fs.existsSync(labelFile)) {
+        fs.copyFileSync(labelFile, `${origFull}.txt`);
+      }
+    }
+
+    let left = Math.round(Number(rect.x) || 0);
+    let top = Math.round(Number(rect.y) || 0);
+    let width = Math.round(Number(rect.width));
+    let height = Math.round(Number(rect.height));
+
+    // Ensure snapped to multiple of 32 and clamped to bounds
+    width = Math.floor(width / 32) * 32 || 32;
+    height = Math.floor(height / 32) * 32 || 32;
+
+    if (width > origW) width = Math.floor(origW / 32) * 32 || origW;
+    if (height > origH) height = Math.floor(origH / 32) * 32 || origH;
+
+    left = Math.max(0, Math.min(origW - width, left));
+    top = Math.max(0, Math.min(origH - height, top));
+
+    // Perform lossless crop with Sharp
+    const ext = path.extname(imageFull).toLowerCase();
+    let transformer = sharp(imageFull).rotate().extract({ left, top, width, height });
+
+    if (ext === ".png") {
+      transformer = transformer.png({ compressionLevel: 9 });
+    } else if (ext === ".webp") {
+      transformer = transformer.webp({ lossless: true, quality: 100 });
+    } else if (ext === ".tif" || ext === ".tiff") {
+      transformer = transformer.tiff({ compression: "deflate" });
+    } else {
+      transformer = transformer.jpeg({
+        quality: 100,
+        chromaSubsampling: "4:4:4",
+        trellisQuantisation: false,
+        overshootDeringing: false,
+        optimizeScans: false,
+      });
+    }
+
+    const tmpPath = `${imageFull}.crop.tmp`;
+    await transformer.toFile(tmpPath);
+    fs.renameSync(tmpPath, imageFull);
+
+    // Save crop metadata
+    const metaPath = `${origFull}.meta.json`;
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify(
+        {
+          cropX: left,
+          cropY: top,
+          cropW: width,
+          cropH: height,
+          origW,
+          origH,
+          croppedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+    );
+
+    // Remap existing labels if any
+    const labelFile = labelFileFor(imageFull);
+    let remappedBoxes = [];
+    if (fs.existsSync(labelFile)) {
+      const existingBoxes = readBoxes(labelFile);
+      const r6 = (n) => Math.round(n * 1e6) / 1e6;
+      remappedBoxes = existingBoxes
+        .map((box) => {
+          const bMinX = (box.x - box.w / 2) * origW;
+          const bMaxX = (box.x + box.w / 2) * origW;
+          const bMinY = (box.y - box.h / 2) * origH;
+          const bMaxY = (box.y + box.h / 2) * origH;
+
+          if (bMaxX <= left || bMinX >= left + width || bMinY <= top || bMinY >= top + height) {
+            return null;
+          }
+
+          const newMinX = Math.max(0, bMinX - left);
+          const newMaxX = Math.min(width, bMaxX - left);
+          const newMinY = Math.max(0, bMinY - top);
+          const newMaxY = Math.min(height, bMaxY - top);
+
+          if (newMaxX - newMinX < 2 || newMaxY - newMinY < 2) return null;
+
+          const newW = (newMaxX - newMinX) / width;
+          const newH = (newMaxY - newMinY) / height;
+          const newX = (newMinX + newMaxX) / (2 * width);
+          const newY = (newMinY + newMaxY) / (2 * height);
+
+          let newPoints;
+          if (Array.isArray(box.points) && box.points.length >= 3) {
+            newPoints = box.points.map(([px, py]) => [
+              clamp(r6((px * origW - left) / width)),
+              clamp(r6((py * origH - top) / height)),
+            ]);
+          }
+
+          return {
+            classId: box.classId,
+            x: clamp(r6(newX)),
+            y: clamp(r6(newY)),
+            w: clamp(r6(newW)),
+            h: clamp(r6(newH)),
+            points: newPoints,
+          };
+        })
+        .filter(Boolean);
+
+      const lines = remappedBoxes.map(formatBoxLine);
+      fs.writeFileSync(labelFile, lines.length ? `${lines.join("\n")}\n` : "");
+    }
+
+    send(res, 200, {
+      ok: true,
+      width,
+      height,
+      boxes: remappedBoxes,
+    });
+    return;
+  }
+
+  if (pathname === "/api/image/uncrop" && method === "POST") {
+    const db = await getDb(root);
+    const user = currentUser(db, req);
+    if (!user) throw new HttpError(401, "Sign in");
+
+    const project = requireProject(db, req);
+    const resolvedFolder = path.resolve(root, project.folder);
+    const error = folderError(resolvedFolder);
+    if (error) throw new HttpError(400, error);
+
+    const body = await readBody(req);
+    const name = body.name || "";
+    const imageFull = resolveInside(resolvedFolder, name);
+
+    const imgRow = db
+      .prepare("SELECT id, status FROM images WHERE project_id = ? AND file_path = ?")
+      .get(project.id, name);
+    if (imgRow && imgRow.status === "approved") {
+      throw new HttpError(
+        403,
+        "Photo is approved and locked. Must be unlocked by an admin or reviewer to edit.",
+      );
+    }
+
+    const originalsDir = path.join(resolvedFolder, ".originals");
+    const origFull = path.join(originalsDir, name);
+    let restoredBoxes = [];
+
+    if (fs.existsSync(origFull)) {
+      fs.copyFileSync(origFull, imageFull);
+      fs.unlinkSync(origFull);
+
+      const origTxt = `${origFull}.txt`;
+      const labelFile = labelFileFor(imageFull);
+      if (fs.existsSync(origTxt)) {
+        fs.copyFileSync(origTxt, labelFile);
+        fs.unlinkSync(origTxt);
+      }
+      if (fs.existsSync(labelFile)) {
+        restoredBoxes = readBoxes(labelFile);
+      }
+
+      const metaPath = `${origFull}.meta.json`;
+      if (fs.existsSync(metaPath)) {
+        fs.unlinkSync(metaPath);
+      }
+    }
+
+    send(res, 200, { ok: true, boxes: restoredBoxes });
     return;
   }
 

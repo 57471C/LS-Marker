@@ -34,6 +34,7 @@ export type ImageRow = {
   is_claimed?: boolean;
   held_by?: string | null;
   held_minutes_remaining?: number;
+  is_cropped?: boolean;
 };
 export type Box = {
   classId: number;
@@ -923,4 +924,47 @@ export async function executeServerRestart(): Promise<{ ok: boolean; message: st
     headers: { "content-type": "application/json" },
   });
   return asJson(res);
+}
+
+export type CropRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type CropInfo = {
+  isCropped: boolean;
+  original?: { width: number; height: number } | null;
+  current: { width: number; height: number };
+};
+
+export type CropResult = {
+  ok: boolean;
+  width: number;
+  height: number;
+  boxes: Box[];
+};
+
+export async function fetchCropInfo(name: string): Promise<CropInfo> {
+  const res = await fetch(api(`/api/image/crop-info?name=${encodeURIComponent(name)}`));
+  return asJson<CropInfo>(res);
+}
+
+export async function cropImage(name: string, rect: CropRect): Promise<CropResult> {
+  const res = await fetch(api("/api/image/crop"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, rect }),
+  });
+  return asJson<CropResult>(res);
+}
+
+export async function uncropImage(name: string): Promise<{ ok: boolean; boxes: Box[] }> {
+  const res = await fetch(api("/api/image/uncrop"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return asJson<{ ok: boolean; boxes: Box[] }>(res);
 }
