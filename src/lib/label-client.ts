@@ -908,7 +908,7 @@ export async function downloadDatabaseBackup(onProgress?: (bytes: number) => voi
         onProgress?.(loaded);
       }
     }
-    blob = new Blob(chunks, { type: "application/vnd.sqlite3" });
+    blob = new Blob(chunks, { type: "application/sql" });
   } else {
     blob = await res.blob();
     onProgress?.(blob.size);
@@ -918,7 +918,7 @@ export async function downloadDatabaseBackup(onProgress?: (bytes: number) => voi
   const link = document.createElement("a");
   link.href = url;
   const disposition = res.headers.get("content-disposition");
-  let filename = "ls-marker-backup.sqlite";
+  let filename = "ls-marker-backup.sql";
   if (disposition) {
     const match = disposition.match(/filename="?([^";]+)"?/);
     if (match?.[1]) filename = match[1];
@@ -968,6 +968,46 @@ export async function setAiSettings(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ enabled }),
+  });
+  return asJson(res);
+}
+
+export type DbConnectionInfo = {
+  host: string;
+  port: string;
+  database: string;
+  user: string;
+  source: string;
+  maskedUrl: string;
+};
+
+export async function fetchDbConfig(): Promise<{ info: DbConnectionInfo }> {
+  const res = await fetch(api("/api/system/db-config"));
+  return asJson<{ info: DbConnectionInfo }>(res);
+}
+
+export async function testDbConnection(url: string): Promise<{
+  ok: boolean;
+  version?: string;
+  database?: string;
+  latencyMs?: number;
+  error?: string;
+}> {
+  const res = await fetch(api("/api/system/db-test"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  return asJson(res);
+}
+
+export async function updateDbConfig(
+  url: string,
+): Promise<{ success: boolean; info: DbConnectionInfo }> {
+  const res = await fetch(api("/api/system/db-config"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url }),
   });
   return asJson(res);
 }

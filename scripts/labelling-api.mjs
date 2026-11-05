@@ -6,7 +6,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import sharp from "sharp";
 import tar from "tar-stream";
-import { getDb as getPgDb } from "./db.mjs";
+import {
+  getDb as getPgDb,
+  getDbConnectionInfo,
+  testDbConnection,
+  updateDbConnectionString,
+} from "./db.mjs";
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
@@ -4438,6 +4443,38 @@ export async function handle(req, res, url, root) {
       success: true,
       enabled,
     });
+    return;
+  }
+
+  if (method === "GET" && pathname === "/api/system/db-config") {
+    const info = getDbConnectionInfo(root);
+    send(res, 200, { info });
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/system/db-test") {
+    const db = await getDb(root);
+    const user = await currentUser(db, req);
+    const admin = (await adminOpen(db, req)) || user?.admin === true || user?.username === "admin";
+    if (!admin) throw new HttpError(403, "Forbidden: Admin access required");
+    const body = await readBody(req).catch(() => ({}));
+    const testUrl = typeof body.url === "string" ? body.url.trim() : "";
+    if (!testUrl) throw new HttpError(400, "Database URL required");
+    const result = await testDbConnection(testUrl);
+    send(res, 200, result);
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/system/db-config") {
+    const db = await getDb(root);
+    const user = await currentUser(db, req);
+    const admin = (await adminOpen(db, req)) || user?.admin === true || user?.username === "admin";
+    if (!admin) throw new HttpError(403, "Forbidden: Admin access required");
+    const body = await readBody(req).catch(() => ({}));
+    const newUrl = typeof body.url === "string" ? body.url.trim() : "";
+    if (!newUrl) throw new HttpError(400, "Database URL required");
+    const result = await updateDbConnectionString(root, newUrl);
+    send(res, 200, result);
     return;
   }
 

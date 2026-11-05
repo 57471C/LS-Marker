@@ -91,7 +91,7 @@ export function BackupModal({ isOpen, onClose }: BackupModalProps) {
                 Database Backup
               </h2>
               <p className="font-mono text-xs text-muted">
-                Online SQLite snapshot &amp; active session audit
+                Online PostgreSQL snapshot &amp; active session audit
               </p>
             </div>
           </div>
@@ -162,11 +162,11 @@ export function BackupModal({ isOpen, onClose }: BackupModalProps) {
               <div className="flex flex-col gap-2 rounded-lg border border-line bg-surface p-3.5 text-xs text-muted">
                 <p className="font-medium text-ink">Snapshot details:</p>
                 <ul className="list-inside list-disc space-y-1">
-                  <li>Uses SQLite online backup API (WAL-safe, non-blocking, zero torn pages).</li>
+                  <li>Atomic PostgreSQL transaction dump (safe, non-blocking, zero torn pages).</li>
                   <li>Captures all projects, classes, labels, user accounts, and image claims.</li>
                   <li>
-                    Downloaded as a standalone <code className="font-mono text-ink">.sqlite</code>{" "}
-                    database snapshot.
+                    Downloaded as a standalone <code className="font-mono text-ink">.sql</code>{" "}
+                    database snapshot compatible with psql.
                   </li>
                 </ul>
               </div>

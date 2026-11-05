@@ -3,16 +3,15 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import Database from "better-sqlite3";
+import { getDb } from "./db.mjs";
 import { handle, isMaintenanceMode, setSystemSetting } from "./labelling-api.mjs";
 
 console.log("=== Verifying System Maintenance Mode & Safe Git Pull Safeguards ===\n");
 
 const root = process.cwd();
-const dbPath = path.join(root, "data", "labels.db");
-const db = new Database(dbPath);
+const db = await getDb(root);
 
-const project = db.prepare("SELECT id, name, folder FROM projects LIMIT 1").get();
+const project = await db.prepare("SELECT id, name, folder FROM projects LIMIT 1").get();
 assert(project, "A project must exist in the database for testing");
 console.log(`Using project '${project.name}' (id: ${project.id})`);
 
@@ -22,16 +21,17 @@ const annotatorToken = crypto.randomBytes(16).toString("hex");
 const adminToken = crypto.randomBytes(16).toString("hex");
 const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-const annotatorId = db
+const userRes = await db
   .prepare("INSERT INTO users (username, password_hash, created_at) VALUES (?, 'hash', ?)")
-  .run(annotatorName, expires).lastInsertRowid;
+  .run(annotatorName, expires);
+const annotatorId = userRes.lastInsertRowid;
 
-db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)").run(
-  annotatorToken,
-  annotatorId,
-  expires,
-);
-db.prepare("INSERT INTO admin_sessions (token, expires_at) VALUES (?, ?)").run(adminToken, expires);
+await db
+  .prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)")
+  .run(annotatorToken, annotatorId, expires);
+await db
+  .prepare("INSERT INTO admin_sessions (token, expires_at) VALUES (?, ?)")
+  .run(adminToken, expires);
 
 // Create test image on disk & db
 const projectFolder = path.resolve(root, project.folder);
@@ -39,11 +39,12 @@ const testFileName = `test_maint_${Date.now()}.jpg`;
 const testFilePath = path.join(projectFolder, testFileName);
 fs.writeFileSync(testFilePath, "test image content");
 
-const testImageId = db
+const imgRes = await db
   .prepare(
     "INSERT INTO images (project_id, file_path, name, status, owner, locked_by, locked_at) VALUES (?, ?, ?, 'unlabeled', NULL, NULL, NULL)",
   )
-  .run(project.id, testFileName, testFileName).lastInsertRowid;
+  .run(project.id, testFileName, testFileName);
+const testImageId = imgRes.lastInsertRowid;
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
@@ -93,7 +94,7 @@ try {
   const enableData = await enableRes.json();
   assert.equal(enableData.success, true);
   assert.equal(enableData.maintenance, true);
-  assert.equal(isMaintenanceMode(db), true);
+  assert.equal(await isMaintenanceMode(db), true);
   console.log("✓ Maintenance mode successfully activated in database");
 
   // Test 4: Non-admin mutations blocked with 503 during maintenance
@@ -169,7 +170,7 @@ try {
   const disableData = await disableRes.json();
   assert.equal(disableData.success, true);
   assert.equal(disableData.maintenance, false);
-  assert.equal(isMaintenanceMode(db), false);
+  assert.equal(await isMaintenanceMode(db), false);
   console.log("✓ Maintenance mode successfully deactivated");
 
   // Test 8: Non-admin can claim again after maintenance is disabled
@@ -191,19 +192,18 @@ try {
   console.log("\n🎉 ALL MAINTENANCE MODE & GIT PULL SAFEGUARD CHECKS PASSED!");
 } finally {
   server.close();
-  setSystemSetting(db, "maintenance_mode", "0");
+  await setSystemSetting(db, "maintenance_mode", "0");
   if (fs.existsSync(testFilePath)) {
     try {
       fs.unlinkSync(testFilePath);
     } catch {}
   }
-  db.prepare("DELETE FROM sessions WHERE token = ?").run(annotatorToken);
-  db.prepare("DELETE FROM admin_sessions WHERE token = ?").run(adminToken);
-  db.prepare("DELETE FROM users WHERE id = ?").run(annotatorId);
-  db.prepare("DELETE FROM images WHERE id = ?").run(testImageId);
-  db.prepare("DELETE FROM image_claims WHERE project_id = ? AND rel_path = ?").run(
-    project.id,
-    testFileName,
-  );
-  db.close();
+  await db.prepare("DELETE FROM sessions WHERE token = ?").run(annotatorToken);
+  await db.prepare("DELETE FROM admin_sessions WHERE token = ?").run(adminToken);
+  await db.prepare("DELETE FROM users WHERE id = ?").run(annotatorId);
+  await db.prepare("DELETE FROM images WHERE id = ?").run(testImageId);
+  await db
+    .prepare("DELETE FROM image_claims WHERE project_id = ? AND rel_path = ?")
+    .run(project.id, testFileName);
+  await db.close();
 }
