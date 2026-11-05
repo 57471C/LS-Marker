@@ -247,7 +247,62 @@ export function Labeler() {
   const [paneQueueOpen, setPaneQueueOpen] = useState(true);
   const [paneClassesOpen, setPaneClassesOpen] = useState(true);
   const [paneLayersOpen, setPaneLayersOpen] = useState(true);
+  const [shapesHeight, setShapesHeight] = useState<number>(() => {
+    if (typeof window === "undefined") return 220;
+    try {
+      const saved = localStorage.getItem("ls_marker_shapes_pane_height");
+      if (saved) {
+        const val = Number(saved);
+        if (!Number.isNaN(val) && val >= 60 && val <= 1000) {
+          return val;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 220;
+  });
+  const [isResizingShapes, setIsResizingShapes] = useState(false);
   const [classFilter, setClassFilter] = useState("");
+
+  const handleShapesResizePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = shapesHeight;
+    setIsResizingShapes(true);
+    if (!paneLayersOpen) {
+      setPaneLayersOpen(true);
+    }
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "row-resize";
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const deltaY = startY - ev.clientY;
+      const maxH = Math.max(160, window.innerHeight - 250);
+      const nextH = Math.max(70, Math.min(maxH, Math.round(startH + deltaY)));
+      setShapesHeight(nextH);
+      try {
+        localStorage.setItem("ls_marker_shapes_pane_height", String(nextH));
+      } catch {
+        // ignore
+      }
+    };
+
+    const onPointerUp = () => {
+      setIsResizingShapes(false);
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+  };
 
   // Dimensions inline editing
   const [editingDimsClass, setEditingDimsClass] = useState<ClassRow | null>(null);
@@ -2694,12 +2749,40 @@ export function Labeler() {
             )}
           </div>
 
-          {/* PANE 3: Layer / Shape Deck */}
-          <div className="max-h-[220px] flex flex-col shrink-0 border-t border-[#c8c8c8]">
+          {/* PANE 3: Layer / Shape Deck (Vertically Resizable) */}
+          <div
+            className="flex flex-col shrink-0 overflow-hidden relative"
+            style={{ height: paneLayersOpen ? `${shapesHeight}px` : undefined }}
+          >
+            {/* Vertical resize splitter bar */}
+            <div
+              onPointerDown={handleShapesResizePointerDown}
+              onDoubleClick={() => {
+                setShapesHeight(220);
+                try {
+                  localStorage.setItem("ls_marker_shapes_pane_height", "220");
+                } catch {
+                  // ignore
+                }
+              }}
+              title="Drag to resize Shapes vertically (Double-click to reset)"
+              className={`group/shapes-resizer h-1.5 w-full cursor-row-resize select-none shrink-0 transition-colors border-t border-[#c8c8c8] flex items-center justify-center ${
+                isResizingShapes ? "bg-[#1473e6]" : "bg-[#f5f5f5] hover:bg-[#1473e6]/30"
+              }`}
+            >
+              <div
+                className={`w-8 h-[2px] rounded-full transition-colors ${
+                  isResizingShapes
+                    ? "bg-white"
+                    : "bg-[#a0a0a0] group-hover/shapes-resizer:bg-[#1473e6]"
+                }`}
+              />
+            </div>
+
             <button
               type="button"
               onClick={() => setPaneLayersOpen((v) => !v)}
-              className="h-6 px-2 bg-[#f5f5f5] hover:bg-[#ebebeb] flex items-center justify-between border-b border-[#c8c8c8] text-[11px] font-semibold text-[#282828]"
+              className="h-6 px-2 bg-[#f5f5f5] hover:bg-[#ebebeb] flex items-center justify-between border-b border-[#c8c8c8] text-[11px] font-semibold text-[#282828] shrink-0"
             >
               <span>SHAPES ({boxes.length})</span>
               {paneLayersOpen ? (
