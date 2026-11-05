@@ -125,7 +125,7 @@ export function MaintenanceModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       onClick={(event) => {
         if (event.target === event.currentTarget && !submitting) {
           onClose();
@@ -137,31 +137,31 @@ export function MaintenanceModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="maintenance-modal-title"
-        className="flex w-full max-w-lg flex-col gap-5 rounded-xl border border-line bg-surface p-6 text-ink shadow-2xl"
+        className="flex w-full max-w-lg flex-col gap-4 rounded-[2px] border border-[#c8c8c8] bg-white p-5 text-[#282828] shadow-lg"
       >
-        <div className="flex items-start justify-between gap-4 border-b border-line pb-3">
+        <div className="flex items-start justify-between gap-4 border-b border-[#c8c8c8] pb-3">
           <div className="flex items-center gap-3">
             <div
-              className={`flex size-10 shrink-0 items-center justify-center rounded-full ${
+              className={`flex size-8 shrink-0 items-center justify-center rounded-[2px] ${
                 isMaintenance
-                  ? "border border-amber-300 bg-amber-100 text-amber-950 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
-                  : "border border-blue-300 bg-blue-100 text-blue-950 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-200"
+                  ? "border border-amber-300 bg-amber-50 text-amber-700"
+                  : "border border-blue-200 bg-blue-50 text-[#1473e6]"
               }`}
             >
               {isMaintenance ? (
-                <Wrench className="size-5" aria-hidden="true" />
+                <Wrench className="size-4" aria-hidden="true" />
               ) : (
-                <ShieldAlert className="size-5" aria-hidden="true" />
+                <ShieldAlert className="size-4" aria-hidden="true" />
               )}
             </div>
             <div>
               <h2
                 id="maintenance-modal-title"
-                className="text-base font-semibold tracking-tight text-ink"
+                className="text-sm font-semibold tracking-tight text-[#282828]"
               >
                 System Maintenance Mode
               </h2>
-              <p className="text-xs text-muted">
+              <p className="text-xs text-[#6e6e6e]">
                 Safely pause user operations for database backups and software updates.
               </p>
             </div>
@@ -169,7 +169,7 @@ export function MaintenanceModal({
           <button
             type="button"
             aria-label="Close dialog"
-            className="press inline-flex size-8 items-center justify-center rounded-sm text-muted hover:bg-surface-raised hover:text-ink disabled:opacity-40"
+            className="inline-flex size-7 items-center justify-center rounded-[2px] text-[#6e6e6e] hover:bg-[#e0e0e0] hover:text-[#282828] disabled:opacity-40"
             disabled={submitting}
             onClick={onClose}
           >
@@ -178,7 +178,7 @@ export function MaintenanceModal({
         </div>
 
         {error ? (
-          <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
+          <div className="flex items-center gap-2 rounded-[2px] border border-red-300 bg-red-50 p-2.5 text-xs text-red-700">
             <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
             <span>{error}</span>
           </div>
@@ -187,29 +187,23 @@ export function MaintenanceModal({
         <div className="flex flex-col gap-3">
           {/* Status Banner */}
           {isMaintenance ? (
-            <div className="rounded-lg border border-amber-300 bg-amber-50/80 p-3.5 text-ink dark:border-amber-700/60 dark:bg-amber-950/30">
-              <div className="flex items-center gap-2 font-bold text-xs text-amber-950 dark:text-amber-200">
-                <AlertTriangle
-                  className="size-4 shrink-0 text-amber-600 dark:text-amber-400"
-                  aria-hidden="true"
-                />
+            <div className="rounded-[2px] border border-amber-300 bg-amber-50 p-3 text-[#282828]">
+              <div className="flex items-center gap-2 font-bold text-xs text-amber-800">
+                <AlertTriangle className="size-4 shrink-0 text-amber-600" aria-hidden="true" />
                 <span>MAINTENANCE MODE IS CURRENTLY ACTIVE</span>
               </div>
-              <p className="mt-1.5 text-xs leading-relaxed text-ink/85 dark:text-ink/90">
+              <p className="mt-1 text-xs leading-relaxed text-[#444]">
                 Non-admin annotators cannot claim images, save labels, or alter data. Admins retain
                 full access.
               </p>
             </div>
           ) : (
-            <div className="rounded-lg border border-emerald-300 bg-emerald-50/80 p-3.5 text-ink dark:border-emerald-800/60 dark:bg-emerald-950/30">
-              <div className="flex items-center gap-2 font-bold text-xs text-emerald-950 dark:text-emerald-200">
-                <CheckCircle2
-                  className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400"
-                  aria-hidden="true"
-                />
+            <div className="rounded-[2px] border border-emerald-300 bg-emerald-50 p-3 text-[#282828]">
+              <div className="flex items-center gap-2 font-bold text-xs text-emerald-800">
+                <CheckCircle2 className="size-4 shrink-0 text-emerald-600" aria-hidden="true" />
                 <span>NORMAL OPERATION (Maintenance Mode is OFF)</span>
               </div>
-              <p className="mt-1.5 text-xs leading-relaxed text-ink/85 dark:text-ink/90">
+              <p className="mt-1 text-xs leading-relaxed text-[#444]">
                 Staff can freely claim and label images. Enable maintenance mode before running git
                 pull or applying server updates.
               </p>
@@ -218,25 +212,25 @@ export function MaintenanceModal({
 
           {/* Git Pull & Server Update (Active in Maintenance Mode) */}
           {isMaintenance ? (
-            <div className="rounded-lg border-2 border-amber-400 bg-amber-50/70 p-4 text-ink dark:border-amber-700/60 dark:bg-amber-950/25">
+            <div className="rounded-[2px] border border-[#c8c8c8] bg-[#f9f9f9] p-3 text-[#282828]">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-2.5">
                   <GitBranch
-                    className="mt-0.5 size-5 shrink-0 text-amber-700 dark:text-amber-400"
+                    className="mt-0.5 size-4.5 shrink-0 text-[#1473e6]"
                     aria-hidden="true"
                   />
                   <div>
-                    <h3 className="text-sm font-bold text-ink">Update from GitHub</h3>
-                    <p className="text-xs text-muted">
-                      Pull latest code and restart Vite dev server.
+                    <h3 className="text-xs font-bold text-[#282828]">Update from GitHub</h3>
+                    <p className="text-[11px] text-[#6e6e6e]">
+                      Pull latest code and restart server.
                     </p>
-                    <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted cursor-pointer select-none">
+                    <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-[#6e6e6e] cursor-pointer select-none">
                       <input
                         type="checkbox"
                         checked={forceInstall}
                         disabled={pulling || submitting}
                         onChange={(e) => setForceInstall(e.target.checked)}
-                        className="rounded-xs border-line"
+                        className="rounded-[2px] border-[#c8c8c8]"
                       />
                       <span>Run npm install (automatic if package.json changed)</span>
                     </label>
@@ -246,7 +240,7 @@ export function MaintenanceModal({
                   type="button"
                   disabled={pulling || submitting}
                   onClick={() => void handleGitPull()}
-                  className="press inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-sm bg-amber-600 px-4 text-xs font-bold text-white shadow-xs hover:bg-amber-700 active:bg-amber-800 disabled:opacity-50"
+                  className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-[2px] bg-[#1473e6] px-3 text-xs font-semibold text-white hover:bg-[#0d62c9] disabled:opacity-50"
                 >
                   {pulling ? (
                     <>
@@ -267,33 +261,33 @@ export function MaintenanceModal({
               {pullResult ? (
                 <div className="mt-3 flex flex-col gap-2">
                   <div
-                    className={`flex items-center gap-2 rounded-sm p-2.5 text-xs font-semibold ${
+                    className={`flex items-center gap-2 rounded-[2px] p-2 text-xs font-semibold ${
                       pullResult.success
-                        ? "border border-emerald-300 bg-emerald-100 text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
-                        : "border border-red-300 bg-red-100 text-red-950 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
+                        ? "border border-emerald-300 bg-emerald-50 text-emerald-800"
+                        : "border border-red-300 bg-red-50 text-red-800"
                     }`}
                   >
                     {pullResult.success ? (
-                      <CheckCircle2 className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                      <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />
                     ) : (
-                      <AlertTriangle className="size-4 shrink-0 text-red-600 dark:text-red-400" />
+                      <AlertTriangle className="size-4 shrink-0 text-red-600" />
                     )}
                     <span>{pullResult.message}</span>
                     {countdown !== null ? (
-                      <span className="ml-auto font-mono text-xs font-bold text-emerald-800 dark:text-emerald-300 animate-pulse">
+                      <span className="ml-auto font-mono text-xs font-bold text-emerald-700 animate-pulse">
                         Reloading in {countdown}s…
                       </span>
                     ) : null}
                   </div>
                   {pullResult.packageJsonChanged || pullResult.installed ? (
-                    <p className="text-[11px] font-medium text-emerald-800 dark:text-emerald-300">
+                    <p className="text-[11px] font-medium text-emerald-700">
                       {pullResult.packageJsonChanged
                         ? "Dependencies changed: `npm install` ran automatically before server restart."
                         : "`npm install` completed before server restart."}
                     </p>
                   ) : null}
                   {pullResult.output ? (
-                    <pre className="max-h-36 overflow-auto rounded-sm border border-line bg-surface p-2.5 font-mono text-[11px] leading-tight text-ink/90 whitespace-pre-wrap select-all">
+                    <pre className="max-h-36 overflow-auto rounded-[2px] border border-[#333] bg-[#1e1e1e] p-2.5 font-mono text-[11px] leading-tight text-[#d4d4d4] whitespace-pre-wrap select-all">
                       {pullResult.output}
                     </pre>
                   ) : null}
@@ -304,34 +298,31 @@ export function MaintenanceModal({
 
           {/* Active Sessions Warning */}
           {loading ? (
-            <div className="flex items-center justify-center gap-2 rounded-lg border border-line bg-surface-raised/40 p-4 text-xs text-muted">
-              <Loader2 className="size-4 animate-spin text-muted" aria-hidden="true" />
+            <div className="flex items-center justify-center gap-2 rounded-[2px] border border-[#c8c8c8] bg-[#f9f9f9] p-3 text-xs text-[#6e6e6e]">
+              <Loader2 className="size-3.5 animate-spin text-[#1473e6]" aria-hidden="true" />
               <span>Checking active annotator sessions…</span>
             </div>
           ) : hasActiveSessions ? (
-            <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-900 dark:border-amber-800/40 dark:bg-amber-950/15 dark:text-amber-200">
-              <div className="flex items-center gap-2 font-medium">
-                <Users className="size-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+            <div className="rounded-[2px] border border-amber-300 bg-amber-50 p-3 text-xs text-[#282828]">
+              <div className="flex items-center gap-2 font-semibold text-amber-800">
+                <Users className="size-4 text-amber-600" aria-hidden="true" />
                 <span>
                   {sessions?.activeCount} annotator{sessions?.activeCount === 1 ? "" : "s"}{" "}
                   currently hold active leases:
                 </span>
               </div>
-              <p className="mt-1 font-mono text-xs font-semibold">
+              <p className="mt-1 font-mono text-xs font-semibold text-[#282828]">
                 {sessions?.activeUsers.join(", ")}
               </p>
-              <p className="mt-1 text-muted text-[11px]">
+              <p className="mt-1 text-[#6e6e6e] text-[11px]">
                 Enabling maintenance mode will reject new saves from these sessions until
                 maintenance concludes.
               </p>
             </div>
           ) : (
-            <div className="flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50/70 p-3 text-xs dark:border-emerald-800/60 dark:bg-emerald-950/30">
-              <CheckCircle2
-                className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400"
-                aria-hidden="true"
-              />
-              <span className="font-medium text-emerald-950 dark:text-emerald-100">
+            <div className="flex items-center gap-2 rounded-[2px] border border-emerald-300 bg-emerald-50 p-2.5 text-xs text-[#282828]">
+              <CheckCircle2 className="size-4 shrink-0 text-emerald-600" aria-hidden="true" />
+              <span className="font-medium text-emerald-800">
                 No annotators are currently holding active image leases. Safe to perform
                 maintenance.
               </span>
@@ -339,23 +330,23 @@ export function MaintenanceModal({
           )}
 
           {/* Guidelines */}
-          <div className="rounded-lg border border-line bg-surface-raised/20 p-3 text-xs text-muted">
-            <p className="font-semibold text-ink">What happens in Maintenance Mode:</p>
+          <div className="rounded-[2px] border border-[#c8c8c8] bg-[#f9f9f9] p-3 text-xs text-[#6e6e6e]">
+            <p className="font-semibold text-[#282828]">What happens in Maintenance Mode:</p>
             <ul className="mt-1.5 list-inside list-disc space-y-1">
               <li>Non-admin annotators receive a maintenance notice and cannot mutate data.</li>
               <li>
                 You can safely download database backups and run{" "}
-                <code className="font-mono text-xs">git pull</code>.
+                <code className="font-mono text-xs text-[#282828]">git pull</code>.
               </li>
               <li>You can safely restart the application service with zero data-loss risk.</li>
             </ul>
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-line pt-3">
+        <div className="flex items-center justify-end gap-2 border-t border-[#c8c8c8] pt-3">
           <button
             type="button"
-            className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
+            className="inline-flex h-8 items-center justify-center rounded-[2px] border border-[#c8c8c8] bg-white px-3 text-xs font-medium text-[#282828] hover:bg-[#e0e0e0] disabled:opacity-40"
             disabled={submitting}
             onClick={onClose}
           >
@@ -363,10 +354,10 @@ export function MaintenanceModal({
           </button>
           <button
             type="button"
-            className={`press inline-flex h-9 items-center justify-center gap-2 rounded-sm px-4 text-xs font-semibold shadow-xs disabled:opacity-40 ${
+            className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-[2px] px-3.5 text-xs font-semibold text-white disabled:opacity-40 ${
               isMaintenance
-                ? "bg-emerald-600 text-white hover:bg-emerald-700"
-                : "bg-amber-600 text-white hover:bg-amber-700"
+                ? "bg-emerald-600 hover:bg-emerald-700"
+                : "bg-amber-600 hover:bg-amber-700"
             }`}
             disabled={submitting}
             onClick={() => void handleToggle()}

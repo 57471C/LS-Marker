@@ -64,7 +64,7 @@ export function BackupModal({ isOpen, onClose }: BackupModalProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       onClick={(event) => {
         if (event.target === event.currentTarget && !downloading) {
           onClose();
@@ -75,23 +75,23 @@ export function BackupModal({ isOpen, onClose }: BackupModalProps) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="backup-dialog-title"
-        className="flex w-full max-w-lg flex-col gap-5 rounded-xl border border-line bg-bg p-6 text-ink shadow-2xl"
+        className="flex w-full max-w-lg flex-col gap-4 rounded-[2px] border border-[#c8c8c8] bg-white p-5 text-[#282828] shadow-lg"
       >
         {/* Header */}
-        <div className="flex items-start justify-between gap-4 border-b border-line pb-4">
+        <div className="flex items-start justify-between gap-4 border-b border-[#c8c8c8] pb-3">
           <div className="flex items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-700">
-              <Database className="size-4.5" aria-hidden="true" />
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-[2px] border border-blue-200 bg-blue-50 text-[#1473e6]">
+              <Database className="size-4" aria-hidden="true" />
             </div>
             <div className="flex flex-col gap-0.5">
               <h2
                 id="backup-dialog-title"
-                className="text-base font-semibold tracking-tight text-ink"
+                className="text-sm font-semibold tracking-tight text-[#282828]"
               >
                 Database Backup
               </h2>
-              <p className="font-mono text-xs text-muted">
-                Online SQLite snapshot &amp; active session audit
+              <p className="text-xs text-[#6e6e6e]">
+                Online PostgreSQL snapshot &amp; active session audit
               </p>
             </div>
           </div>
@@ -100,58 +100,58 @@ export function BackupModal({ isOpen, onClose }: BackupModalProps) {
             onClick={onClose}
             disabled={downloading}
             aria-label="Close backup modal"
-            className="press inline-flex size-8 items-center justify-center rounded-md text-muted hover:bg-surface-raised hover:text-ink disabled:opacity-40"
+            className="inline-flex size-7 items-center justify-center rounded-[2px] text-[#6e6e6e] hover:bg-[#e0e0e0] hover:text-[#282828] disabled:opacity-40"
           >
             <X className="size-4" aria-hidden="true" />
           </button>
         </div>
 
         {/* Content Body */}
-        <div className="flex flex-col gap-4 text-sm">
+        <div className="flex flex-col gap-3 text-xs">
           {loading ? (
-            <div className="flex items-center justify-center gap-2.5 py-8 text-muted">
-              <Loader2 className="size-5 animate-spin text-accent" aria-hidden="true" />
+            <div className="flex items-center justify-center gap-2 py-6 text-[#6e6e6e]">
+              <Loader2 className="size-4 animate-spin text-[#1473e6]" aria-hidden="true" />
               <span>Auditing active labeling sessions…</span>
             </div>
           ) : error && !status ? (
-            <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3.5 text-red-600 dark:text-red-400">
-              <p className="font-medium">Failed to check active sessions</p>
-              <p className="mt-1 text-xs opacity-90">{error}</p>
+            <div className="rounded-[2px] border border-red-300 bg-red-50 p-3 text-red-700">
+              <p className="font-semibold">Failed to check active sessions</p>
+              <p className="mt-1 text-[11px] opacity-90">{error}</p>
             </div>
           ) : status ? (
             <>
               {status.activeCount === 0 ? (
-                <div className="flex items-start gap-3 rounded-lg border border-emerald-300 bg-emerald-50/70 p-4 text-ink">
+                <div className="flex items-start gap-2.5 rounded-[2px] border border-emerald-300 bg-emerald-50 p-3 text-[#282828]">
                   <CheckCircle2
-                    className="mt-0.5 size-5 shrink-0 text-emerald-600"
+                    className="mt-0.5 size-4.5 shrink-0 text-emerald-600"
                     aria-hidden="true"
                   />
                   <div className="flex flex-col gap-1">
-                    <p className="font-semibold text-sm text-ink">System is idle</p>
-                    <p className="text-xs leading-relaxed text-ink/80">
+                    <p className="font-semibold text-xs text-emerald-800">System is idle</p>
+                    <p className="text-[11px] leading-relaxed text-[#444]">
                       No annotators currently have photos checked out. It is safe to create a
                       database backup snapshot.
                     </p>
                   </div>
                 </div>
               ) : (
-                <div className="flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50/70 p-4 text-ink">
+                <div className="flex items-start gap-2.5 rounded-[2px] border border-amber-300 bg-amber-50 p-3 text-[#282828]">
                   <AlertTriangle
-                    className="mt-0.5 size-5 shrink-0 text-amber-600"
+                    className="mt-0.5 size-4.5 shrink-0 text-amber-600"
                     aria-hidden="true"
                   />
                   <div className="flex flex-col gap-1">
-                    <p className="font-semibold text-sm text-ink">
+                    <p className="font-semibold text-xs text-amber-800">
                       Notice: {status.activeCount} active labeling session
                       {status.activeCount === 1 ? "" : "s"} in progress
                     </p>
-                    <p className="text-xs leading-relaxed text-ink/80">
+                    <p className="text-[11px] leading-relaxed text-[#444]">
                       Active user{status.activeUsers.length === 1 ? "" : "s"}:{" "}
-                      <span className="font-semibold text-ink">
+                      <span className="font-semibold text-[#282828]">
                         {status.activeUsers.join(", ")}
                       </span>
                     </p>
-                    <p className="mt-1 text-xs leading-relaxed text-ink/80">
+                    <p className="mt-1 text-[11px] leading-relaxed text-[#6e6e6e]">
                       Check that all users are out of the system or have saved their latest
                       annotations to avoid race conditions.
                     </p>
@@ -159,20 +159,21 @@ export function BackupModal({ isOpen, onClose }: BackupModalProps) {
                 </div>
               )}
 
-              <div className="flex flex-col gap-2 rounded-lg border border-line bg-surface p-3.5 text-xs text-muted">
-                <p className="font-medium text-ink">Snapshot details:</p>
+              <div className="flex flex-col gap-1.5 rounded-[2px] border border-[#c8c8c8] bg-[#f9f9f9] p-3 text-xs text-[#6e6e6e]">
+                <p className="font-semibold text-[#282828]">Snapshot details:</p>
                 <ul className="list-inside list-disc space-y-1">
-                  <li>Uses SQLite online backup API (WAL-safe, non-blocking, zero torn pages).</li>
+                  <li>Atomic PostgreSQL transaction dump (safe, non-blocking, zero torn pages).</li>
                   <li>Captures all projects, classes, labels, user accounts, and image claims.</li>
                   <li>
-                    Downloaded as a standalone <code className="font-mono text-ink">.sqlite</code>{" "}
-                    database snapshot.
+                    Downloaded as a standalone{" "}
+                    <code className="font-mono text-[#282828]">.sql</code> database snapshot
+                    compatible with psql.
                   </li>
                 </ul>
               </div>
 
               {error ? (
-                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-400">
+                <div className="rounded-[2px] border border-red-300 bg-red-50 p-2.5 text-xs text-red-700">
                   {error}
                 </div>
               ) : null}
@@ -181,12 +182,12 @@ export function BackupModal({ isOpen, onClose }: BackupModalProps) {
         </div>
 
         {/* Footer Actions */}
-        <div className="flex items-center justify-end gap-2.5 border-t border-line pt-4">
+        <div className="flex items-center justify-end gap-2 border-t border-[#c8c8c8] pt-3">
           <button
             type="button"
             onClick={onClose}
             disabled={downloading}
-            className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-semibold text-ink hover:bg-surface-raised disabled:opacity-40"
+            className="inline-flex h-8 items-center justify-center rounded-[2px] border border-[#c8c8c8] bg-white px-3 text-xs font-semibold text-[#282828] hover:bg-[#e0e0e0] disabled:opacity-40"
           >
             Cancel
           </button>
@@ -194,7 +195,7 @@ export function BackupModal({ isOpen, onClose }: BackupModalProps) {
             type="button"
             onClick={() => void handleDownload()}
             disabled={loading || downloading}
-            className="press inline-flex h-9 items-center justify-center gap-1.5 rounded-sm bg-ink px-4 text-xs font-semibold text-surface hover:opacity-90 disabled:opacity-40"
+            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-[2px] bg-[#1473e6] px-3.5 text-xs font-semibold text-white hover:bg-[#0d62c9] disabled:opacity-40"
           >
             {downloading ? (
               <>

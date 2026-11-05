@@ -7,6 +7,8 @@ import {
   Lock,
   Power,
   PowerOff,
+  RefreshCw,
+  Server,
   Sparkles,
   Trash2,
   Users,
@@ -33,6 +35,7 @@ import {
   downloadDatasetExport,
   fetchAdmin,
   fetchAiSettings,
+  fetchDbConfig,
   fetchMaintenanceStatus,
   fetchProjectHealth,
   fetchProjects,
@@ -42,8 +45,11 @@ import {
   setAiSettings,
   setMaintenanceMode,
   syncProjectImages,
+  testDbConnection,
   unlockAdmin,
+  updateDbConfig,
   type DatasetExportType,
+  type DbConnectionInfo,
   type DuplicateDetectionResult,
   type ExifCheckResult,
   type ExportFormat,
@@ -117,6 +123,23 @@ export function SettingsPage() {
   const [togglingAi, setTogglingAi] = useState(false);
   const [aiMessage, setAiMessage] = useState<string | null>(null);
 
+  const [dbConfig, setDbConfig] = useState<DbConnectionInfo | null>(null);
+  const [showDbEditor, setShowDbEditor] = useState(false);
+  const [candidateUrl, setCandidateUrl] = useState("");
+  const [testingDb, setTestingDb] = useState(false);
+  const [testDbResult, setTestDbResult] = useState<{
+    ok: boolean;
+    version?: string;
+    database?: string;
+    latencyMs?: number;
+    error?: string;
+  } | null>(null);
+  const [updatingDb, setUpdatingDb] = useState(false);
+  const [updateDbMessage, setUpdateDbMessage] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
+
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -146,6 +169,14 @@ export function SettingsPage() {
     fetchAiSettings()
       .then((res) => {
         if (!cancel) setAiEnabled(res.enabled);
+      })
+      .catch(() => {});
+    fetchDbConfig()
+      .then((res) => {
+        if (!cancel) {
+          setDbConfig(res.info);
+          setCandidateUrl(res.info.maskedUrl);
+        }
       })
       .catch(() => {});
     return () => {
@@ -215,6 +246,47 @@ export function SettingsPage() {
       setAiMessage(err instanceof Error ? err.message : "Failed to update AI settings");
     } finally {
       setTogglingAi(false);
+    }
+  }
+
+  async function handleTestDbConnection() {
+    if (!candidateUrl.trim()) return;
+    setTestingDb(true);
+    setTestDbResult(null);
+    setUpdateDbMessage(null);
+    try {
+      const res = await testDbConnection(candidateUrl.trim());
+      setTestDbResult(res);
+    } catch (err: unknown) {
+      setTestDbResult({
+        ok: false,
+        error: err instanceof Error ? err.message : "Failed to test connection",
+      });
+    } finally {
+      setTestingDb(false);
+    }
+  }
+
+  async function handleApplyDbConfig() {
+    if (!candidateUrl.trim()) return;
+    setUpdatingDb(true);
+    setUpdateDbMessage(null);
+    try {
+      const res = await updateDbConfig(candidateUrl.trim());
+      setDbConfig(res.info);
+      setCandidateUrl(res.info.maskedUrl);
+      setUpdateDbMessage({
+        type: "success",
+        text: `Database configuration updated successfully. Connected to ${res.info.host}:${res.info.port}/${res.info.database}.`,
+      });
+      setShowDbEditor(false);
+    } catch (err: unknown) {
+      setUpdateDbMessage({
+        type: "error",
+        text: err instanceof Error ? err.message : "Failed to update database configuration",
+      });
+    } finally {
+      setUpdatingDb(false);
     }
   }
 
@@ -798,6 +870,171 @@ export function SettingsPage() {
               {/* TAB 3: DATABASE & MAINTENANCE */}
               {activeTab === "database" && (
                 <div className="flex flex-col gap-2">
+                  {/* Database Server Configuration Card */}
+                  <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-3 flex flex-col gap-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <h2 className="text-xs font-semibold text-[#282828] flex items-center gap-1.5">
+                          <Server className="size-3.5 text-[#1473e6]" />
+                          <span>Database Server Connection</span>
+                        </h2>
+                        <p className="text-[11px] text-[#707070]">
+                          Active PostgreSQL cluster connection parameters and relocation settings.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowDbEditor((v) => !v);
+                          setTestDbResult(null);
+                          setUpdateDbMessage(null);
+                        }}
+                        className="press h-6 px-2.5 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-xs font-medium text-[#282828] flex items-center gap-1"
+                      >
+                        <Wrench className="size-3" />
+                        <span>{showDbEditor ? "Hide Configuration" : "Configure Connection"}</span>
+                      </button>
+                    </div>
+
+                    {/* Quick Metadata Chips */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-2 bg-[#f9f9f9] border border-[#c8c8c8] rounded-[2px] text-xs">
+                      <div>
+                        <span className="text-[10px] text-[#707070] block font-mono">
+                          Host &amp; Port
+                        </span>
+                        <span className="font-semibold font-mono text-[#282828]">
+                          {dbConfig ? `${dbConfig.host}:${dbConfig.port}` : "localhost:5432"}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-[#707070] block font-mono">Database</span>
+                        <span className="font-semibold font-mono text-[#282828]">
+                          {dbConfig?.database || "ls_marker"}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-[#707070] block font-mono">User</span>
+                        <span className="font-semibold font-mono text-[#282828]">
+                          {dbConfig?.user || "ls_marker"}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-[#707070] block font-mono">Status</span>
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-800">
+                          <span className="size-1.5 rounded-full bg-emerald-600 inline-block" />
+                          <span>Connected</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Current Config Source Footnote */}
+                    <div className="flex items-center justify-between text-[10px] text-[#707070] font-mono px-1">
+                      <span>Source: {dbConfig?.source || ".env (DATABASE_URL)"}</span>
+                      <span>Target: PostgreSQL 18</span>
+                    </div>
+
+                    {/* Collapsible Connection Editor */}
+                    {showDbEditor && (
+                      <div className="pt-2 border-t border-[#f0f0f0] flex flex-col gap-2">
+                        <div>
+                          <label className="text-[11px] font-medium text-[#282828] block mb-1">
+                            PostgreSQL Connection URI (DATABASE_URL):
+                          </label>
+                          <input
+                            type="text"
+                            spellCheck={false}
+                            placeholder="postgresql://ls_marker:password@remote-host:5432/ls_marker"
+                            value={candidateUrl}
+                            onChange={(e) => {
+                              setCandidateUrl(e.target.value);
+                              setTestDbResult(null);
+                            }}
+                            className="w-full h-7 px-2 rounded-[2px] border border-[#c8c8c8] bg-white font-mono text-xs text-[#282828] outline-none focus:border-[#1473e6]"
+                          />
+                          <p className="text-[10px] text-[#707070] mt-1 leading-normal">
+                            To relocate the database, enter the connection string for your new
+                            PostgreSQL server. Click &ldquo;Test Connection&rdquo; to verify
+                            credentials and reachability before applying.
+                          </p>
+                        </div>
+
+                        {testDbResult && (
+                          <div
+                            className={`p-2 rounded-[2px] border font-mono text-xs ${
+                              testDbResult.ok
+                                ? "bg-emerald-50 border-emerald-300 text-emerald-900"
+                                : "bg-red-50 border-red-300 text-red-900"
+                            }`}
+                          >
+                            {testDbResult.ok ? (
+                              <div className="flex items-center justify-between">
+                                <span>
+                                  ✓ Connection successful ({testDbResult.database},{" "}
+                                  {testDbResult.latencyMs}ms)
+                                </span>
+                                <span className="text-[10px] opacity-80">
+                                  {testDbResult.version?.split(" ")[0]}
+                                </span>
+                              </div>
+                            ) : (
+                              <span>✗ Connection failed: {testDbResult.error}</span>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            disabled={testingDb || !candidateUrl.trim()}
+                            onClick={() => void handleTestDbConnection()}
+                            className="press h-6 px-3 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-xs font-medium text-[#282828] flex items-center gap-1 disabled:opacity-40"
+                          >
+                            {testingDb ? (
+                              <Loader2 className="size-3 animate-spin" />
+                            ) : (
+                              <RefreshCw className="size-3" />
+                            )}
+                            <span>Test Connection</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={
+                              updatingDb || !candidateUrl.trim() || candidateUrl.includes("••••••")
+                            }
+                            onClick={() => void handleApplyDbConfig()}
+                            className="press h-6 px-3 rounded-[2px] bg-[#1473e6] hover:bg-[#0d62c7] text-white text-xs font-medium flex items-center gap-1 disabled:opacity-40"
+                            title={
+                              candidateUrl.includes("••••••")
+                                ? "Enter your real password instead of bullets before saving"
+                                : "Save and apply new database connection"
+                            }
+                          >
+                            {updatingDb ? (
+                              <Loader2 className="size-3 animate-spin" />
+                            ) : (
+                              <Check className="size-3" />
+                            )}
+                            <span>Save &amp; Apply</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {updateDbMessage && (
+                      <div
+                        className={`p-2 rounded-[2px] border text-xs ${
+                          updateDbMessage.type === "success"
+                            ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                            : "bg-red-50 border-red-200 text-red-800"
+                        }`}
+                      >
+                        {updateDbMessage.text}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-3 flex items-center justify-between">
                     <div>
                       <h2 className="text-xs font-semibold text-[#282828]">

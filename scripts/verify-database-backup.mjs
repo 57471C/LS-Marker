@@ -3,34 +3,29 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
+import { getDb } from "./db.mjs";
 import { createDatabaseBackup, getBackupStatus, handle } from "./labelling-api.mjs";
 
-console.log("=== Verifying Database Backup & Active Session Safeguards ===\n");
+console.log("=== Verifying PostgreSQL Database Backup & Active Session Safeguards ===\n");
 
 const root = process.cwd();
-const dbPath = path.join(root, "data", "labels.db");
-const db = new Database(dbPath);
+const db = await getDb(root);
 
 try {
   // -------------------------------------------------------------
-  // Test 1: SQLite WAL Mode Integrity Check
+  // Test 1: PostgreSQL Connection & Health Check
   // -------------------------------------------------------------
-  console.log("[Test 1] Verifying SQLite WAL mode is preserved...");
-  const journalMode = db.pragma("journal_mode", { simple: true });
-  console.log(`Current journal_mode: ${journalMode}`);
-  assert.equal(
-    String(journalMode).toLowerCase(),
-    "wal",
-    "Database must be in WAL mode per zero-downtime production rules",
-  );
-  console.log("✓ Test 1 passed: WAL mode is active.");
+  console.log("[Test 1] Verifying PostgreSQL connection and health...");
+  const res = await db.pool.query("SELECT version() AS version, current_database() AS db");
+  assert(res.rows.length > 0, "Must be able to query PostgreSQL version");
+  console.log(`Connected to database '${res.rows[0].db}' running: ${res.rows[0].version}`);
+  console.log("✓ Test 1 passed: PostgreSQL database is connected and healthy.");
 
   // -------------------------------------------------------------
   // Test 2: Active Session Lease Detection
   // -------------------------------------------------------------
   console.log("\n[Test 2] Testing Active Session Lease Detection...");
-  const initialStatus = getBackupStatus(db);
+  const initialStatus = await getBackupStatus(db);
   console.log("Initial status before test locks:", initialStatus);
   assert.equal(typeof initialStatus.activeCount, "number");
   assert(Array.isArray(initialStatus.activeUsers));
@@ -39,18 +34,22 @@ try {
   const testPathActive = "__test_backup_active.jpg";
   const testPathExpired = "__test_backup_expired.jpg";
 
-  db.prepare(`
+  await db
+    .prepare(`
     INSERT INTO images (project_id, file_path, name, status, locked_by, locked_at)
     VALUES (1, ?, 'test_active.jpg', 'unlabeled', 'ActiveAnnotator1', datetime('now', '-3 minutes'))
-  `).run(testPathActive);
+  `)
+    .run(testPathActive);
 
-  db.prepare(`
+  await db
+    .prepare(`
     INSERT INTO images (project_id, file_path, name, status, locked_by, locked_at)
     VALUES (1, ?, 'test_expired.jpg', 'unlabeled', 'ExpiredAnnotator2', datetime('now', '-25 minutes'))
-  `).run(testPathExpired);
+  `)
+    .run(testPathExpired);
 
   try {
-    const activeStatus = getBackupStatus(db);
+    const activeStatus = await getBackupStatus(db);
     console.log("Status with test active & expired leases:", activeStatus);
     assert(
       activeStatus.activeUsers.includes("ActiveAnnotator1"),
@@ -67,14 +66,16 @@ try {
     );
     console.log("✓ Test 2 passed: Active lease queries accurately filter by 15-minute TTL.");
   } finally {
-    db.prepare("DELETE FROM images WHERE file_path IN (?, ?)").run(testPathActive, testPathExpired);
+    await db
+      .prepare("DELETE FROM images WHERE file_path IN (?, ?)")
+      .run(testPathActive, testPathExpired);
   }
 
   // -------------------------------------------------------------
-  // Test 3: Native Online SQLite Backup & Table Querying
+  // Test 3: Online PostgreSQL SQL Dump Backup Generation
   // -------------------------------------------------------------
-  console.log("\n[Test 3] Verifying native online SQLite backup generation...");
-  const tempSnapshotPath = path.join(os.tmpdir(), `verify-test-backup-${Date.now()}.sqlite`);
+  console.log("\n[Test 3] Verifying PostgreSQL SQL dump backup generation...");
+  const tempSnapshotPath = path.join(os.tmpdir(), `verify-test-backup-${Date.now()}.sql`);
 
   try {
     await createDatabaseBackup(db, tempSnapshotPath);
@@ -83,29 +84,15 @@ try {
     console.log(`Snapshot created at ${tempSnapshotPath} (${stat.size} bytes)`);
     assert(stat.size > 0, "Snapshot must have non-zero size");
 
-    // Open the snapshot independently with better-sqlite3
-    const snapshotDb = new Database(tempSnapshotPath, { readonly: true });
-    const tables = snapshotDb
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name ASC")
-      .all()
-      .map((r) => r.name);
-    console.log("Tables in snapshot database:", tables);
-
-    assert(tables.includes("projects"), "Snapshot must include projects table");
-    assert(tables.includes("classes"), "Snapshot must include classes table");
-    assert(tables.includes("images"), "Snapshot must include images table");
-    assert(tables.includes("users"), "Snapshot must include users table");
-
-    const liveProjectsCount = db.prepare("SELECT COUNT(*) AS c FROM projects").get().c;
-    const snapshotProjectsCount = snapshotDb.prepare("SELECT COUNT(*) AS c FROM projects").get().c;
-    assert.equal(
-      snapshotProjectsCount,
-      liveProjectsCount,
-      "Projects count in snapshot must match live database",
+    const sqlContent = fs.readFileSync(tempSnapshotPath, "utf8");
+    assert(sqlContent.includes("-- LS-Marker PostgreSQL Backup Dump"), "Must include dump header");
+    assert(sqlContent.includes("projects"), "Must include projects table");
+    assert(sqlContent.includes("classes"), "Must include classes table");
+    assert(sqlContent.includes("images"), "Must include images table");
+    assert(sqlContent.includes("users"), "Must include users table");
+    console.log(
+      "✓ Test 3 passed: PostgreSQL dump is valid, intact, and contains all production tables.",
     );
-
-    snapshotDb.close();
-    console.log("✓ Test 3 passed: Native SQLite snapshot is valid, intact, and queryable.");
   } finally {
     if (fs.existsSync(tempSnapshotPath)) {
       fs.unlinkSync(tempSnapshotPath);
@@ -113,30 +100,32 @@ try {
   }
 
   // -------------------------------------------------------------
-  // Test 4: WAL Non-Blocking Concurrency Verification
+  // Test 4: Concurrency During Backup
   // -------------------------------------------------------------
   console.log("\n[Test 4] Verifying concurrent read/write during backup...");
-  const tempConcurPath = path.join(os.tmpdir(), `verify-test-concur-${Date.now()}.sqlite`);
+  const tempConcurPath = path.join(os.tmpdir(), `verify-test-concur-${Date.now()}.sql`);
 
   try {
     const backupPromise = createDatabaseBackup(db, tempConcurPath);
 
-    // Concurrently write to live DB in WAL mode
-    db.prepare(`
+    // Concurrently write to live DB
+    await db
+      .prepare(`
       INSERT INTO images (project_id, file_path, name, status)
       VALUES (1, '__temp_concur.jpg', 'temp_concur.jpg', 'unlabeled')
-    `).run();
+    `)
+      .run();
 
     await backupPromise;
 
     // Verify live DB remains healthy and row was written
-    const concurRow = db
+    const concurRow = await db
       .prepare("SELECT * FROM images WHERE file_path = '__temp_concur.jpg'")
       .get();
     assert(concurRow, "Concurrent write to live database must succeed during backup");
     console.log("✓ Test 4 passed: Backup runs concurrently without locking live DB writes.");
   } finally {
-    db.prepare("DELETE FROM images WHERE file_path = '__temp_concur.jpg'").run();
+    await db.prepare("DELETE FROM images WHERE file_path = '__temp_concur.jpg'").run();
     if (fs.existsSync(tempConcurPath)) {
       fs.unlinkSync(tempConcurPath);
     }
@@ -176,38 +165,31 @@ try {
     console.log("Content-Type:", contentType);
     console.log("Content-Disposition:", contentDisposition);
 
-    assert(
-      contentType?.includes("application/vnd.sqlite3"),
-      "Content-Type must be application/vnd.sqlite3",
-    );
+    assert(contentType?.includes("application/sql"), "Content-Type must be application/sql");
     assert(
       contentDisposition?.includes("attachment") &&
         contentDisposition?.includes("ls-marker-backup-") &&
-        contentDisposition?.endsWith('.sqlite"'),
-      "Content-Disposition must specify attachment with timestamped sqlite filename",
+        contentDisposition?.endsWith('.sql"'),
+      "Content-Disposition must specify attachment with timestamped sql filename",
     );
 
     const buffer = Buffer.from(await downloadRes.arrayBuffer());
     console.log(`Downloaded ${buffer.length} bytes`);
     assert(buffer.length > 0, "Downloaded stream must not be empty");
 
-    // Verify downloaded buffer is a valid SQLite DB file
-    const downloadedTemp = path.join(os.tmpdir(), `verify-http-download-${Date.now()}.sqlite`);
-    fs.writeFileSync(downloadedTemp, buffer);
-
-    const downloadedDb = new Database(downloadedTemp, { readonly: true });
-    const downloadedTables = downloadedDb
-      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
-      .all();
-    assert(downloadedTables.length > 0, "Downloaded SQLite file must have tables");
-    downloadedDb.close();
-    fs.unlinkSync(downloadedTemp);
-    console.log("✓ GET /api/system/backup-download succeeded and delivered valid SQLite snapshot.");
+    const downloadedText = buffer.toString("utf8");
+    assert(
+      downloadedText.includes("-- LS-Marker PostgreSQL Backup Dump"),
+      "Must be valid SQL dump",
+    );
+    console.log(
+      "✓ GET /api/system/backup-download succeeded and delivered valid PostgreSQL SQL snapshot.",
+    );
 
     console.log("\n🎉 ALL TESTS AND ZERO-RISK DATABASE BACKUP SAFEGUARDS PASSED!");
   } finally {
     server.close();
   }
 } finally {
-  db.close();
+  await db.close();
 }

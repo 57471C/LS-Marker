@@ -361,3 +361,110 @@ export async function getDb(root = process.cwd()) {
   instance = new PostgresDatabase(pool);
   return instance;
 }
+
+/**
+ * Get sanitized connection information for UI and settings displays.
+ * @param {string} root
+ */
+export function getDbConnectionInfo(root = process.cwd()) {
+  const rawUrl = getConnectionString(root);
+  try {
+    const u = new URL(rawUrl);
+    const maskedUrl = `${u.protocol}//${u.username ? `${u.username}:••••••@` : ""}${u.host}${u.pathname}`;
+    let source = "Default fallback";
+    if (process.env.DATABASE_URL) {
+      source = "process.env.DATABASE_URL";
+    }
+    const envPath = path.join(root, ".env");
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, "utf8");
+      if (/^DATABASE_URL=/m.test(content)) {
+        source = ".env file";
+      }
+    }
+    return {
+      host: u.hostname,
+      port: u.port || "5432",
+      database: u.pathname.replace(/^\//, ""),
+      user: u.username,
+      source,
+      maskedUrl,
+    };
+  } catch {
+    return {
+      host: "localhost",
+      port: "5432",
+      database: "ls_marker",
+      user: "ls_marker",
+      source: "unknown",
+      maskedUrl: "postgresql://***",
+    };
+  }
+}
+
+/**
+ * Test a candidate PostgreSQL connection URL.
+ * @param {string} testUrl
+ */
+export async function testDbConnection(testUrl) {
+  const pool = new Pool({
+    connectionString: testUrl,
+    connectionTimeoutMillis: 5000,
+  });
+  const start = Date.now();
+  try {
+    const client = await pool.connect();
+    try {
+      const res = await client.query("SELECT version() AS version, current_database() AS db");
+      const latencyMs = Date.now() - start;
+      return {
+        ok: true,
+        version: res.rows[0]?.version || "PostgreSQL",
+        database: res.rows[0]?.db,
+        latencyMs,
+      };
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
+/**
+ * Update the database connection string in .env and reload singleton pool.
+ * @param {string} root
+ * @param {string} newUrl
+ */
+export async function updateDbConnectionString(root = process.cwd(), newUrl) {
+  const testRes = await testDbConnection(newUrl);
+  if (!testRes.ok) {
+    throw new Error(`Connection test failed: ${testRes.error}`);
+  }
+
+  const envPath = path.join(root, ".env");
+  let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
+  if (/^DATABASE_URL=.*$/m.test(content)) {
+    content = content.replace(/^DATABASE_URL=.*$/m, `DATABASE_URL=${newUrl}`);
+  } else {
+    content = content ? `${content.trim()}\nDATABASE_URL=${newUrl}\n` : `DATABASE_URL=${newUrl}\n`;
+  }
+  fs.writeFileSync(envPath, content, "utf8");
+
+  process.env.DATABASE_URL = newUrl;
+
+  if (instance) {
+    await instance.close().catch(() => {});
+    instance = null;
+  }
+
+  return {
+    success: true,
+    info: getDbConnectionInfo(root),
+  };
+}
