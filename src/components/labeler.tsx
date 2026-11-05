@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
   Check,
@@ -6,31 +6,40 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  CircleHelp,
   Copy,
   Crosshair,
   Download,
   Eye,
   EyeOff,
+  FolderOpen,
+  Hand,
   History,
+  Layers,
   Loader2,
+  LogOut,
+  MousePointer2,
+  Pentagon,
   Repeat,
+  Ruler,
   Scissors,
+  Search,
   Sparkles,
+  Square,
   Trash2,
+  Undo2,
   Unlock,
   X,
 } from "lucide-react";
-import { AppHeader } from "@/components/app-header";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  PART_TYPE_OPTIONS,
+  PartMeasurementPopover,
+  hasCompleteMeasurements,
+} from "@/components/classes-admin";
+import { KeyboardShortcutsModal } from "@/components/keyboard-shortcuts-modal";
 import { LabelStage, newId, round6, type StageBox } from "@/components/label-stage";
 import { classFill } from "@/lib/class-color";
-import {
-  areAllSamModelsCached,
-  getSamModelState,
-  isSam2Loaded,
-  subscribeSamModelState,
-  type Sam2Status,
-  type SamModelStateSnapshot,
-} from "@/services/samService";
 import {
   claimImage,
   claimImageById,
@@ -39,36 +48,38 @@ import {
   fetchAdmin,
   fetchCatalogue,
   fetchCropInfo,
+  fetchAiSettings,
   fetchLabel,
+  fetchMaintenanceStatus,
   fetchNextImage,
   fetchNextReviewImage,
   imageSrc,
+  logout,
   releaseIncomplete,
   saveLabel,
   submitReviewAction,
   uncropImage,
   unlockApprovedImage,
+  updateClass,
   type Box,
   type Catalogue,
   type ClassRow,
   type CropInfo,
   type CropRect,
   type ImageRow,
+  type PartType,
   type PhotoStatus,
 } from "@/lib/label-client";
+import { useProject } from "@/lib/project";
 import { useSession } from "@/lib/session";
-
-const field =
-  "h-11 w-full rounded-sm border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent";
-const btn =
-  "press inline-flex h-11 items-center justify-center gap-2 rounded-sm border border-line bg-surface px-4 text-sm font-medium text-ink disabled:opacity-40";
-const iconBtn =
-  "press inline-flex size-11 shrink-0 items-center justify-center rounded-sm border border-line bg-surface text-ink disabled:opacity-40";
-const btnPrimary =
-  "press inline-flex h-11 items-center justify-center gap-2 rounded-sm bg-ink px-4 text-sm font-medium text-surface disabled:opacity-40";
-
-const PANE_MIN = 280;
-const PANE_MAX = 640;
+import {
+  areAllSamModelsCached,
+  getSamModelState,
+  isSam2Loaded,
+  subscribeSamModelState,
+  type Sam2Status,
+  type SamModelStateSnapshot,
+} from "@/services/samService";
 
 function toApiBoxes(boxes: StageBox[]): Box[] {
   return boxes.map((box) => ({
@@ -104,27 +115,27 @@ function withKeys(boxes: Box[]): StageBox[] {
 function StatusBadge({ status }: { status: PhotoStatus }) {
   if (status === "approved") {
     return (
-      <span className="inline-flex items-center rounded-sm border border-purple-300 bg-purple-100 px-2 py-0.5 text-xs font-semibold text-purple-950 dark:border-purple-800 dark:bg-purple-950 dark:text-purple-200">
+      <span className="inline-flex items-center rounded-[2px] bg-purple-100 px-1.5 py-0.2 text-[10px] font-semibold text-purple-900 border border-purple-300">
         Approved
       </span>
     );
   }
   if (status === "complete") {
     return (
-      <span className="inline-flex items-center rounded-sm border border-emerald-300 bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
+      <span className="inline-flex items-center rounded-[2px] bg-emerald-100 px-1.5 py-0.2 text-[10px] font-semibold text-emerald-900 border border-emerald-300">
         Complete
       </span>
     );
   }
   if (status === "incomplete") {
     return (
-      <span className="inline-flex items-center rounded-sm border border-orange-300 bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-950 dark:border-orange-800 dark:bg-orange-950 dark:text-orange-200">
+      <span className="inline-flex items-center rounded-[2px] bg-orange-100 px-1.5 py-0.2 text-[10px] font-semibold text-orange-900 border border-orange-300">
         Incomplete
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center rounded-sm border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+    <span className="inline-flex items-center rounded-[2px] bg-amber-100 px-1.5 py-0.2 text-[10px] font-semibold text-amber-900 border border-amber-300">
       Open
     </span>
   );
@@ -161,12 +172,144 @@ function parseCodes(text: string): string[] {
   return out;
 }
 
+function LeaseTimer({
+  claimedAt,
+  isMine,
+  isComplete,
+  isApproved,
+}: {
+  claimedAt: string | null | undefined;
+  isMine: boolean;
+  isComplete: boolean;
+  isApproved: boolean;
+}) {
+  const [secondsLeft, setSecondsLeft] = useState<number>(() => {
+    if (!claimedAt) return 0;
+    const elapsed = Math.floor((Date.now() - new Date(claimedAt).getTime()) / 1000);
+    return Math.max(0, 15 * 60 - elapsed);
+  });
+
+  useEffect(() => {
+    if (!claimedAt || !isMine || isComplete || isApproved) {
+      setSecondsLeft(0);
+      return;
+    }
+    const update = () => {
+      const elapsed = Math.floor((Date.now() - new Date(claimedAt).getTime()) / 1000);
+      setSecondsLeft(Math.max(0, 15 * 60 - elapsed));
+    };
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [claimedAt, isMine, isComplete, isApproved]);
+
+  if (!isMine || isApproved) return null;
+  if (isComplete) {
+    return (
+      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-[2px] bg-emerald-50 text-emerald-700 border border-emerald-200">
+        Lease: Complete (paused)
+      </span>
+    );
+  }
+
+  const mins = Math.floor(secondsLeft / 60);
+  const secs = secondsLeft % 60;
+  const isExpiring = secondsLeft < 180;
+
+  return (
+    <span
+      className={`font-mono text-[10px] px-1.5 py-0.5 rounded-[2px] inline-flex items-center gap-1 border ${
+        isExpiring
+          ? "bg-red-50 text-red-700 border-red-300 font-bold animate-pulse"
+          : "bg-[#f5f5f5] text-[#282828] border-[#c8c8c8]"
+      }`}
+      title="15-minute lease timeout"
+    >
+      <span className="opacity-60">Lease:</span>
+      <span>
+        {mins}:{secs.toString().padStart(2, "0")}
+      </span>
+    </span>
+  );
+}
+
 export function Labeler() {
-  const { username, admin: sessionAdmin } = useSession();
+  const { username, setUsername, admin: sessionAdmin } = useSession();
+  const { current: project, openPicker } = useProject();
   const [isAdmin, setIsAdmin] = useState(sessionAdmin);
+  const [isMaintenance, setIsMaintenance] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+
   const [showUnlockModal, setShowUnlockModal] = useState(false);
   const [isUnlocking, setIsUnlocking] = useState(false);
   const [unlockError, setUnlockError] = useState<string | null>(null);
+
+  // Collapsible Panes in Right Sidebar
+  const [paneQueueOpen, setPaneQueueOpen] = useState(true);
+  const [paneClassesOpen, setPaneClassesOpen] = useState(true);
+  const [paneLayersOpen, setPaneLayersOpen] = useState(true);
+  const [shapesHeight, setShapesHeight] = useState<number>(() => {
+    if (typeof window === "undefined") return 220;
+    try {
+      const saved = localStorage.getItem("ls_marker_shapes_pane_height");
+      if (saved) {
+        const val = Number(saved);
+        if (!Number.isNaN(val) && val >= 60 && val <= 1000) {
+          return val;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 220;
+  });
+  const [isResizingShapes, setIsResizingShapes] = useState(false);
+  const [classFilter, setClassFilter] = useState("");
+
+  const handleShapesResizePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = shapesHeight;
+    setIsResizingShapes(true);
+    if (!paneLayersOpen) {
+      setPaneLayersOpen(true);
+    }
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "row-resize";
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const deltaY = startY - ev.clientY;
+      const maxH = Math.max(160, window.innerHeight - 250);
+      const nextH = Math.max(70, Math.min(maxH, Math.round(startH + deltaY)));
+      setShapesHeight(nextH);
+      try {
+        localStorage.setItem("ls_marker_shapes_pane_height", String(nextH));
+      } catch {
+        // ignore
+      }
+    };
+
+    const onPointerUp = () => {
+      setIsResizingShapes(false);
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+  };
+
+  // Dimensions inline editing
+  const [editingDimsClass, setEditingDimsClass] = useState<ClassRow | null>(null);
+  const [showSvgDiagram, setShowSvgDiagram] = useState(false);
+  const [savingDims, setSavingDims] = useState(false);
+  const [dimsError, setDimsError] = useState<string | null>(null);
 
   useEffect(() => {
     setIsAdmin(sessionAdmin);
@@ -179,10 +322,22 @@ export function Labeler() {
         if (!cancel && unlocked) setIsAdmin(true);
       })
       .catch(() => {});
+    fetchMaintenanceStatus()
+      .then((res) => {
+        if (!cancel) setIsMaintenance(res.maintenance);
+      })
+      .catch(() => {});
+    fetchAiSettings()
+      .then((res) => {
+        if (!cancel) setAiEnabled(res.enabled);
+      })
+      .catch(() => {});
     return () => {
       cancel = true;
     };
   }, []);
+
+  const [aiEnabled, setAiEnabled] = useState(true);
 
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -199,8 +354,6 @@ export function Labeler() {
   const [codesHydrated, setCodesHydrated] = useState(false);
   const [codesOpen, setCodesOpen] = useState(false);
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(() => new Set());
-  const [paneWidth, setPaneWidth] = useState(360);
-  const [paneReady, setPaneReady] = useState(false);
   const [indexProject, setIndexProject] = useState<number | null>(null);
   const [toolMode, setToolMode] = useState<"box" | "polygon">("box");
   const [renderMode, setRenderMode] = useState<"outline" | "filled">("outline");
@@ -211,6 +364,13 @@ export function Labeler() {
   const [imageVersion, setImageVersion] = useState<number>(0);
   const [sam2Enabled, setSam2Enabled] = useState(false);
   const [sam2Status, setSam2Status] = useState<Sam2Status>({ state: "idle" });
+
+  useEffect(() => {
+    if (!aiEnabled && sam2Enabled) {
+      setSam2Enabled(false);
+      setSam2Status({ state: "idle" });
+    }
+  }, [aiEnabled, sam2Enabled]);
   const [samModelState, setSamModelState] = useState<SamModelStateSnapshot>(() =>
     getSamModelState(),
   );
@@ -228,9 +388,9 @@ export function Labeler() {
       if (snapshot.samModelStatus === "ready" && prevStatus !== "ready") {
         setSamModelsCachedOnDisk(true);
         if (snapshot.fromCache && snapshot.loadTimeMs != null) {
-          setSamCacheToast(`SAM 2.1 loaded from local storage (${snapshot.loadTimeMs}ms)`);
+          setSamCacheToast(`SAM 2.1 loaded from cache (${snapshot.loadTimeMs}ms)`);
         } else {
-          setSamCacheToast("SAM 2.1 models cached to local storage");
+          setSamCacheToast("SAM 2.1 models cached");
         }
       }
       prevStatus = snapshot.samModelStatus;
@@ -242,7 +402,7 @@ export function Labeler() {
     const timer = window.setTimeout(() => setSamCacheToast(null), 4000);
     return () => window.clearTimeout(timer);
   }, [samCacheToast]);
-  const paneDrag = useRef<{ x: number; width: number } | null>(null);
+
   const undoStackRef = useRef<{ boxes: StageBox[]; selectedKey: string | null }[]>([]);
   const committedSnapshotRef = useRef<{ boxes: StageBox[]; selectedKey: string | null }>({
     boxes: [],
@@ -293,6 +453,8 @@ export function Labeler() {
   lockedRef.current = locked;
 
   const boxListRef = useRef<HTMLUListElement>(null);
+  const activeThumbnailRef = useRef<HTMLButtonElement | null>(null);
+
   const actions = useRef({
     shift: (_delta: number) => {},
     save: async () => false,
@@ -315,15 +477,15 @@ export function Labeler() {
   }, [latestBoxKey]);
 
   useEffect(() => {
-    const stored = Number(sessionStorage.getItem("part-lab-pane"));
-    if (Number.isFinite(stored)) setPaneWidth(Math.min(PANE_MAX, Math.max(PANE_MIN, stored)));
-    setPaneReady(true);
-  }, []);
-
-  useEffect(() => {
-    if (!paneReady) return;
-    sessionStorage.setItem("part-lab-pane", String(paneWidth));
-  }, [paneWidth, paneReady]);
+    void safeIndex;
+    if (activeThumbnailRef.current) {
+      activeThumbnailRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "center",
+      });
+    }
+  }, [safeIndex]);
 
   useEffect(() => {
     if (projectId == null) return;
@@ -367,7 +529,7 @@ export function Labeler() {
         setError(null);
       })
       .catch((err: unknown) => {
-        if (!cancel) setError(err instanceof Error ? err.message : "Could not load");
+        if (!cancel) setError(err instanceof Error ? err.message : "Could not load catalogue");
       });
     return () => {
       cancel = true;
@@ -450,7 +612,7 @@ export function Labeler() {
       seen.add(row.id);
       merged.push(row);
     }
-    return merged;
+    return merged.length > 0 ? merged : classes;
   }, [picks, classes, drawnClassKey]);
 
   useEffect(() => {
@@ -532,10 +694,6 @@ export function Labeler() {
     return classFill(classId, row?.color);
   }
 
-  function classLine(row: ClassRow): string {
-    return `${row.id}  ${row.ic}  ${row.des}`;
-  }
-
   async function save(): Promise<boolean> {
     if (!current) return false;
     setBusy(true);
@@ -570,6 +728,16 @@ export function Labeler() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function jumpToIndex(targetIndex: number) {
+    if (targetIndex < 0 || targetIndex >= images.length) return;
+    if (targetIndex === safeIndex) return;
+    if (dirty) {
+      const ok = await save();
+      if (!ok) return;
+    }
+    setIndex(targetIndex);
   }
 
   async function shift(delta: number) {
@@ -624,7 +792,7 @@ export function Labeler() {
       await ensureClaimed();
     }
     setIsCropping(true);
-    setStatus("Cropping image losslessly…");
+    setStatus("Cropping image…");
     try {
       const result = await cropImage(current.name, rect);
       setImageVersion(Date.now());
@@ -636,7 +804,7 @@ export function Labeler() {
       setSaved(serialize(nextBoxes));
       const info = await fetchCropInfo(current.name);
       setCropInfo(info);
-      setStatus(`Image cropped to ${result.width} × ${result.height} px`);
+      setStatus(`Cropped to ${result.width} × ${result.height} px`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Crop failed");
     } finally {
@@ -662,7 +830,7 @@ export function Labeler() {
       setSaved(serialize(nextBoxes));
       const info = await fetchCropInfo(current.name);
       setCropInfo(info);
-      setStatus("Image restored to original uncropped dimensions");
+      setStatus("Image restored to original");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Reset failed");
     } finally {
@@ -710,8 +878,7 @@ export function Labeler() {
   }
 
   function removeSelected() {
-    if (lockedRef.current) return;
-    if (!selectedKey) return;
+    if (lockedRef.current || !selectedKey) return;
     if (!isReviewMode && current && current.claimedBy !== username) {
       void ensureClaimed();
     }
@@ -948,13 +1115,6 @@ export function Labeler() {
     });
   }
 
-  function resizePane(clientX: number) {
-    const drag = paneDrag.current;
-    if (!drag) return;
-    const next = drag.width + (drag.x - clientX);
-    setPaneWidth(Math.min(PANE_MAX, Math.max(PANE_MIN, next)));
-  }
-
   async function handleReviewApprove() {
     if (!current) return;
     setBusy(true);
@@ -994,9 +1154,7 @@ export function Labeler() {
         const at = allImages.findIndex(
           (img) => img.name === res.nextImage?.filePath || img.name === res.nextImage?.name,
         );
-        if (at >= 0) {
-          setIndex(at);
-        }
+        if (at >= 0) setIndex(at);
       } else {
         setStatus("All completed photos approved!");
       }
@@ -1047,9 +1205,7 @@ export function Labeler() {
         const at = allImages.findIndex(
           (img) => img.name === res.nextImage?.filePath || img.name === res.nextImage?.name,
         );
-        if (at >= 0) {
-          setIndex(at);
-        }
+        if (at >= 0) setIndex(at);
       } else {
         setStatus("No more pending photos to review.");
       }
@@ -1069,9 +1225,7 @@ export function Labeler() {
         const at = allImages.findIndex(
           (img) => img.name === res.image?.filePath || img.name === res.image?.name,
         );
-        if (at >= 0) {
-          setIndex(at);
-        }
+        if (at >= 0) setIndex(at);
         setStatus(`Loaded ${res.image.name} for review`);
       } else {
         setStatus("No pending photos to review");
@@ -1293,90 +1447,465 @@ export function Labeler() {
     }
   }
 
-  const position =
-    images.length === 0 ? "image 0 of 0" : `image ${safeIndex + 1} of ${images.length}`;
+  async function handleSaveDims() {
+    if (!editingDimsClass) return;
+    setSavingDims(true);
+    setDimsError(null);
+    try {
+      const updated = await updateClass({
+        id: editingDimsClass.id,
+        ic: editingDimsClass.ic,
+        des: editingDimsClass.des,
+        part_type: editingDimsClass.part_type ?? "none",
+        dim1_name: editingDimsClass.dim1_name,
+        dim1_mm: editingDimsClass.dim1_mm,
+        dim2_name: editingDimsClass.dim2_name,
+        dim2_mm: editingDimsClass.dim2_mm,
+        dim3_name: editingDimsClass.dim3_name,
+        dim3_mm: editingDimsClass.dim3_mm,
+      });
+      setCatalogue((prev) =>
+        prev
+          ? {
+              ...prev,
+              classes: prev.classes.map((c) => (c.id === updated.id ? updated : c)),
+            }
+          : prev,
+      );
+      setEditingDimsClass(null);
+      setStatus(`Saved dimensions for ${updated.ic}`);
+    } catch (err) {
+      setDimsError(err instanceof Error ? err.message : "Failed to update dimensions");
+    } finally {
+      setSavingDims(false);
+    }
+  }
+
+  const position = images.length === 0 ? "0 / 0" : `${safeIndex + 1} / ${images.length}`;
   const labelledCount = allImages.filter((image) => image.labelled).length;
-  const claimLabel = !current
-    ? ""
-    : isApproved
-      ? "Approved"
-      : holder === username
-        ? "Yours"
-        : holder
-          ? holder
-          : "Free";
   const folderAt = current ? allImages.findIndex((image) => image.name === current.name) : -1;
   const previousPhoto = folderAt > 0 ? allImages[folderAt - 1] : null;
   const canDuplicate = !locked && boxes.length > 0;
   const canCopyPrevious =
     !locked && !busy && boxes.length === 0 && Boolean(previousPhoto?.labelled);
 
+  const filteredClasses = useMemo(() => {
+    if (!classFilter.trim()) return options;
+    const q = classFilter.toLowerCase();
+    return options.filter(
+      (c) =>
+        c.ic.toLowerCase().includes(q) ||
+        c.des.toLowerCase().includes(q) ||
+        String(c.id).includes(q),
+    );
+  }, [options, classFilter]);
+
   return (
-    <div className="flex h-dvh flex-col bg-bg text-ink">
-      <AppHeader
-        current={isReviewMode ? "review" : "label"}
-        meta={
-          <>
-            <p className="max-w-44 truncate font-mono text-sm text-muted tabular-nums sm:max-w-xs">
-              {current?.name ?? "—"}
-            </p>
-            <p className="font-mono text-sm text-ink tabular-nums">{position}</p>
-            {catalogue ? (
-              <p className="font-mono text-sm text-muted tabular-nums">
-                {labelledCount} of {allImages.length} labelled
-              </p>
-            ) : null}
-            {current ? <StatusBadge status={current.status} /> : null}
-            {current ? <p className="font-mono text-sm text-muted">{claimLabel}</p> : null}
-          </>
-        }
-      />
-      {error ? (
-        <p className="border-b border-line bg-surface px-4 py-2 text-sm text-ink" role="alert">
-          {error}
-        </p>
-      ) : null}
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <section className="flex min-h-80 min-w-0 flex-1 flex-col">
-          {isReviewMode ? (
-            <div className="sticky top-0 z-40 flex flex-wrap items-center justify-between gap-3 border-b border-amber-300 bg-amber-50 px-4 py-2.5 text-amber-950 shadow-xs dark:border-amber-900/60 dark:bg-amber-950/80 dark:text-amber-100">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center rounded-sm border border-amber-400 bg-amber-200/90 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-amber-950 dark:border-amber-700 dark:bg-amber-900 dark:text-amber-100">
+    <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#f0f0f0] text-[#282828] select-none text-xs">
+      {/* =========================================================================
+          TOP MENU BAR (Exact 28px)
+      ========================================================================= */}
+      <header className="h-[28px] border-b border-[#c8c8c8] bg-white px-2 flex items-center justify-between text-xs shrink-0 select-none">
+        {/* Left: App Brand, Project Picker, Navigation Links */}
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-semibold tracking-tight text-[#282828] px-1">LS-Marker</span>
+          <span className="text-[#c8c8c8]">|</span>
+
+          {/* Project Picker Trigger */}
+          <button
+            type="button"
+            onClick={openPicker}
+            className="press inline-flex items-center gap-1 rounded-[2px] px-1.5 py-0.5 text-[#282828] hover:bg-[#f0f0f0] border border-transparent hover:border-[#c8c8c8] max-w-[150px] truncate font-medium"
+            title="Switch project"
+          >
+            <FolderOpen className="size-3.5 shrink-0 text-[#707070]" />
+            <span className="truncate">{project?.name ?? "Open Project"}</span>
+          </button>
+
+          <span className="text-[#c8c8c8]">|</span>
+
+          {/* Nav links */}
+          <nav className="flex items-center gap-1 font-medium">
+            <Link
+              to="/"
+              className={`px-1.5 py-0.5 rounded-[2px] ${
+                !isReviewMode ? "bg-[#1473e6] text-white" : "text-[#707070] hover:text-[#282828]"
+              }`}
+            >
+              Label
+            </Link>
+            <button
+              type="button"
+              onClick={() => {
+                if (isReviewMode) exitReviewMode();
+                else enterReviewMode();
+              }}
+              className={`px-1.5 py-0.5 rounded-[2px] ${
+                isReviewMode
+                  ? "bg-amber-600 text-white font-semibold"
+                  : "text-amber-700 hover:text-amber-900"
+              }`}
+            >
+              Review QA
+            </button>
+            <Link
+              to="/photos"
+              className="px-1.5 py-0.5 rounded-[2px] text-[#707070] hover:text-[#282828]"
+            >
+              Photos
+            </Link>
+            <Link
+              to="/admin"
+              className="px-1.5 py-0.5 rounded-[2px] text-[#707070] hover:text-[#282828]"
+            >
+              Classes
+            </Link>
+            <Link
+              to="/settings"
+              className="px-1.5 py-0.5 rounded-[2px] text-[#707070] hover:text-[#282828]"
+            >
+              Settings
+            </Link>
+          </nav>
+        </div>
+
+        {/* Center: Current photo name, index, status badge */}
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-mono text-[11px] text-[#707070] max-w-[200px] truncate">
+            {current?.name ?? "—"}
+          </span>
+          <span className="font-mono text-[11px] text-[#282828] font-semibold">{position}</span>
+          {current ? <StatusBadge status={current.status} /> : null}
+          {current?.claimedBy && (
+            <span className="font-mono text-[10px] text-[#707070]">
+              [{current.claimedBy === username ? "Yours" : current.claimedBy}]
+            </span>
+          )}
+        </div>
+
+        {/* Right: Lease timer, Admin status, shortcuts, user */}
+        <div className="flex items-center gap-2 min-w-0">
+          {/* Active Lease Countdown */}
+          <LeaseTimer
+            claimedAt={current?.claimedAt}
+            isMine={current?.claimedBy === username}
+            isComplete={current?.status === "complete"}
+            isApproved={isApproved}
+          />
+
+          {/* Maintenance Mode Notice */}
+          {isMaintenance && (
+            <span className="px-1.5 py-0.5 rounded-[2px] bg-amber-400 text-amber-950 text-[10px] font-bold">
+              MAINTENANCE
+            </span>
+          )}
+
+          {/* Admin badge */}
+          {isAdmin && (
+            <span className="px-1 py-0.2 rounded-[2px] bg-neutral-200 text-neutral-800 text-[10px] font-mono">
+              Admin
+            </span>
+          )}
+
+          {/* Keyboard Shortcuts Trigger */}
+          <button
+            type="button"
+            className="press inline-flex size-5 items-center justify-center rounded-[2px] text-[#707070] hover:text-[#282828] hover:bg-[#f0f0f0]"
+            title="Keyboard shortcuts (?)"
+            onClick={() => setHelpOpen(true)}
+          >
+            <CircleHelp className="size-3.5" />
+          </button>
+
+          {/* User & Sign Out */}
+          {username && (
+            <div className="flex items-center gap-1 pl-1 border-l border-[#c8c8c8]">
+              <span className="font-mono text-[11px] text-[#282828]">{username}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  void logout().finally(() => setUsername(null));
+                }}
+                className="press inline-flex size-5 items-center justify-center rounded-[2px] text-[#707070] hover:text-red-600 hover:bg-[#f0f0f0]"
+                title="Sign out"
+              >
+                <LogOut className="size-3" />
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+
+      {/* =========================================================================
+          MIDDLE WORKSPACE ROW (Left Toolbox + Center Canvas + Right Sidebar)
+      ========================================================================= */}
+      <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
+        {/* -----------------------------------------------------------------------
+            LEFT TOOLBOX STRIP (Exact 36px)
+        ----------------------------------------------------------------------- */}
+        <aside
+          aria-label="Toolbox"
+          className="w-[36px] border-r border-[#c8c8c8] bg-white flex flex-col items-center py-1 gap-1 shrink-0 select-none z-10"
+        >
+          {/* Select Mode / Pointer */}
+          <button
+            type="button"
+            className={`press size-7 flex items-center justify-center rounded-[2px] border ${
+              toolMode === "box" && !sam2Enabled && !cropMode
+                ? "bg-[#1473e6] text-white border-[#1473e6]"
+                : "border-transparent text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828]"
+            }`}
+            title="Selection / Box Tool (1)"
+            onClick={() => {
+              setToolMode("box");
+              setSam2Enabled(false);
+              setCropMode(false);
+            }}
+          >
+            <MousePointer2 className="size-4" />
+          </button>
+
+          {/* Box Tool */}
+          <button
+            type="button"
+            className={`press size-7 flex items-center justify-center rounded-[2px] border ${
+              toolMode === "box"
+                ? "bg-[#1473e6] text-white border-[#1473e6]"
+                : "border-transparent text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828]"
+            }`}
+            title="Box Mode (Click to draw rectangle bounding boxes)"
+            onClick={() => {
+              setToolMode("box");
+              setSam2Enabled(false);
+              setCropMode(false);
+            }}
+          >
+            <Square className="size-4" />
+          </button>
+
+          {/* Polygon Tool */}
+          <button
+            type="button"
+            className={`press size-7 flex items-center justify-center rounded-[2px] border ${
+              toolMode === "polygon"
+                ? "bg-[#1473e6] text-white border-[#1473e6]"
+                : "border-transparent text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828]"
+            }`}
+            title="Polygon Mode (Click to switch to multi-vertex polygon markup)"
+            onClick={() => {
+              setToolMode("polygon");
+              setSam2Enabled(false);
+              setCropMode(false);
+            }}
+          >
+            <Pentagon className="size-4" />
+          </button>
+
+          {/* Pan / Zoom Help */}
+          <div
+            className="size-7 flex items-center justify-center rounded-[2px] text-[#707070] cursor-help"
+            title="Pan: Hold Space + Drag or Middle-click drag • Zoom: Mouse Wheel"
+          >
+            <Hand className="size-4" />
+          </div>
+
+          {/* SAM2.1 Polygon Trace Toggle (Hidden if disabled by administrator) */}
+          {aiEnabled && (
+            <button
+              type="button"
+              disabled={locked}
+              className={`press size-7 flex items-center justify-center rounded-[2px] border ${
+                sam2Enabled
+                  ? "bg-purple-600 text-white border-purple-600 shadow-none"
+                  : "border-transparent text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828]"
+              } disabled:opacity-30`}
+              title={
+                sam2Enabled
+                  ? `SAM 2.1 Trace Active (${sam2Status.state}) — Left-click (+) foreground, Right-click (−) background, Enter to commit`
+                  : "SAM 2.1 AI Auto-Trace (Click object points to trace precise boundary)"
+              }
+              onClick={() => {
+                if (!aiEnabled) return;
+                if (!sam2Enabled) {
+                  const seen =
+                    typeof window !== "undefined" &&
+                    window.localStorage.getItem("ls_marker_sam2_notice_seen") === "1";
+                  if (!seen && !samModelsCachedOnDisk && !isSam2Loaded()) {
+                    setShowSam2Modal(true);
+                    return;
+                  }
+                  setSam2Enabled(true);
+                } else {
+                  setSam2Enabled(false);
+                  setSam2Status({ state: "idle" });
+                }
+              }}
+            >
+              {sam2Enabled &&
+              (sam2Status.state === "loading_models" ||
+                sam2Status.state === "encoding" ||
+                sam2Status.state === "decoding") ? (
+                <Loader2 className="size-4 animate-spin text-white" />
+              ) : (
+                <Sparkles className="size-4" />
+              )}
+            </button>
+          )}
+
+          {/* Crosshairs & Coordinate readout */}
+          <button
+            type="button"
+            className={`press size-7 flex items-center justify-center rounded-[2px] border ${
+              crosshairMode
+                ? "bg-[#1473e6] text-white border-[#1473e6]"
+                : "border-transparent text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828]"
+            }`}
+            title={
+              crosshairMode
+                ? "Crosshairs ON (Click canvas to set 0,0 origin • Esc to clear)"
+                : "Crosshair Inspection & Relative Pixel Measuring"
+            }
+            onClick={() => setCrosshairMode((v) => !v)}
+          >
+            <Crosshair className="size-4" />
+          </button>
+
+          {/* Outline vs Filled Mode */}
+          <button
+            type="button"
+            className={`press size-7 flex items-center justify-center rounded-[2px] border ${
+              renderMode === "filled"
+                ? "bg-[#1473e6] text-white border-[#1473e6]"
+                : "border-transparent text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828]"
+            }`}
+            title={
+              renderMode === "filled"
+                ? "Precision filled mode (handles hidden). Click for Outline mode."
+                : "Outline mode (handles visible). Click for Precision filled mode."
+            }
+            onClick={() => setRenderMode((m) => (m === "outline" ? "filled" : "outline"))}
+          >
+            <Layers className="size-4" />
+          </button>
+
+          {/* Crop ROI Tool */}
+          <button
+            type="button"
+            disabled={locked}
+            className={`press size-7 flex items-center justify-center rounded-[2px] border ${
+              cropMode
+                ? "bg-amber-500 text-white border-amber-500"
+                : cropInfo?.isCropped
+                  ? "border-amber-400 text-amber-600 bg-amber-50"
+                  : "border-transparent text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828]"
+            } disabled:opacity-30`}
+            title={
+              cropMode
+                ? "Crop ROI Active: Drag bounding area on canvas"
+                : cropInfo?.isCropped
+                  ? `Cropped (${cropInfo.current.width}×${cropInfo.current.height} px). Click to adjust or reset.`
+                  : "Lossless ROI Crop: Zoom and trim image before labeling"
+            }
+            onClick={() => setCropMode((v) => !v)}
+          >
+            <Scissors className="size-4" />
+          </button>
+
+          <div className="w-5 h-[1px] bg-[#c8c8c8] my-1" />
+
+          {/* Undo (Ctrl+Z) */}
+          <button
+            type="button"
+            disabled={locked || boxes.length === 0}
+            className="press size-7 flex items-center justify-center rounded-[2px] text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828] disabled:opacity-30"
+            title="Undo last annotation change (Ctrl+Z)"
+            onClick={undoLast}
+          >
+            <Undo2 className="size-4" />
+          </button>
+
+          {/* Duplicate (Ctrl+D) */}
+          <button
+            type="button"
+            disabled={!canDuplicate}
+            className="press size-7 flex items-center justify-center rounded-[2px] text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828] disabled:opacity-30"
+            title="Duplicate selected shape (Ctrl+D)"
+            onClick={duplicate}
+          >
+            <Copy className="size-4" />
+          </button>
+
+          {/* Copy Previous Photo Annotations */}
+          <button
+            type="button"
+            disabled={!canCopyPrevious}
+            className="press size-7 flex items-center justify-center rounded-[2px] text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828] disabled:opacity-30"
+            title="Copy boxes from previous photo (only if this photo has none)"
+            onClick={() => void copyPrevious()}
+          >
+            <History className="size-4" />
+          </button>
+
+          {/* Convert Shape (Box ↔ Polygon) */}
+          {selectedBox && !locked && (
+            <button
+              type="button"
+              className="press size-7 flex items-center justify-center rounded-[2px] text-[#1473e6] hover:bg-[#1473e6]/10"
+              title={
+                selectedBox.points
+                  ? "Convert selected polygon to bounding box"
+                  : "Convert selected box to 4-point polygon"
+              }
+              onClick={toggleConvertSelected}
+            >
+              <Repeat className="size-4" />
+            </button>
+          )}
+        </aside>
+
+        {/* -----------------------------------------------------------------------
+            CENTER CANVAS PANEL
+        ----------------------------------------------------------------------- */}
+        <main className="flex-1 min-w-0 min-h-0 bg-[#f0f0f0] relative flex flex-col overflow-hidden">
+          {/* Review QA Banner (if review mode is active) */}
+          {isReviewMode && (
+            <div className="h-[28px] bg-[#fffbe6] border-b border-[#ffe58f] px-2 flex items-center justify-between text-xs shrink-0 select-none">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-amber-900 uppercase tracking-wide text-[10px] bg-amber-200 px-1.5 py-0.2 rounded-[2px]">
                   Review QA
                 </span>
-                <p className="max-w-xs truncate font-mono text-sm font-semibold">
+                <span className="font-mono text-[11px] font-semibold text-[#282828]">
                   {current?.name ? `Reviewing: ${current.name}` : "No photo loaded"}
-                </p>
-                <span className="text-xs font-medium text-amber-950 dark:text-amber-100">
+                </span>
+                <span className="text-[#707070] text-[11px]">
                   | Completed by:{" "}
-                  <span className="font-semibold text-ink">
-                    {current?.owner ||
-                      current?.claimedBy ||
-                      (current?.completedAt ? username || "You" : "Not completed")}
-                  </span>
-                  {current?.reviewedBy ? (
-                    <span className="ml-1 font-semibold text-purple-900 dark:text-purple-200">
+                  <strong className="text-[#282828]">
+                    {current?.owner || current?.claimedBy || "Annotator"}
+                  </strong>
+                  {current?.reviewedBy && (
+                    <span className="ml-1 text-purple-700">
                       (Approved by {current.reviewedBy === username ? "you" : current.reviewedBy})
                     </span>
-                  ) : null}
+                  )}
                 </span>
-                {pendingReviewCount > 0 ? (
-                  <span className="rounded-full border border-amber-400 bg-amber-200 px-2.5 py-0.5 font-mono text-xs font-bold text-amber-950 dark:border-amber-700 dark:bg-amber-900 dark:text-amber-100">
+                {pendingReviewCount > 0 && (
+                  <span className="font-mono text-[10px] bg-amber-200 text-amber-950 font-bold px-1.5 py-0.2 rounded-[2px]">
                     {pendingReviewCount} pending
                   </span>
-                ) : null}
+                )}
               </div>
-              <div className="flex items-center gap-2">
+
+              <div className="flex items-center gap-1.5">
                 {isApproved ? (
                   canUnlock ? (
                     <button
                       type="button"
                       disabled={busy}
                       onClick={() => setShowUnlockModal(true)}
-                      className="press inline-flex h-9 items-center gap-1.5 rounded-sm bg-amber-600 px-3 text-xs font-bold text-white shadow-xs hover:bg-amber-700 active:bg-amber-800 dark:bg-amber-600 dark:hover:bg-amber-700 disabled:opacity-40"
-                      title="Revoke QA approval and unlock photo to edit"
+                      className="press inline-flex items-center gap-1 rounded-[2px] bg-amber-600 px-2 py-0.5 text-[11px] font-bold text-white hover:bg-amber-700"
+                      title="Revoke approval and unlock photo to edit"
                     >
-                      <Unlock className="size-3.5 text-white" aria-hidden="true" />
+                      <Unlock className="size-3 text-white" />
                       <span>Unlock to Edit</span>
                     </button>
                   ) : null
@@ -1386,21 +1915,21 @@ export function Labeler() {
                       type="button"
                       disabled={!current || busy}
                       onClick={() => void handleReviewApprove()}
-                      className="press inline-flex h-9 items-center gap-1.5 rounded-sm bg-emerald-600 px-3 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700 disabled:opacity-40"
+                      className="press inline-flex items-center gap-1 rounded-[2px] bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
                       title="Approve annotations (Hotkey: A or Enter)"
                     >
-                      <Check className="size-3.5" aria-hidden="true" />
-                      <span>✓ Approve (A)</span>
+                      <Check className="size-3" />
+                      <span>Approve (A)</span>
                     </button>
                     <button
                       type="button"
                       disabled={!current || busy}
                       onClick={() => void handleReviewReject()}
-                      className="press inline-flex h-9 items-center gap-1.5 rounded-sm bg-rose-600 px-3 text-xs font-semibold text-white shadow-xs hover:bg-rose-700 disabled:opacity-40"
-                      title="Reject back to annotator pool (Hotkey: X)"
+                      className="press inline-flex items-center gap-1 rounded-[2px] bg-rose-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-rose-700 disabled:opacity-40"
+                      title="Reject back to pool (Hotkey: X)"
                     >
-                      <X className="size-3.5" aria-hidden="true" />
-                      <span>✕ Reject to Pool (X)</span>
+                      <X className="size-3" />
+                      <span>Reject (X)</span>
                     </button>
                   </>
                 )}
@@ -1408,744 +1937,211 @@ export function Labeler() {
                   type="button"
                   disabled={busy}
                   onClick={() => void handleNextPendingReview()}
-                  className="press inline-flex h-9 items-center rounded-sm border border-amber-300 bg-white/80 px-2.5 text-xs font-medium text-amber-950 hover:bg-white dark:border-amber-700 dark:bg-amber-900/60 dark:text-amber-100 disabled:opacity-40"
-                  title="Fetch next completed image needing review"
+                  className="press rounded-[2px] border border-[#c8c8c8] bg-white px-2 py-0.5 text-[11px] text-[#282828] hover:bg-[#f0f0f0] disabled:opacity-40"
                 >
                   Next Pending
                 </button>
                 <button
                   type="button"
                   onClick={exitReviewMode}
-                  className="press inline-flex h-9 items-center rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-muted hover:text-ink"
-                  title="Exit review mode"
+                  className="press rounded-[2px] border border-[#c8c8c8] bg-white px-2 py-0.5 text-[11px] text-[#707070] hover:text-[#282828]"
                 >
                   Exit Review
                 </button>
               </div>
             </div>
-          ) : null}
-          <div className="min-h-0 flex-1 p-3">
+          )}
+
+          {/* Main Canvas Stage */}
+          <div className="flex-1 min-h-0 relative">
             {current && catalogue?.folderOk ? (
-              <div className="relative h-full min-h-72">
-                <LabelStage
-                  key={`${folderKey}/${current.name}/${imageVersion}`}
-                  src={imageSrc(current.name) + (imageVersion ? `&v=${imageVersion}` : "")}
-                  alt={current.name}
-                  boxes={boxes}
-                  hiddenKeys={hiddenKeys}
-                  selectedKey={selectedKey}
-                  activeClassId={activeClassId}
-                  toolMode={toolMode}
-                  renderMode={renderMode}
-                  crosshairMode={crosshairMode}
-                  sam2Enabled={sam2Enabled}
-                  cropMode={cropMode}
-                  isCropped={Boolean(cropInfo?.isCropped)}
-                  cropOriginalDims={cropInfo?.original ?? null}
-                  isCropping={isCropping}
-                  onCropConfirm={handleCropConfirm}
-                  onCropCancel={() => setCropMode(false)}
-                  onCropReset={handleCropReset}
-                  onSam2Status={(st) => {
-                    setSam2Status(st);
-                    if (st.state !== "idle") {
-                      setStatus(st.message);
-                    }
-                  }}
-                  onSam2Error={(msg) => setError(msg)}
-                  labelFor={labelFor}
-                  colorFor={colorFor}
-                  readOnly={locked}
-                  onChange={handleBoxesChange}
-                  onSelect={selectBox}
-                  onStartMarkup={() => {
-                    if (!isReviewMode && current && current.claimedBy !== username) {
-                      void ensureClaimed();
-                    }
-                  }}
-                />
-                <div className="pointer-events-none absolute top-2 left-2 z-30 flex items-center gap-1">
-                  {/* Tool Mode Toggle: Box ↔ Polygon (Icon only) */}
-                  <button
-                    type="button"
-                    className={`press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border ${
-                      toolMode === "polygon"
-                        ? "border-amber-400 bg-amber-100 text-amber-950 dark:border-amber-700 dark:bg-amber-950/70 dark:text-amber-200"
-                        : "border-line bg-surface text-ink hover:bg-surface-hover"
-                    }`}
-                    title={
-                      toolMode === "polygon"
-                        ? "Polygon mode (Click to switch to Boxes)"
-                        : "Box mode (Click to switch to Polygons)"
-                    }
-                    aria-label={
-                      toolMode === "polygon"
-                        ? "Polygon mode (Click to switch to Boxes)"
-                        : "Box mode (Click to switch to Polygons)"
-                    }
-                    onClick={() => setToolMode((m) => (m === "box" ? "polygon" : "box"))}
-                  >
-                    {toolMode === "box" ? (
-                      /* Square with corner dots */
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="size-4 shrink-0"
-                        aria-hidden="true"
-                      >
-                        <rect x="5" y="5" width="14" height="14" rx="1" />
-                        <circle cx="5" cy="5" r="1.5" fill="currentColor" />
-                        <circle cx="19" cy="5" r="1.5" fill="currentColor" />
-                        <circle cx="19" cy="19" r="1.5" fill="currentColor" />
-                        <circle cx="5" cy="19" r="1.5" fill="currentColor" />
-                      </svg>
-                    ) : (
-                      /* Polygon with corner dots */
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="size-4 shrink-0"
-                        aria-hidden="true"
-                      >
-                        <polygon points="12,3 21,9 18,20 6,20 3,9" />
-                        <circle cx="12" cy="3" r="1.5" fill="currentColor" />
-                        <circle cx="21" cy="9" r="1.5" fill="currentColor" />
-                        <circle cx="18" cy="20" r="1.5" fill="currentColor" />
-                        <circle cx="6" cy="20" r="1.5" fill="currentColor" />
-                        <circle cx="3" cy="9" r="1.5" fill="currentColor" />
-                      </svg>
-                    )}
-                  </button>
-
-                  {/* Precision / Filled Mode Toggle: Outline ↔ Filled (Icon only) */}
-                  <button
-                    type="button"
-                    className={`press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border ${
-                      renderMode === "filled"
-                        ? "border-sky-400 bg-sky-100 text-sky-950 dark:border-sky-700 dark:bg-sky-950/70 dark:text-sky-200"
-                        : "border-line bg-surface text-ink hover:bg-surface-hover"
-                    }`}
-                    title={
-                      renderMode === "filled"
-                        ? "Precision filled mode (Handles hidden). Click for Outline mode"
-                        : "Outline mode (Handles visible). Click for Precision filled mode"
-                    }
-                    aria-label={
-                      renderMode === "filled"
-                        ? "Precision filled mode (Handles hidden). Click for Outline mode"
-                        : "Outline mode (Handles visible). Click for Precision filled mode"
-                    }
-                    onClick={() => setRenderMode((m) => (m === "outline" ? "filled" : "outline"))}
-                  >
-                    {renderMode === "outline" ? (
-                      /* Outline square */
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        className="size-4 shrink-0"
-                        aria-hidden="true"
-                      >
-                        <rect x="4" y="4" width="16" height="16" rx="1.5" />
-                      </svg>
-                    ) : (
-                      /* Solid square */
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        stroke="currentColor"
-                        strokeWidth="1"
-                        className="size-4 shrink-0"
-                        aria-hidden="true"
-                      >
-                        <rect x="4" y="4" width="16" height="16" rx="1.5" />
-                      </svg>
-                    )}
-                  </button>
-
-                  {/* Crosshairs & Relative (0,0) Coordinate Readout Toggle (Icon only) */}
-                  <button
-                    type="button"
-                    className={`press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border ${
-                      crosshairMode
-                        ? "border-emerald-400 bg-emerald-100 text-emerald-950 dark:border-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-200"
-                        : "border-line bg-surface text-ink hover:bg-surface-hover"
-                    }`}
-                    title={
-                      crosshairMode
-                        ? "Crosshairs ON (Click canvas to zero 0,0 • Esc to reset origin)"
-                        : "Enable crosshairs and mouse pixel coordinate readout"
-                    }
-                    aria-label={
-                      crosshairMode
-                        ? "Crosshairs ON (Click canvas to zero 0,0)"
-                        : "Enable crosshairs and mouse pixel coordinate readout"
-                    }
-                    aria-pressed={crosshairMode}
-                    onClick={() => setCrosshairMode((v) => !v)}
-                  >
-                    <Crosshair className="size-4 shrink-0" aria-hidden="true" />
-                  </button>
-
-                  {/* Lossless ROI Crop Tool (Scissors) */}
-                  <button
-                    type="button"
-                    disabled={locked}
-                    className={`press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border ${
-                      cropMode
-                        ? "border-amber-400 bg-amber-100 text-amber-950 dark:border-amber-700 dark:bg-amber-950/70 dark:text-amber-200"
-                        : cropInfo?.isCropped
-                          ? "border-amber-500/60 bg-amber-500/15 text-amber-500 hover:bg-amber-500/25"
-                          : "border-line bg-surface text-ink hover:bg-surface-hover"
-                    } disabled:opacity-40`}
-                    title={
-                      cropMode
-                        ? "Crop mode active (Drag on canvas to define ROI • Esc to cancel)"
-                        : cropInfo?.isCropped
-                          ? `Crop ROI (Currently cropped to ${cropInfo.current.width}×${cropInfo.current.height} • Click to adjust or reset)`
-                          : "Crop ROI (Trim image to relevant region before labeling)"
-                    }
-                    aria-label="Crop ROI tool"
-                    aria-pressed={cropMode}
-                    onClick={() => setCropMode((v) => !v)}
-                  >
-                    <Scissors className="size-4 shrink-0" aria-hidden="true" />
-                  </button>
-
-                  {/* SAM2.1 Client-Side Polygon Tracing Toggle ("Trace") */}
-                  <button
-                    type="button"
-                    disabled={locked}
-                    className={`press pointer-events-auto inline-flex h-9 items-center gap-1.5 rounded-sm border px-2.5 text-xs font-medium disabled:opacity-40 ${
-                      sam2Enabled
-                        ? "border-purple-400 bg-purple-100 text-purple-950 dark:border-purple-700 dark:bg-purple-950/70 dark:text-purple-200"
-                        : "border-line bg-surface text-ink hover:bg-surface-hover"
-                    }`}
-                    title={
-                      sam2Enabled
-                        ? `SAM2.1 Auto-Trace ON (${
-                            sam2Status.state === "ready" ||
-                            sam2Status.state === "encoding" ||
-                            sam2Status.state === "decoding"
-                              ? sam2Status.provider.toUpperCase()
-                              : "ONNX"
-                          }) — Left-click (+) • Right-click/Shift+click (−) • Enter to commit`
-                        : "Enable SAM2.1 AI polygon tracing (Left-click object to trace)"
-                    }
-                    aria-label="Trace object polygon with SAM2.1"
-                    aria-pressed={sam2Enabled}
-                    onClick={() => {
-                      if (!sam2Enabled) {
-                        const seen =
-                          typeof window !== "undefined" &&
-                          window.localStorage.getItem("ls_marker_sam2_notice_seen") === "1";
-                        if (!seen && !samModelsCachedOnDisk && !isSam2Loaded()) {
-                          setShowSam2Modal(true);
-                          return;
-                        }
-                        setSam2Enabled(true);
-                      } else {
-                        setSam2Enabled(false);
-                        setSam2Status({ state: "idle" });
-                      }
-                    }}
-                  >
-                    {sam2Enabled &&
-                    (sam2Status.state === "loading_models" ||
-                      sam2Status.state === "encoding" ||
-                      sam2Status.state === "decoding") ? (
-                      <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <Sparkles className="size-4 shrink-0" aria-hidden="true" />
-                    )}
-                    <span>
-                      {sam2Enabled && samModelState.samModelStatus === "downloading"
-                        ? `Trace ${samModelState.downloadProgress}%`
-                        : "Trace"}
-                    </span>
-                  </button>
-
-                  {/* Duplicate Button (Icon only) */}
-                  <button
-                    type="button"
-                    className="press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border border-line bg-surface text-ink hover:bg-surface-hover disabled:opacity-40"
-                    disabled={!canDuplicate}
-                    title="Duplicate selected or last shape (Ctrl+D)"
-                    aria-label="Duplicate selected or last shape (Ctrl+D)"
-                    onClick={duplicate}
-                  >
-                    <Copy className="size-4 shrink-0" aria-hidden="true" />
-                  </button>
-
-                  {/* Previous Boxes Button (Icon only) */}
-                  <button
-                    type="button"
-                    className="press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border border-line bg-surface text-ink hover:bg-surface-hover disabled:opacity-40"
-                    disabled={!canCopyPrevious}
-                    title="Copy every box from the previous photo (only when this photo has none)"
-                    aria-label="Copy every box from the previous photo"
-                    onClick={() => void copyPrevious()}
-                  >
-                    <History className="size-4 shrink-0" aria-hidden="true" />
-                  </button>
-
-                  {/* Convert shape button when selected (Icon only) */}
-                  {selectedBox && !locked ? (
-                    <button
-                      type="button"
-                      className="press pointer-events-auto inline-flex size-9 items-center justify-center rounded-sm border border-line bg-surface text-ink hover:bg-surface-hover"
-                      title={
-                        selectedBox.points
-                          ? "Convert selected polygon to rectangle bounding box"
-                          : "Convert selected rectangle to 4-point polygon"
-                      }
-                      aria-label={
-                        selectedBox.points
-                          ? "Convert selected polygon to rectangle bounding box"
-                          : "Convert selected rectangle to 4-point polygon"
-                      }
-                      onClick={toggleConvertSelected}
-                    >
-                      <Repeat className="size-4 shrink-0" aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </div>
-
-                {/* SAM 2.1 model download progress bar or local cache load notification */}
-                {samModelState.samModelStatus === "downloading" ? (
-                  <div
-                    role="status"
-                    aria-live="polite"
-                    className="pointer-events-none absolute top-2 right-2 z-30 flex w-72 flex-col gap-1.5 rounded-md border border-purple-400/70 bg-surface/95 p-2.5 text-xs text-ink shadow-lg backdrop-blur-xs"
-                  >
-                    <div className="flex items-center justify-between gap-2 font-mono">
-                      <span className="flex items-center gap-1.5 font-medium text-purple-900 dark:text-purple-200">
-                        <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
-                        Caching SAM 2.1 models locally:
-                      </span>
-                      <span className="font-semibold tabular-nums">
-                        {samModelState.downloadProgress}%
-                      </span>
-                    </div>
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-ink/10">
-                      <div
-                        className="h-full bg-purple-600 transition-all duration-150"
-                        style={{ width: `${samModelState.downloadProgress}%` }}
-                      />
-                    </div>
-                  </div>
-                ) : samCacheToast ? (
-                  <div
-                    role="status"
-                    aria-live="polite"
-                    className="pointer-events-none absolute top-2 right-2 z-30 flex items-center gap-1.5 rounded-md border border-emerald-400/70 bg-surface/95 px-3 py-1.5 font-mono text-xs text-ink shadow-md backdrop-blur-xs"
-                  >
-                    <Check
-                      className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
-                      aria-hidden="true"
-                    />
-                    <span>{samCacheToast}</span>
-                  </div>
-                ) : null}
-              </div>
+              <LabelStage
+                key={`${folderKey}/${current.name}/${imageVersion}`}
+                src={imageSrc(current.name) + (imageVersion ? `&v=${imageVersion}` : "")}
+                alt={current.name}
+                boxes={boxes}
+                hiddenKeys={hiddenKeys}
+                selectedKey={selectedKey}
+                activeClassId={activeClassId}
+                toolMode={toolMode}
+                renderMode={renderMode}
+                crosshairMode={crosshairMode}
+                sam2Enabled={sam2Enabled}
+                cropMode={cropMode}
+                isCropped={Boolean(cropInfo?.isCropped)}
+                cropOriginalDims={cropInfo?.original ?? null}
+                isCropping={isCropping}
+                onCropConfirm={handleCropConfirm}
+                onCropCancel={() => setCropMode(false)}
+                onCropReset={handleCropReset}
+                onSam2Status={(st) => {
+                  setSam2Status(st);
+                  if (st.state !== "idle") setStatus(st.message);
+                }}
+                onSam2Error={(msg) => setError(msg)}
+                labelFor={labelFor}
+                colorFor={colorFor}
+                readOnly={locked}
+                onChange={handleBoxesChange}
+                onSelect={selectBox}
+                onStartMarkup={() => {
+                  if (!isReviewMode && current && current.claimedBy !== username) {
+                    void ensureClaimed();
+                  }
+                }}
+              />
             ) : (
-              <div className="flex h-full min-h-72 items-center justify-center rounded-lg bg-ink px-6 text-center text-sm text-surface">
+              <div className="flex h-full items-center justify-center text-xs text-[#707070]">
                 {catalogue?.folderError ??
                   (catalogue
                     ? allImages.length
-                      ? "Nothing in this queue."
-                      : "This folder has no images."
-                    : "Loading images")}
+                      ? "No images in active queue."
+                      : "Project folder contains no images."
+                    : "Loading project images...")}
               </div>
             )}
-          </div>
-          <div className="flex flex-wrap items-center gap-2 border-t border-line px-3 py-3">
-            <button
-              type="button"
-              className={btn}
-              onClick={() => void shift(-1)}
-              disabled={!current || safeIndex === 0 || busy}
-            >
-              <ChevronLeft className="size-4" aria-hidden="true" />
-              Previous
-            </button>
-            {isApproved ? (
-              <span className="inline-flex items-center gap-1.5 rounded-sm border border-purple-300 bg-purple-100 px-3 py-2 text-xs font-bold text-purple-950 shadow-xs dark:border-purple-800 dark:bg-purple-950 dark:text-purple-200">
-                <Check
-                  className="size-4 text-purple-700 dark:text-purple-300 stroke-[2.5]"
-                  aria-hidden="true"
-                />
-                ✓ Approved by {current?.reviewedBy || current?.owner || "QA"}
-              </span>
-            ) : (
-              <button
-                type="button"
-                className={btnPrimary}
-                onClick={() => void save()}
-                disabled={!current || busy || !dirty || locked}
-              >
-                Save
-              </button>
-            )}
-            <button
-              type="button"
-              className={btn}
-              onClick={() => void shift(1)}
-              disabled={!current || safeIndex >= images.length - 1 || busy}
-            >
-              Next
-              <ChevronRight className="size-4" aria-hidden="true" />
-            </button>
-            {!isApproved ? (
-              <button
-                type="button"
-                className={btn}
-                title="No parts in this photo. Saves an empty label and opens the next unlabelled photo."
-                disabled={!current || busy || locked || boxes.length > 0}
-                onClick={() => void markNone()}
-              >
-                No parts
-              </button>
-            ) : null}
-            {isApproved && canUnlock ? (
-              <button
-                type="button"
-                className="press inline-flex h-11 items-center gap-1.5 rounded-sm bg-amber-600 px-4 text-xs font-bold text-white shadow-xs hover:bg-amber-700 active:bg-amber-800 dark:bg-amber-600 dark:hover:bg-amber-700"
-                onClick={() => setShowUnlockModal(true)}
-                title="Unlock approved photo to edit"
-              >
-                <Unlock className="size-4 text-white" aria-hidden="true" />
-                Unlock to Edit
-              </button>
-            ) : null}
-            <p className="ml-auto text-sm text-muted" aria-live="polite">
-              {dirty ? "Unsaved" : status}
-              {current?.labelled ? " · txt" : ""}
-              {locked ? (isApproved ? " · approved" : " · locked") : ""}
-            </p>
-          </div>
-        </section>
-        <hr
-          aria-orientation="vertical"
-          aria-label="Resize class pane"
-          aria-valuemin={PANE_MIN}
-          aria-valuemax={PANE_MAX}
-          aria-valuenow={paneWidth}
-          tabIndex={0}
-          className="pane-resize m-0 h-auto w-2 shrink-0 cursor-col-resize touch-none self-stretch border-0 border-l border-line bg-surface focus-visible:ring-2 focus-visible:ring-accent"
-          onPointerDown={(event) => {
-            if (event.button !== 0) return;
-            event.preventDefault();
-            paneDrag.current = { x: event.clientX, width: paneWidth };
-            event.currentTarget.setPointerCapture(event.pointerId);
-          }}
-          onPointerMove={(event) => resizePane(event.clientX)}
-          onPointerUp={(event) => {
-            paneDrag.current = null;
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              event.currentTarget.releasePointerCapture(event.pointerId);
-            }
-          }}
-          onPointerCancel={(event) => {
-            paneDrag.current = null;
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              event.currentTarget.releasePointerCapture(event.pointerId);
-            }
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-            event.preventDefault();
-            event.stopPropagation();
-            const delta = event.key === "ArrowLeft" ? 24 : -24;
-            setPaneWidth((width) => Math.min(PANE_MAX, Math.max(PANE_MIN, width + delta)));
-          }}
-        />
-        <aside
-          className="class-pane flex max-h-96 min-h-0 flex-col overflow-hidden border-t border-line bg-surface lg:max-h-none lg:border-t-0"
-          style={{ "--pane-width": `${paneWidth}px` } as CSSProperties}
-        >
-          <div
-            className={`flex flex-col gap-3 p-4 pb-2 ${codesOpen ? "flex-1 min-h-0" : "shrink-0"}`}
-          >
-            <div className="flex items-center justify-between rounded-sm border border-line bg-bg p-2.5">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="text-sm font-medium">Codes on this image</span>
-                {tokens.length > 0 ? (
-                  <span className="rounded-sm bg-ink/10 px-1.5 py-0.5 font-mono text-xs text-ink">
-                    {tokens.length} {tokens.length === 1 ? "code" : "codes"}
-                  </span>
-                ) : (
-                  <span className="text-xs text-muted">None</span>
-                )}
-                {unknownCodes.length > 0 ? (
-                  <span className="rounded-sm bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-700">
-                    {unknownCodes.length} missing
-                  </span>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                className="press inline-flex size-8 items-center justify-center rounded-sm border border-line bg-surface text-ink hover:bg-surface-raised"
-                onClick={() => setCodesOpen((prev) => !prev)}
-                title={codesOpen ? "Minimise" : "Full column"}
-                aria-label={codesOpen ? "Minimise" : "Full column"}
-              >
-                {codesOpen ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-              </button>
-            </div>
 
-            {codesOpen ? (
-              <div className="flex min-h-0 flex-1 flex-col gap-2">
-                <textarea
-                  className="w-full flex-1 min-h-[300px] resize-none rounded-sm border border-line bg-surface px-3 py-2 font-mono text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                  value={codeList}
-                  spellCheck={false}
-                  disabled={locked}
-                  placeholder={"HX-M8\nNUT-M8\nWSH-M8"}
-                  onChange={(event) => setCodeList(event.target.value)}
-                  autoFocus
-                />
-                <div className="text-xs text-muted">
-                  {tokens.length > 0 ? (
-                    <p>
-                      {picks.length} of {tokens.length} codes in class list.
-                      {unknownCodes.length > 0 ? ` Missing: ${unknownCodes.join(", ")}` : ""}
-                    </p>
-                  ) : (
-                    <p>Paste item codes (one per line). Class dropdown will filter to these.</p>
-                  )}
+            {/* SAM2 Model Download / Local Cache Notification */}
+            {samModelState.samModelStatus === "downloading" ? (
+              <div className="pointer-events-none absolute top-2 right-2 z-30 flex w-64 flex-col gap-1 rounded-[2px] border border-purple-400 bg-white p-2 text-xs shadow-none">
+                <div className="flex items-center justify-between font-mono text-[11px]">
+                  <span className="flex items-center gap-1 text-purple-900 font-medium">
+                    <Loader2 className="size-3 animate-spin" />
+                    Downloading SAM 2.1:
+                  </span>
+                  <span className="font-bold">{samModelState.downloadProgress}%</span>
+                </div>
+                <div className="h-1 w-full bg-neutral-200 rounded-none overflow-hidden">
+                  <div
+                    className="h-full bg-purple-600 transition-all duration-150"
+                    style={{ width: `${samModelState.downloadProgress}%` }}
+                  />
                 </div>
               </div>
-            ) : (
-              <label className="flex flex-col gap-2 text-sm font-medium">
-                <span className="flex items-center gap-2">
-                  Class
-                  <span className="font-normal text-muted">
-                    {selectedKey ? "selected box" : "next box"}
-                  </span>
-                  {activeClassId != null ? (
-                    <span
-                      className="size-3 rounded-full"
-                      style={{ background: colorFor(activeClassId) }}
-                      aria-hidden="true"
-                    />
-                  ) : null}
-                </span>
-                <select
-                  className={field}
-                  value={
-                    options.some((row) => row.id === activeClassId) ? (activeClassId ?? "") : ""
-                  }
-                  disabled={options.length === 0 || locked}
-                  onChange={(event) => chooseClass(Number(event.target.value))}
+            ) : samCacheToast ? (
+              <div className="pointer-events-none absolute top-2 right-2 z-30 flex items-center gap-1.5 rounded-[2px] border border-emerald-400 bg-white px-2 py-1 font-mono text-[11px] text-[#282828] shadow-none">
+                <Check className="size-3.5 text-emerald-600" />
+                <span>{samCacheToast}</span>
+              </div>
+            ) : null}
+
+            {/* Error banner overlay if any */}
+            {error && (
+              <div className="absolute bottom-2 left-2 right-2 z-30 bg-red-50 border border-red-300 p-2 text-xs text-red-800 rounded-[2px] flex items-center justify-between">
+                <span>{error}</span>
+                <button
+                  type="button"
+                  onClick={() => setError(null)}
+                  className="text-red-700 hover:text-red-950"
                 >
-                  {options.length === 0 ? <option value="">Paste item codes</option> : null}
-                  {options.map((row) => (
-                    <option key={row.id} value={row.id}>
-                      {classLine(row)}
-                    </option>
-                  ))}
-                </select>
-                <span className="text-sm font-normal text-muted">
-                  {selectedKey
-                    ? "Changing this updates the selected box."
-                    : "Used for the next box you draw."}
-                </span>
-              </label>
+                  <X className="size-3.5" />
+                </button>
+              </div>
             )}
           </div>
+        </main>
 
-          {!codesOpen ? (
-            <div className="flex min-h-0 flex-1 flex-col gap-2 px-4">
-              <div className="flex items-center justify-between text-sm font-medium">
-                <span>Boxes</span>
-                <span className="font-mono text-muted tabular-nums">{boxes.length}</span>
-              </div>
-              {boxes.length === 0 ? (
-                <p className="pb-2 text-sm text-muted">
-                  Drag on the image. The selected class is written into the YOLO file.
-                </p>
+        {/* -----------------------------------------------------------------------
+            RIGHT SIDEBAR (Exact 320px, Collapsible Panes)
+        ----------------------------------------------------------------------- */}
+        <aside
+          aria-label="Side Panels"
+          className="w-[320px] border-l border-[#c8c8c8] bg-white flex flex-col shrink-0 select-none overflow-hidden h-full"
+        >
+          {/* PANE 1: Queue Filters & Photo Claims */}
+          <div className="border-b border-[#c8c8c8] flex flex-col shrink-0">
+            <button
+              type="button"
+              onClick={() => setPaneQueueOpen((v) => !v)}
+              className="h-6 px-2 bg-[#f5f5f5] hover:bg-[#ebebeb] flex items-center justify-between border-b border-[#c8c8c8] text-[11px] font-semibold text-[#282828]"
+            >
+              <span>QUEUE &amp; CLAIMS</span>
+              {paneQueueOpen ? (
+                <ChevronUp className="size-3" />
               ) : (
-                <ul
-                  ref={boxListRef}
-                  className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pb-2"
-                >
-                  {boxes.map((box, boxIndex) => {
-                    const hidden = hiddenKeys.has(box.key);
-                    return (
-                      <li key={box.key} className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => selectBox(box.key)}
-                          className={`press h-11 min-w-0 flex-1 truncate rounded-sm px-3 text-left font-mono text-sm ${
-                            hidden ? "opacity-40" : ""
-                          } ${box.key === selectedKey ? "bg-ink text-surface" : "bg-bg text-ink"}`}
-                          style={{ boxShadow: `inset 4px 0 0 ${colorFor(box.classId)}` }}
-                        >
-                          <span className="mr-1.5 opacity-60">
-                            {box.points && box.points.length >= 3 ? "⬠" : "▢"}
-                          </span>
-                          {boxIndex + 1} {boxTitle(box.classId)}
-                        </button>
-                        <button
-                          type="button"
-                          className={iconBtn}
-                          aria-pressed={!hidden}
-                          aria-label={`${hidden ? "Show" : "Hide"} box ${boxIndex + 1}`}
-                          onClick={() => toggleBox(box.key)}
-                        >
-                          {hidden ? (
-                            <EyeOff className="size-4" aria-hidden="true" />
-                          ) : (
-                            <Eye className="size-4" aria-hidden="true" />
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          className={iconBtn}
-                          disabled={locked}
-                          aria-label={`Delete box ${boxIndex + 1}`}
-                          onClick={() => {
-                            if (!isReviewMode && current && current.claimedBy !== username) {
-                              void ensureClaimed();
-                            }
-                            setBoxes((prev) => prev.filter((item) => item.key !== box.key));
-                            if (selectedKey === box.key) setSelectedKey(null);
-                          }}
-                        >
-                          <Trash2 className="size-4" aria-hidden="true" />
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
+                <ChevronDown className="size-3" />
               )}
-            </div>
-          ) : null}
-          <div className="flex shrink-0 flex-col gap-3 border-t border-line p-4">
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">Queue</p>
-                {!isReviewMode ? (
-                  <button
-                    type="button"
-                    className="press inline-flex h-8 items-center rounded-sm bg-amber-600 px-2.5 text-xs font-semibold text-white shadow-xs hover:bg-amber-700"
-                    onClick={enterReviewMode}
-                  >
-                    Review QA
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="press inline-flex h-8 items-center rounded-sm border border-line bg-surface px-2.5 text-xs font-medium text-muted hover:text-ink"
-                    onClick={exitReviewMode}
-                  >
-                    Exit Review
-                  </button>
-                )}
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {(
-                  [
-                    ["all", "All"],
-                    ["open", "Open"],
-                    ["incomplete", "Incomplete"],
-                    ["complete", "Complete"],
-                    ["approved", "Approved"],
-                    ["mine", "Mine"],
-                    ["free", "Free"],
-                  ] as const
-                ).map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    className={
-                      queue === key
-                        ? "press inline-flex h-11 items-center rounded-sm bg-ink px-3 text-sm font-medium text-surface"
-                        : "press inline-flex h-11 items-center rounded-sm border border-line bg-surface px-3 text-sm font-medium text-ink"
-                    }
-                    onClick={() => showQueue(key)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {current ? (
-              <div className="flex flex-col gap-2">
-                {isApproved ? (
-                  <>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-1.5 rounded-sm border border-purple-300 bg-purple-100 px-2.5 py-1 text-xs font-bold text-purple-950 dark:border-purple-800 dark:bg-purple-950 dark:text-purple-200">
-                        <Check
-                          className="size-3.5 text-purple-700 dark:text-purple-300 stroke-[2.5]"
-                          aria-hidden="true"
-                        />
-                        Approved by {current.reviewedBy || current.owner || "QA"}
+            </button>
+
+            {paneQueueOpen && (
+              <div className="p-2 flex flex-col gap-2 bg-white">
+                {/* Filter Pills */}
+                <div className="flex flex-wrap gap-1">
+                  {(
+                    [
+                      ["all", "All"],
+                      ["open", "Open"],
+                      ["incomplete", "Incomplete"],
+                      ["complete", "Complete"],
+                      ["approved", "Approved"],
+                      ["mine", "Mine"],
+                      ["free", "Free"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`px-1.5 py-0.5 rounded-[2px] text-[11px] font-medium border ${
+                        queue === key
+                          ? "bg-[#1473e6] text-white border-[#1473e6]"
+                          : "bg-white text-[#282828] border-[#c8c8c8] hover:bg-[#f0f0f0]"
+                      }`}
+                      onClick={() => showQueue(key)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Claim / Release Actions */}
+                {current && (
+                  <div className="flex flex-col gap-1.5 pt-1 border-t border-[#f0f0f0]">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-[#707070]">
+                        {holder === username
+                          ? "Claimed by you"
+                          : holder
+                            ? `Claimed by ${holder}`
+                            : "Available to claim"}
                       </span>
                       <StatusBadge status={current.status} />
                     </div>
-                    <p className="text-xs text-muted">
-                      This photo is approved and frozen in read-only mode to safeguard ground truth.
-                    </p>
-                    {canUnlock ? (
-                      <button
-                        type="button"
-                        className="press inline-flex h-10 w-full items-center justify-center gap-2 rounded-sm bg-amber-600 px-4 text-xs font-bold text-white shadow-xs hover:bg-amber-700 active:bg-amber-800 dark:bg-amber-600 dark:hover:bg-amber-700"
-                        onClick={() => setShowUnlockModal(true)}
-                      >
-                        <Unlock className="size-4 text-white" aria-hidden="true" />
-                        Unlock to Edit
-                      </button>
-                    ) : null}
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm text-muted">
-                        {holder === username
-                          ? current.status === "complete"
-                            ? "Completed by you. Held time paused."
-                            : "You have this image."
-                          : holder
-                            ? `Claimed by ${holder}. Take over to edit.`
-                            : "Free. Start marking up or click Claim to claim it."}
-                      </p>
-                      <StatusBadge status={current.status} />
-                    </div>
-                    {holder === username ? (
-                      <div className="flex flex-col gap-2 sm:flex-row">
+
+                    {isApproved ? (
+                      canUnlock ? (
                         <button
                           type="button"
-                          className="press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-sm bg-emerald-600 px-4 text-sm font-medium text-white hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-40"
+                          className="press h-7 w-full inline-flex items-center justify-center gap-1.5 rounded-[2px] bg-amber-600 px-2 text-[11px] font-bold text-white hover:bg-amber-700"
+                          onClick={() => setShowUnlockModal(true)}
+                        >
+                          <Unlock className="size-3 text-white" />
+                          <span>Unlock to Edit</span>
+                        </button>
+                      ) : null
+                    ) : holder === username ? (
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
                           disabled={busy}
+                          className="press h-7 flex-1 rounded-[2px] bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-[11px] disabled:opacity-40"
                           onClick={() => void completeCurrent()}
                         >
                           Complete
                         </button>
                         <button
                           type="button"
-                          className="press inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-sm border border-amber-400 bg-amber-300 px-4 text-sm font-semibold text-amber-950 hover:bg-amber-400 active:bg-amber-500 disabled:opacity-40 shadow-xs dark:border-amber-600 dark:bg-amber-500 dark:text-amber-950"
                           disabled={busy}
+                          className="press h-7 flex-1 rounded-[2px] bg-amber-500 hover:bg-amber-600 text-white font-medium text-[11px] disabled:opacity-40"
                           onClick={() => void releaseIncompleteAction()}
                         >
-                          Release incomplete
+                          Release Incomplete
                         </button>
                       </div>
                     ) : holder ? (
                       <button
                         type="button"
-                        className={btn}
                         disabled={busy}
+                        className="press h-7 w-full rounded-[2px] border border-amber-400 bg-amber-100 hover:bg-amber-200 text-amber-950 font-medium text-[11px]"
                         onClick={() => {
                           if (!confirmTakeover) {
                             setConfirmTakeover(true);
@@ -2154,53 +2150,906 @@ export function Labeler() {
                           void claim(true);
                         }}
                       >
-                        {confirmTakeover ? "Confirm takeover" : "Take over"}
+                        {confirmTakeover ? "Confirm Takeover" : "Take Over"}
                       </button>
                     ) : (
                       <button
                         type="button"
-                        className={btn}
                         disabled={busy}
+                        className="press h-7 w-full rounded-[2px] bg-[#1473e6] hover:bg-[#0d62c7] text-white font-medium text-[11px]"
                         onClick={() => void claim(false)}
                       >
-                        Claim
+                        Claim Photo
                       </button>
                     )}
-                  </>
+                  </div>
                 )}
               </div>
-            ) : null}
-            <p className="text-sm text-muted break-all">
-              {catalogue?.folderOk ? catalogue.resolvedFolder : (catalogue?.folderError ?? "—")}
-            </p>
+            )}
+          </div>
+
+          {/* PANE 2: Classes Palette & Part Dimensions */}
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            <div className="h-6 px-2 bg-[#f5f5f5] flex items-center justify-between border-b border-[#c8c8c8] text-[11px] font-semibold text-[#282828] shrink-0">
+              <button
+                type="button"
+                onClick={() => setPaneClassesOpen((v) => !v)}
+                className="flex items-center gap-1.5 flex-1 text-left"
+              >
+                <span>CLASSES ({classes.length})</span>
+                {paneClassesOpen ? (
+                  <ChevronUp className="size-3" />
+                ) : (
+                  <ChevronDown className="size-3" />
+                )}
+              </button>
+
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setCodesOpen((v) => !v)}
+                  className={`text-[10px] font-mono px-1 rounded-[2px] border ${
+                    codesOpen
+                      ? "bg-[#1473e6] text-white border-[#1473e6]"
+                      : "bg-white text-[#707070] border-[#c8c8c8]"
+                  }`}
+                  title="Toggle paste item codes on image"
+                >
+                  Codes {tokens.length > 0 ? `(${tokens.length})` : ""}
+                </button>
+              </div>
+            </div>
+
+            {paneClassesOpen && (
+              <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                {codesOpen ? (
+                  <div className="p-2 flex flex-col gap-1.5 flex-1 min-h-0 bg-white">
+                    <span className="text-[11px] font-medium text-[#707070]">
+                      Paste item codes for this photo (one per line):
+                    </span>
+                    <textarea
+                      value={codeList}
+                      spellCheck={false}
+                      disabled={locked}
+                      placeholder={"HX-M8\nNUT-M8\nWSH-M8"}
+                      onChange={(e) => setCodeList(e.target.value)}
+                      className="w-full flex-1 resize-none rounded-[2px] border border-[#c8c8c8] bg-white p-1.5 font-mono text-xs text-[#282828] outline-none focus:border-[#1473e6]"
+                    />
+                    {tokens.length > 0 && (
+                      <span className="text-[10px] text-[#707070]">
+                        {picks.length} of {tokens.length} matched in database.
+                        {unknownCodes.length > 0 ? ` (${unknownCodes.length} missing)` : ""}
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                    {/* Filter bar */}
+                    <div className="p-1 border-b border-[#f0f0f0] bg-white">
+                      <div className="relative flex items-center">
+                        <Search className="size-3 text-[#707070] absolute left-1.5" />
+                        <input
+                          type="text"
+                          placeholder="Filter classes..."
+                          value={classFilter}
+                          onChange={(e) => setClassFilter(e.target.value)}
+                          className="w-full h-6 pl-6 pr-2 rounded-[2px] border border-[#c8c8c8] text-[11px] bg-white text-[#282828] outline-none focus:border-[#1473e6]"
+                        />
+                        {classFilter && (
+                          <button
+                            type="button"
+                            onClick={() => setClassFilter("")}
+                            className="absolute right-1 text-[#707070] hover:text-[#282828]"
+                          >
+                            <X className="size-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Classes list */}
+                    <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#f0f0f0]">
+                      {filteredClasses.map((row) => {
+                        const isSelected = row.id === activeClassId;
+                        const complete = hasCompleteMeasurements(row);
+                        const hasPartType = row.part_type && row.part_type !== "none";
+
+                        return (
+                          <div
+                            key={row.id}
+                            className={`group flex items-center gap-1.5 px-2 py-1 cursor-pointer transition-colors ${
+                              isSelected
+                                ? "bg-[#1473e6]/10 border-l-2 border-[#1473e6]"
+                                : "hover:bg-[#f9f9f9]"
+                            }`}
+                            onClick={() => chooseClass(row.id)}
+                          >
+                            {/* Color chip */}
+                            <span
+                              className="size-2.5 rounded-[1px] shrink-0"
+                              style={{ backgroundColor: colorFor(row.id) }}
+                            />
+
+                            {/* Class ID */}
+                            <span className="font-mono text-[10px] text-[#707070] w-6 shrink-0">
+                              #{row.id}
+                            </span>
+
+                            {/* Item Code */}
+                            <span className="font-bold text-[11px] text-[#282828] shrink-0">
+                              {row.ic}
+                            </span>
+
+                            {/* Description */}
+                            <span className="text-[11px] text-[#707070] truncate flex-1 min-w-0">
+                              {row.des}
+                            </span>
+
+                            {/* Part dimensions status tag */}
+                            {complete ? (
+                              <span
+                                className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-emerald-100 text-emerald-800 shrink-0"
+                                title="Dimensions complete"
+                              >
+                                complete
+                              </span>
+                            ) : hasPartType ? (
+                              <span
+                                className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-rose-100 text-rose-800 shrink-0"
+                                title="Dimensions unset"
+                              >
+                                unset
+                              </span>
+                            ) : null}
+
+                            {/* Dimension edit toggle button */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingDimsClass(
+                                  editingDimsClass?.id === row.id ? null : { ...row },
+                                );
+                                setShowSvgDiagram(false);
+                              }}
+                              className={`press size-5 flex items-center justify-center rounded-[2px] text-[#707070] hover:text-[#1473e6] hover:bg-[#f0f0f0] ${
+                                editingDimsClass?.id === row.id ? "text-[#1473e6]" : ""
+                              }`}
+                              title="Edit part measurements"
+                            >
+                              <Ruler className="size-3" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Inline Dense Dimension Editor */}
+                    {editingDimsClass && (
+                      <div className="p-2 border-t border-[#c8c8c8] bg-[#f9f9f9] flex flex-col gap-2 shrink-0 max-h-[220px] overflow-y-auto">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-[11px] text-[#282828]">
+                            Dimensions: {editingDimsClass.ic} (#{editingDimsClass.id})
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setEditingDimsClass(null)}
+                            className="text-[#707070] hover:text-[#282828]"
+                          >
+                            <X className="size-3.5" />
+                          </button>
+                        </div>
+
+                        {/* Part Type Selector */}
+                        <div className="flex items-center gap-1.5">
+                          <label className="text-[11px] text-[#707070] shrink-0">Type:</label>
+                          <select
+                            value={editingDimsClass.part_type ?? "none"}
+                            onChange={(e) =>
+                              setEditingDimsClass({
+                                ...editingDimsClass,
+                                part_type: e.target.value as PartType,
+                              })
+                            }
+                            className="h-6 flex-1 rounded-[2px] border border-[#c8c8c8] bg-white text-[11px] px-1"
+                          >
+                            {PART_TYPE_OPTIONS.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+
+                          {editingDimsClass.part_type &&
+                            editingDimsClass.part_type !== "none" &&
+                            editingDimsClass.part_type !== "other" && (
+                              <button
+                                type="button"
+                                onClick={() => setShowSvgDiagram((v) => !v)}
+                                className={`h-6 px-1.5 rounded-[2px] border text-[10px] font-medium flex items-center gap-1 ${
+                                  showSvgDiagram
+                                    ? "bg-[#1473e6] text-white border-[#1473e6]"
+                                    : "bg-white text-[#1473e6] border-[#1473e6]"
+                                }`}
+                              >
+                                ? Diagram
+                              </button>
+                            )}
+                        </div>
+
+                        {/* SVG Measurement Guide Popover */}
+                        {showSvgDiagram &&
+                          editingDimsClass.part_type &&
+                          editingDimsClass.part_type !== "none" &&
+                          editingDimsClass.part_type !== "other" && (
+                            <PartMeasurementPopover
+                              partType={editingDimsClass.part_type}
+                              onClose={() => setShowSvgDiagram(false)}
+                            />
+                          )}
+
+                        {/* Dense fields table */}
+                        {editingDimsClass.part_type && editingDimsClass.part_type !== "none" && (
+                          <div className="grid grid-cols-3 gap-1">
+                            {editingDimsClass.part_type === "bolt" && (
+                              <>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Thread (M)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="8"
+                                    value={editingDimsClass.dim1_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Pitch (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="1.25"
+                                    value={editingDimsClass.dim2_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Length (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="40"
+                                    value={editingDimsClass.dim3_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim3_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            {editingDimsClass.part_type === "nut" && (
+                              <>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Thread (M)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="8"
+                                    value={editingDimsClass.dim1_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Pitch (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="1.25"
+                                    value={editingDimsClass.dim2_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Hex A/F (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="13"
+                                    value={editingDimsClass.dim3_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim3_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            {editingDimsClass.part_type === "washer" && (
+                              <>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Outer D (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="16"
+                                    value={editingDimsClass.dim1_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Inner D (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="8.4"
+                                    value={editingDimsClass.dim2_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Thick (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="1.6"
+                                    value={editingDimsClass.dim3_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim3_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            {editingDimsClass.part_type === "cable_tie" && (
+                              <>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Length (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="200"
+                                    value={editingDimsClass.dim1_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Width (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="4.8"
+                                    value={editingDimsClass.dim2_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Thick (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="1.2"
+                                    value={editingDimsClass.dim3_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim3_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            {editingDimsClass.part_type === "spring" && (
+                              <>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Height (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="35"
+                                    value={editingDimsClass.dim1_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Outer D (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="12"
+                                    value={editingDimsClass.dim2_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Wire D (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="1.5"
+                                    value={editingDimsClass.dim3_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim3_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            {editingDimsClass.part_type === "other" && (
+                              <>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Dim 1 (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    value={editingDimsClass.dim1_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Dim 2 (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    value={editingDimsClass.dim2_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Dim 3 (mm)
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    value={editingDimsClass.dim3_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        dim3_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                  />
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
+
+                        {dimsError && <span className="text-[10px] text-red-600">{dimsError}</span>}
+
+                        <button
+                          type="button"
+                          disabled={savingDims}
+                          onClick={() => void handleSaveDims()}
+                          className="press h-6 rounded-[2px] bg-[#1473e6] text-white font-medium text-[11px] flex items-center justify-center gap-1 hover:bg-[#0d62c7] disabled:opacity-40"
+                        >
+                          {savingDims ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <Check className="size-3" />
+                          )}
+                          <span>Save Dims</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* PANE 3: Layer / Shape Deck (Vertically Resizable) */}
+          <div
+            className="flex flex-col shrink-0 overflow-hidden relative"
+            style={{ height: paneLayersOpen ? `${shapesHeight}px` : undefined }}
+          >
+            {/* Vertical resize splitter bar */}
+            <div
+              onPointerDown={handleShapesResizePointerDown}
+              onDoubleClick={() => {
+                setShapesHeight(220);
+                try {
+                  localStorage.setItem("ls_marker_shapes_pane_height", "220");
+                } catch {
+                  // ignore
+                }
+              }}
+              title="Drag to resize Shapes vertically (Double-click to reset)"
+              className={`group/shapes-resizer h-1.5 w-full cursor-row-resize select-none shrink-0 transition-colors border-t border-[#c8c8c8] flex items-center justify-center ${
+                isResizingShapes ? "bg-[#1473e6]" : "bg-[#f5f5f5] hover:bg-[#1473e6]/30"
+              }`}
+            >
+              <div
+                className={`w-8 h-[2px] rounded-full transition-colors ${
+                  isResizingShapes
+                    ? "bg-white"
+                    : "bg-[#a0a0a0] group-hover/shapes-resizer:bg-[#1473e6]"
+                }`}
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setPaneLayersOpen((v) => !v)}
+              className="h-6 px-2 bg-[#f5f5f5] hover:bg-[#ebebeb] flex items-center justify-between border-b border-[#c8c8c8] text-[11px] font-semibold text-[#282828] shrink-0"
+            >
+              <span>SHAPES ({boxes.length})</span>
+              {paneLayersOpen ? (
+                <ChevronUp className="size-3" />
+              ) : (
+                <ChevronDown className="size-3" />
+              )}
+            </button>
+
+            {paneLayersOpen && (
+              <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#f0f0f0] bg-white">
+                {boxes.length === 0 ? (
+                  <div className="p-3 text-center text-[#707070] text-[11px]">
+                    No shapes on this photo.
+                  </div>
+                ) : (
+                  boxes.map((box, idx) => {
+                    const isSelected = selectedKey === box.key;
+                    const isHidden = hiddenKeys.has(box.key);
+                    const isPolygon = Boolean(box.points && box.points.length >= 3);
+
+                    return (
+                      <div
+                        key={box.key}
+                        onClick={() => selectBox(box.key)}
+                        className={`group flex items-center gap-1.5 px-2 py-1 cursor-pointer transition-colors ${
+                          isSelected
+                            ? "bg-[#1473e6]/10 border-l-2 border-[#1473e6]"
+                            : "hover:bg-[#f9f9f9]"
+                        } ${isHidden ? "opacity-40" : ""}`}
+                      >
+                        {/* Shape index */}
+                        <span className="font-mono text-[10px] text-[#707070] w-4 shrink-0">
+                          #{idx + 1}
+                        </span>
+
+                        {/* Shape type glyph (click to convert) */}
+                        <button
+                          type="button"
+                          disabled={locked}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedKey(box.key);
+                            toggleConvertSelected();
+                          }}
+                          className="size-4 shrink-0 font-bold text-center text-[#707070] hover:text-[#1473e6]"
+                          title={
+                            isPolygon
+                              ? "Polygon (click to convert to Box)"
+                              : "Box (click to convert to Polygon)"
+                          }
+                        >
+                          {isPolygon ? "⬠" : "▢"}
+                        </button>
+
+                        {/* Class color chip */}
+                        <span
+                          className="size-2 rounded-[1px] shrink-0"
+                          style={{ backgroundColor: colorFor(box.classId) }}
+                        />
+
+                        {/* Title */}
+                        <span className="text-[11px] font-mono text-[#282828] truncate flex-1 min-w-0">
+                          {boxTitle(box.classId)}
+                        </span>
+
+                        {/* Visibility eye toggle */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleBox(box.key);
+                          }}
+                          className="press size-5 flex items-center justify-center rounded-[2px] text-[#707070] hover:text-[#282828]"
+                          title={isHidden ? "Show shape" : "Hide shape"}
+                        >
+                          {isHidden ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+                        </button>
+
+                        {/* Delete shape */}
+                        <button
+                          type="button"
+                          disabled={locked}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (!isReviewMode && current && current.claimedBy !== username) {
+                              void ensureClaimed();
+                            }
+                            const next = boxes.filter((b) => b.key !== box.key);
+                            pushUndoSnapshot(next, null);
+                            setBoxes(next);
+                            if (selectedKey === box.key) setSelectedKey(null);
+                          }}
+                          className="press size-5 flex items-center justify-center rounded-[2px] text-[#707070] hover:text-red-600 disabled:opacity-30"
+                          title="Delete shape"
+                        >
+                          <Trash2 className="size-3" />
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
           </div>
         </aside>
       </div>
 
-      {showUnlockModal && current ? (
+      {/* =========================================================================
+          BOTTOM FILMSTRIP PANEL (Exact 76px)
+      ========================================================================= */}
+      <footer className="h-[76px] border-t border-[#c8c8c8] bg-white flex items-center px-2 shrink-0 select-none overflow-hidden">
+        {/* Left: Navigation and Position */}
+        <div className="flex items-center gap-1.5 shrink-0 pr-2 border-r border-[#c8c8c8]">
+          <button
+            type="button"
+            className="press size-7 flex items-center justify-center rounded-[2px] border border-[#c8c8c8] text-[#282828] hover:bg-[#f0f0f0] disabled:opacity-30"
+            onClick={() => void shift(-1)}
+            disabled={!current || safeIndex === 0 || busy}
+            title="Previous Photo (Left Arrow)"
+          >
+            <ChevronLeft className="size-4" />
+          </button>
+          <div className="flex flex-col items-center">
+            <span className="font-mono text-[11px] font-semibold text-[#282828]">{position}</span>
+            <span className="font-mono text-[9px] text-[#707070]">{labelledCount} labelled</span>
+          </div>
+          <button
+            type="button"
+            className="press size-7 flex items-center justify-center rounded-[2px] border border-[#c8c8c8] text-[#282828] hover:bg-[#f0f0f0] disabled:opacity-30"
+            onClick={() => void shift(1)}
+            disabled={!current || safeIndex >= images.length - 1 || busy}
+            title="Next Photo (Right Arrow)"
+          >
+            <ChevronRight className="size-4" />
+          </button>
+        </div>
+
+        {/* Center: Scrollable Thumbnails Filmstrip Queue */}
+        <div className="flex-1 min-w-0 h-full flex items-center gap-1.5 overflow-x-auto py-1 px-2">
+          {images.map((img, idx) => {
+            const isActive = idx === safeIndex;
+            return (
+              <button
+                key={img.name}
+                type="button"
+                ref={isActive ? activeThumbnailRef : undefined}
+                onClick={() => void jumpToIndex(idx)}
+                className={`h-[64px] min-w-[56px] max-w-[68px] flex flex-col items-center justify-between p-0.5 border select-none rounded-[2px] transition-colors relative shrink-0 ${
+                  isActive
+                    ? "border-[#1473e6] ring-1 ring-[#1473e6] bg-[#1473e6]/5"
+                    : "border-[#c8c8c8] bg-white hover:bg-[#f9f9f9]"
+                }`}
+                title={`${img.name} (${img.status})`}
+              >
+                <img
+                  src={imageSrc(img.name)}
+                  alt=""
+                  loading="lazy"
+                  className="h-[38px] w-full object-cover bg-black/10 rounded-[1px]"
+                />
+                <div className="w-full flex items-center justify-between gap-1 px-0.5">
+                  <span
+                    className={`size-1.5 rounded-full shrink-0 ${
+                      img.status === "approved"
+                        ? "bg-purple-600"
+                        : img.status === "complete"
+                          ? "bg-emerald-600"
+                          : img.status === "incomplete"
+                            ? "bg-amber-600"
+                            : "bg-neutral-300"
+                    }`}
+                  />
+                  <span className="font-mono text-[8.5px] truncate text-[#282828] leading-none">
+                    {img.name.split("/").pop()}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Right: Actions & Tar Exports */}
+        <div className="flex items-center gap-1.5 shrink-0 pl-2 border-l border-[#c8c8c8]">
+          {/* No parts button */}
+          {!isApproved && (
+            <button
+              type="button"
+              disabled={!current || busy || locked || boxes.length > 0}
+              onClick={() => void markNone()}
+              className="press h-7 px-2 rounded-[2px] border border-[#c8c8c8] bg-white text-[#282828] hover:bg-[#f0f0f0] text-[11px] font-medium disabled:opacity-30"
+              title="Save empty label and advance to next unlabelled (N)"
+            >
+              No Parts (N)
+            </button>
+          )}
+
+          {/* Save button */}
+          {isApproved ? (
+            <span className="h-7 px-2 rounded-[2px] bg-purple-100 text-purple-900 border border-purple-300 font-bold text-[11px] inline-flex items-center gap-1">
+              <Check className="size-3" />
+              Approved
+            </span>
+          ) : (
+            <button
+              type="button"
+              disabled={!current || busy || !dirty || locked}
+              onClick={() => void save()}
+              className="press h-7 px-2.5 rounded-[2px] bg-[#1473e6] text-white font-medium text-[11px] hover:bg-[#0d62c7] disabled:opacity-40"
+              title="Save annotations (Ctrl+S)"
+            >
+              Save (Ctrl+S)
+            </button>
+          )}
+
+          {/* Status text */}
+          <div className="min-w-[70px] text-right font-mono text-[10px] text-[#707070]">
+            {dirty ? (
+              <span className="text-amber-600 font-bold">● Unsaved</span>
+            ) : (
+              <span>{status}</span>
+            )}
+          </div>
+        </div>
+      </footer>
+
+      {/* =========================================================================
+          MODALS: Unlock, SAM2 Notice, Shortcuts
+      ========================================================================= */}
+      {showUnlockModal && current && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-labelledby="unlock-dialog-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
         >
-          <div className="w-full max-w-md rounded-xl border border-line bg-surface p-6 shadow-2xl">
-            <div className="flex items-center gap-3 text-amber-600 dark:text-amber-400">
-              <AlertTriangle className="size-6 shrink-0" aria-hidden="true" />
-              <h3 id="unlock-dialog-title" className="text-base font-semibold text-ink">
-                Unlock Approved Photo?
-              </h3>
+          <div className="w-full max-w-sm rounded-[2px] border border-[#c8c8c8] bg-white p-4 shadow-none">
+            <div className="flex items-center gap-2 text-amber-600">
+              <AlertTriangle className="size-5 shrink-0" />
+              <h3 className="text-sm font-semibold text-[#282828]">Unlock Approved Photo?</h3>
             </div>
-            <p className="mt-3 text-sm text-muted leading-relaxed">
-              This photo is currently approved. Unlocking it will revoke the QA approval and return
-              it to &apos;In Progress&apos;. Do you want to proceed?
+            <p className="mt-2 text-xs text-[#707070] leading-relaxed">
+              This photo is approved. Unlocking it revokes approval and allows editing.
             </p>
-            {unlockError ? (
-              <p className="mt-3 rounded-sm border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-600 dark:text-red-400">
+            {unlockError && (
+              <p className="mt-2 rounded-[2px] border border-red-300 bg-red-50 p-1.5 text-xs text-red-700">
                 {unlockError}
               </p>
-            ) : null}
-            <div className="mt-6 flex justify-end gap-3">
+            )}
+            <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
                 disabled={isUnlocking}
@@ -2208,7 +3057,7 @@ export function Labeler() {
                   setShowUnlockModal(false);
                   setUnlockError(null);
                 }}
-                className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-medium text-ink hover:bg-surface-raised"
+                className="press h-7 px-3 rounded-[2px] border border-[#c8c8c8] bg-white text-xs text-[#282828]"
               >
                 Cancel
               </button>
@@ -2216,59 +3065,48 @@ export function Labeler() {
                 type="button"
                 disabled={isUnlocking}
                 onClick={() => void handleConfirmUnlock()}
-                className="press inline-flex h-9 items-center justify-center gap-1.5 rounded-sm bg-amber-600 px-4 text-xs font-semibold text-white shadow-xs hover:bg-amber-700 disabled:opacity-50"
+                className="press h-7 px-3 rounded-[2px] bg-amber-600 text-xs font-semibold text-white flex items-center gap-1"
               >
                 {isUnlocking ? (
-                  <>
-                    <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                    Unlocking...
-                  </>
+                  <Loader2 className="size-3 animate-spin" />
                 ) : (
-                  <>
-                    <Unlock className="size-3.5" aria-hidden="true" />
-                    Unlock and Edit
-                  </>
+                  <Unlock className="size-3" />
                 )}
+                <span>Unlock and Edit</span>
               </button>
             </div>
           </div>
         </div>
-      ) : null}
+      )}
 
-      {showSam2Modal ? (
+      {showSam2Modal && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-labelledby="sam2-dialog-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
         >
-          <div className="w-full max-w-md rounded-xl border border-line bg-surface p-6 shadow-2xl">
-            <div className="flex items-center gap-3 text-purple-700 dark:text-purple-300">
-              <Sparkles className="size-6 shrink-0" aria-hidden="true" />
-              <h3 id="sam2-dialog-title" className="text-base font-semibold text-ink">
-                Enable SAM2.1 Auto-Trace
-              </h3>
+          <div className="w-full max-w-md rounded-[2px] border border-[#c8c8c8] bg-white p-4 shadow-none">
+            <div className="flex items-center gap-2 text-purple-700">
+              <Sparkles className="size-5 shrink-0" />
+              <h3 className="text-sm font-semibold text-[#282828]">Enable SAM 2.1 Auto-Trace</h3>
             </div>
-            <div className="mt-3 flex flex-col gap-2 text-sm text-muted leading-relaxed">
+            <div className="mt-2 flex flex-col gap-1.5 text-xs text-[#707070] leading-relaxed">
               <p>
-                First-time activation downloads the{" "}
-                <strong className="text-ink">SAM2.1 Hiera Tiny</strong> ONNX model weights (
-                <strong className="text-ink">~120 MB</strong>) and caches them permanently on your
-                local disk via the browser Cache Storage API so subsequent visits load in &lt;50 ms.
+                First activation downloads the{" "}
+                <strong className="text-[#282828]">SAM 2.1 Hiera Tiny</strong> ONNX weights (~120
+                MB) and permanently caches them in your browser for sub-50ms repeat loads.
               </p>
-              <p className="text-xs">
-                Once loaded, select a class and <strong className="text-ink">left-click</strong> any
-                part on the canvas to add foreground points,{" "}
-                <strong className="text-ink">right-click / Shift+click</strong> to exclude
-                background, and press <strong className="text-ink">Enter</strong> or double-click to
-                commit.
+              <p>
+                <strong className="text-[#282828]">Left-click</strong> foreground part points,{" "}
+                <strong className="text-[#282828]">Right-click / Shift+click</strong> background
+                points, and press <strong className="text-[#282828]">Enter</strong> to commit.
               </p>
             </div>
-            <div className="mt-6 flex justify-end gap-3">
+            <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setShowSam2Modal(false)}
-                className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-medium text-ink hover:bg-surface-raised"
+                className="press h-7 px-3 rounded-[2px] border border-[#c8c8c8] bg-white text-xs text-[#282828]"
               >
                 Cancel
               </button>
@@ -2281,15 +3119,17 @@ export function Labeler() {
                   setShowSam2Modal(false);
                   setSam2Enabled(true);
                 }}
-                className="press inline-flex h-9 items-center justify-center gap-1.5 rounded-sm bg-purple-600 px-4 text-xs font-semibold text-white shadow-xs hover:bg-purple-700"
+                className="press h-7 px-3 rounded-[2px] bg-purple-600 text-xs font-semibold text-white flex items-center gap-1"
               >
-                <Download className="size-3.5" aria-hidden="true" />
-                Download &amp; Enable Trace
+                <Download className="size-3" />
+                <span>Download &amp; Enable Trace</span>
               </button>
             </div>
           </div>
         </div>
-      ) : null}
+      )}
+
+      {helpOpen && <KeyboardShortcutsModal onClose={() => setHelpOpen(false)} />}
     </div>
   );
 }

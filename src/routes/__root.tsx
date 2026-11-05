@@ -53,7 +53,7 @@ function Shell() {
   let body = <Outlet />;
   if (!settings && username === undefined) {
     body = (
-      <div className="flex min-h-dvh items-center justify-center bg-bg text-sm text-muted">
+      <div className="flex h-screen w-screen items-center justify-center bg-[#f0f0f0] text-xs text-[#707070]">
         Loading
       </div>
     );
@@ -65,7 +65,9 @@ function Shell() {
     <SessionContext.Provider value={{ username: username ?? null, admin, setUsername, setAdmin }}>
       <ProjectProvider username={username ?? null}>
         <GatedBody settings={settings} signedIn={Boolean(username)}>
-          {body}
+          <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#f0f0f0] text-[#282828]">
+            {body}
+          </div>
         </GatedBody>
       </ProjectProvider>
     </SessionContext.Provider>
@@ -84,7 +86,7 @@ function GatedBody({
   const { current, ready, picker, closePicker } = useProject();
   if (signedIn && !ready) {
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-bg text-sm text-muted">
+      <div className="flex h-screen w-screen items-center justify-center bg-[#f0f0f0] text-xs text-[#707070]">
         Loading
       </div>
     );

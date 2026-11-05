@@ -1,4 +1,15 @@
-import { ChevronDown, ChevronUp, ChevronsUpDown, Loader2, Trash2, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  ChevronsUpDown,
+  ExternalLink,
+  Loader2,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/app-header";
 import {
@@ -12,15 +23,12 @@ import {
 import { useProject } from "@/lib/project";
 import { useSession } from "@/lib/session";
 
-const field =
-  "h-11 w-full rounded-sm border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent";
-
 type OwnerFilter = "any" | "mine" | "free" | "taken";
 type StatusFilter = "any" | "open" | "incomplete" | "complete" | "approved";
 type SortField = "file" | "labels" | "owner" | "held";
 type SortDirection = "asc" | "desc";
 
-const PAGE_SIZE = 40;
+const PAGE_SIZE = 50;
 
 function parseUtcTime(dateStr: string | null | undefined): number {
   if (!dateStr) return 0;
@@ -61,6 +69,35 @@ function getHeldMinutesRemaining(image: ImageRow): number {
   return Math.max(0, Math.ceil((time + 15 * 60 * 1000 - Date.now()) / 60000));
 }
 
+function StatusBadge({ status }: { status: PhotoStatus }) {
+  if (status === "approved") {
+    return (
+      <span className="inline-flex items-center rounded-[2px] bg-purple-100 px-1.5 py-0.2 text-[10px] font-semibold text-purple-900 border border-purple-300">
+        Approved
+      </span>
+    );
+  }
+  if (status === "complete") {
+    return (
+      <span className="inline-flex items-center rounded-[2px] bg-emerald-100 px-1.5 py-0.2 text-[10px] font-semibold text-emerald-900 border border-emerald-300">
+        Complete
+      </span>
+    );
+  }
+  if (status === "incomplete") {
+    return (
+      <span className="inline-flex items-center rounded-[2px] bg-orange-100 px-1.5 py-0.2 text-[10px] font-semibold text-orange-900 border border-orange-300">
+        Incomplete
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded-[2px] bg-amber-100 px-1.5 py-0.2 text-[10px] font-semibold text-amber-950 border border-amber-300">
+      Open
+    </span>
+  );
+}
+
 export function PhotosPage() {
   const { username, admin: sessionAdmin } = useSession();
   const [isAdmin, setIsAdmin] = useState(sessionAdmin);
@@ -75,6 +112,7 @@ export function PhotosPage() {
   const [sortDir, setSortDir] = useState<SortDirection>("asc");
   const [page, setPage] = useState(0);
 
+  const [selectedPhoto, setSelectedPhoto] = useState<ImageRow | null>(null);
   const [photoToDelete, setPhotoToDelete] = useState<ImageRow | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -160,6 +198,15 @@ export function PhotosPage() {
   const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const shown = sorted.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+
+  useEffect(() => {
+    if (!selectedPhoto && shown.length > 0) {
+      setSelectedPhoto(shown[0]);
+    } else if (selectedPhoto && !sorted.some((img) => img.name === selectedPhoto.name)) {
+      setSelectedPhoto(shown[0] ?? null);
+    }
+  }, [shown, selectedPhoto, sorted]);
+
   const openCount = (images ?? []).filter((image) => image.status === "open").length;
   const incompleteCount = (images ?? []).filter((image) => image.status === "incomplete").length;
   const completeCount = (images ?? []).filter((image) => image.status === "complete").length;
@@ -175,6 +222,7 @@ export function PhotosPage() {
       setImages((prev) =>
         prev ? prev.filter((img) => img.id !== item.id && img.name !== item.name) : null,
       );
+      if (selectedPhoto?.id === item.id) setSelectedPhoto(null);
       setPhotoToDelete(null);
     } catch (err: unknown) {
       setDeleteError(err instanceof Error ? err.message : "Failed to delete photo");
@@ -183,10 +231,12 @@ export function PhotosPage() {
     }
   }
 
-  function remember(name: string) {
-    const index = (images ?? []).findIndex((image) => image.name === name);
-    if (index >= 0 && project)
-      sessionStorage.setItem(`part-lab-index:${project.id}`, String(index));
+  function rememberAndOpen(name: string, reviewMode = false) {
+    const idx = (images ?? []).findIndex((image) => image.name === name);
+    if (idx >= 0 && project) {
+      sessionStorage.setItem(`part-lab-index:${project.id}`, String(idx));
+    }
+    window.location.href = reviewMode ? "/?mode=review" : "/";
   }
 
   function toggleSort(field: SortField) {
@@ -200,448 +250,533 @@ export function PhotosPage() {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col bg-bg text-ink">
+    <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#f0f0f0] text-[#282828] select-none text-xs">
+      {/* 28px Top Bar */}
       <AppHeader current="photos" />
-      <main className="mx-auto flex w-full min-w-0 max-w-5xl flex-col gap-4 px-4 py-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-col gap-1">
-            <h1 className="text-lg font-medium tracking-tight">Photos</h1>
-            <p className="text-sm text-muted">
-              {images == null
-                ? "Loading"
-                : `${images.length} scanned · ${completeCount} complete (${approvedCount} approved) · ${openCount} open · ${incompleteCount} incomplete · ${mineCount} yours`}
-            </p>
+
+      {/* Dense Toolbar (28px) */}
+      <div className="h-7 border-b border-[#c8c8c8] bg-white px-2 flex items-center justify-between gap-2 shrink-0 select-none text-xs">
+        {/* Left: Find & Filters */}
+        <div className="flex items-center gap-1.5 min-w-0">
+          {/* Search Input */}
+          <div className="relative flex items-center">
+            <Search className="size-3 text-[#707070] absolute left-1.5" />
+            <input
+              type="text"
+              placeholder="Filter file name..."
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(0);
+              }}
+              className="h-5 w-36 pl-5 pr-1.5 rounded-[2px] border border-[#c8c8c8] bg-white text-[11px] outline-none focus:border-[#1473e6]"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery("");
+                  setPage(0);
+                }}
+                className="absolute right-1 text-[#707070] hover:text-[#282828]"
+              >
+                <X className="size-3" />
+              </button>
+            )}
           </div>
+
+          <span className="text-[#c8c8c8]">|</span>
+
+          {/* Status Filters */}
+          <div className="flex items-center gap-0.5">
+            <span className="text-[10px] text-[#707070] uppercase font-bold mr-0.5">Status:</span>
+            {(
+              [
+                ["any", "All"],
+                ["open", "Open"],
+                ["incomplete", "Incomplete"],
+                ["complete", "Complete"],
+                ["approved", "Approved"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`px-1.5 py-0.2 rounded-[2px] text-[11px] font-medium border ${
+                  status === key
+                    ? "bg-[#1473e6] text-white border-[#1473e6]"
+                    : "bg-white text-[#282828] border-[#c8c8c8] hover:bg-[#f0f0f0]"
+                }`}
+                onClick={() => {
+                  setStatus(key);
+                  setPage(0);
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <span className="text-[#c8c8c8]">|</span>
+
+          {/* Claim Filters */}
+          <div className="flex items-center gap-0.5">
+            <span className="text-[10px] text-[#707070] uppercase font-bold mr-0.5">Claim:</span>
+            {(
+              [
+                ["any", "Any"],
+                ["mine", "Mine"],
+                ["free", "Free"],
+                ["taken", "Taken"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={`px-1.5 py-0.2 rounded-[2px] text-[11px] font-medium border ${
+                  owner === key
+                    ? "bg-[#1473e6] text-white border-[#1473e6]"
+                    : "bg-white text-[#282828] border-[#c8c8c8] hover:bg-[#f0f0f0]"
+                }`}
+                onClick={() => {
+                  setOwner(key);
+                  setPage(0);
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Right: Summary Counts & Review QA Action */}
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="font-mono text-[10px] text-[#707070]">
+            {images == null
+              ? "Loading..."
+              : `${images.length} files • ${completeCount} complete (${approvedCount} approved) • ${openCount} open • ${incompleteCount} incomplete • ${mineCount} mine`}
+          </span>
+
           <a
             href="/?mode=review"
-            className="press inline-flex h-10 items-center justify-center gap-1.5 rounded-sm bg-amber-600 px-3.5 text-xs font-semibold text-white shadow-xs hover:bg-amber-700"
+            className="press inline-flex items-center rounded-[2px] bg-amber-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-amber-700"
           >
             Review QA
           </a>
         </div>
-        {error ? (
-          <p className="rounded-sm border border-line bg-surface px-3 py-2 text-sm" role="alert">
-            {error}
-          </p>
-        ) : null}
-        {folderError ? (
-          <p className="rounded-sm border border-line bg-surface px-3 py-2 text-sm" role="alert">
-            {folderError}
-          </p>
-        ) : null}
-        <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-2 text-sm font-medium">
-            Find
-            <input
-              className={field}
-              value={query}
-              placeholder="File name"
-              onChange={(event) => {
-                setQuery(event.target.value);
-                setPage(0);
-              }}
-            />
-          </label>
-          <div className="flex flex-col gap-2">
-            <p className="text-sm font-medium">Labels</p>
-            <div className="flex flex-wrap gap-1">
-              {(
-                [
-                  ["any", "Any"],
-                  ["open", "Open"],
-                  ["incomplete", "Incomplete"],
-                  ["complete", "Complete"],
-                  ["approved", "Approved"],
-                ] as const
-              ).map(([key, label]) => (
-                <FilterButton
-                  key={key}
-                  pressed={status === key}
-                  onClick={() => {
-                    setStatus(key);
-                    setPage(0);
-                  }}
-                >
-                  {label}
-                </FilterButton>
-              ))}
+      </div>
+
+      {/* Main Workspace (Filmstrip Table on Left + Inspector Pane on Right) */}
+      <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
+        {/* Left: Photos Table List */}
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-white overflow-hidden">
+          {error && (
+            <div className="p-2 bg-red-50 border-b border-red-200 text-red-800 text-xs">
+              {error}
             </div>
-          </div>
-          <div className="flex flex-col gap-2">
-            <p className="text-sm font-medium">Claim</p>
-            <div className="flex flex-wrap gap-1">
-              {(
-                [
-                  ["any", "Any"],
-                  ["mine", "Mine"],
-                  ["free", "Free"],
-                  ["taken", "Taken"],
-                ] as const
-              ).map(([key, label]) => (
-                <FilterButton
-                  key={key}
-                  pressed={owner === key}
-                  onClick={() => {
-                    setOwner(key);
-                    setPage(0);
-                  }}
-                >
-                  {label}
-                </FilterButton>
-              ))}
+          )}
+          {folderError && (
+            <div className="p-2 bg-amber-50 border-b border-amber-200 text-amber-900 text-xs">
+              {folderError}
             </div>
+          )}
+
+          {/* Table Header */}
+          <div className="h-6 border-b border-[#c8c8c8] bg-[#f5f5f5] flex items-center px-2 text-[11px] font-semibold text-[#707070] shrink-0 select-none">
+            <div className="w-10">Thumb</div>
+            <div className="flex-1 min-w-0 pr-2">
+              <button
+                type="button"
+                onClick={() => toggleSort("file")}
+                className="inline-flex items-center gap-1 hover:text-[#282828]"
+              >
+                <span>File Name</span>
+                {sortField === "file" ? (
+                  sortDir === "asc" ? (
+                    <ChevronUp className="size-3 text-[#1473e6]" />
+                  ) : (
+                    <ChevronDown className="size-3 text-[#1473e6]" />
+                  )
+                ) : (
+                  <ChevronsUpDown className="size-3 opacity-40" />
+                )}
+              </button>
+            </div>
+            <div className="w-24">
+              <button
+                type="button"
+                onClick={() => toggleSort("labels")}
+                className="inline-flex items-center gap-1 hover:text-[#282828]"
+              >
+                <span>Status</span>
+                {sortField === "labels" ? (
+                  sortDir === "asc" ? (
+                    <ChevronUp className="size-3 text-[#1473e6]" />
+                  ) : (
+                    <ChevronDown className="size-3 text-[#1473e6]" />
+                  )
+                ) : (
+                  <ChevronsUpDown className="size-3 opacity-40" />
+                )}
+              </button>
+            </div>
+            <div className="w-28">
+              <button
+                type="button"
+                onClick={() => toggleSort("owner")}
+                className="inline-flex items-center gap-1 hover:text-[#282828]"
+              >
+                <span>Owner</span>
+                {sortField === "owner" ? (
+                  sortDir === "asc" ? (
+                    <ChevronUp className="size-3 text-[#1473e6]" />
+                  ) : (
+                    <ChevronDown className="size-3 text-[#1473e6]" />
+                  )
+                ) : (
+                  <ChevronsUpDown className="size-3 opacity-40" />
+                )}
+              </button>
+            </div>
+            <div className="w-24">Claim</div>
+            <div className="w-16">
+              <button
+                type="button"
+                onClick={() => toggleSort("held")}
+                className="inline-flex items-center gap-1 hover:text-[#282828]"
+              >
+                <span>Held</span>
+                {sortField === "held" ? (
+                  sortDir === "asc" ? (
+                    <ChevronUp className="size-3 text-[#1473e6]" />
+                  ) : (
+                    <ChevronDown className="size-3 text-[#1473e6]" />
+                  )
+                ) : (
+                  <ChevronsUpDown className="size-3 opacity-40" />
+                )}
+              </button>
+            </div>
+            {isAdmin && <div className="w-10 text-right">Delete</div>}
           </div>
-        </div>
-        <div className="overflow-x-auto rounded-xl border border-line bg-surface">
-          <table className="w-full table-fixed text-left text-sm">
-            <thead>
-              <tr className="border-b border-line text-muted">
-                <th className="w-16 py-3 pl-3 pr-2 font-medium"> </th>
-                <SortHeader
-                  field="file"
-                  label="File"
-                  currentField={sortField}
-                  currentDir={sortDir}
-                  onSort={toggleSort}
-                  className="py-3 pr-3 font-medium"
-                />
-                <SortHeader
-                  field="labels"
-                  label="Labels"
-                  currentField={sortField}
-                  currentDir={sortDir}
-                  onSort={toggleSort}
-                  className="w-24 py-3 pr-3 font-medium"
-                />
-                <SortHeader
-                  field="owner"
-                  label="Owner"
-                  currentField={sortField}
-                  currentDir={sortDir}
-                  onSort={toggleSort}
-                  className="w-28 py-3 pr-3 font-medium"
-                />
-                <th className="w-28 py-3 pr-3 font-medium">Claim</th>
-                <SortHeader
-                  field="held"
-                  label="Held"
-                  currentField={sortField}
-                  currentDir={sortDir}
-                  onSort={toggleSort}
-                  className="hidden w-24 py-3 pr-3 font-medium sm:table-cell"
-                />
-                {isAdmin ? <th className="w-12 py-3 pr-3 text-right font-medium"> </th> : null}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {shown.map((image) => {
-                const isApproved = image.status === "approved";
-                const isComplete = image.status === "complete";
-                const isIncomplete = image.status === "incomplete";
-                const targetUrl = isApproved || isComplete ? "/?mode=review" : "/";
+
+          {/* Table Rows (Scrollable Internally) */}
+          <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#f0f0f0]">
+            {shown.length === 0 ? (
+              <div className="p-4 text-center text-[#707070] text-xs">
+                {images ? "No photos match active filters." : "Loading photos..."}
+              </div>
+            ) : (
+              shown.map((image) => {
+                const isSelected = selectedPhoto?.name === image.name;
+                const activeHolder = getActiveHolder(image);
+                const isMine = Boolean(activeHolder && activeHolder === username);
+                const isTaken = Boolean(activeHolder && activeHolder !== username);
+
                 return (
-                  <tr
+                  <div
                     key={image.name}
-                    className={`transition-colors ${
-                      isApproved
-                        ? "bg-purple-500/5 hover:bg-purple-500/10"
-                        : isComplete
-                          ? "bg-emerald-500/5 hover:bg-emerald-500/10"
-                          : isIncomplete
-                            ? "bg-orange-500/5 hover:bg-orange-500/10"
-                            : "bg-amber-500/5 hover:bg-amber-500/10"
+                    onClick={() => setSelectedPhoto(image)}
+                    onDoubleClick={() =>
+                      rememberAndOpen(
+                        image.name,
+                        image.status === "complete" || image.status === "approved",
+                      )
+                    }
+                    className={`flex items-center px-2 py-1 cursor-pointer transition-colors text-xs ${
+                      isSelected
+                        ? "bg-[#1473e6]/10 border-l-2 border-[#1473e6]"
+                        : "hover:bg-[#f9f9f9]"
                     }`}
                   >
-                    <td className="py-2.5 pl-3 pr-2">
-                      <a href={targetUrl} onClick={() => remember(image.name)} className="block">
-                        <img
-                          src={imageSrc(image.name)}
-                          alt=""
-                          loading="lazy"
-                          decoding="async"
-                          className="size-12 rounded-sm bg-ink object-cover"
-                        />
-                      </a>
-                    </td>
-                    <td className="py-2.5 pr-3">
-                      <a
-                        href={targetUrl}
-                        onClick={() => remember(image.name)}
-                        className="block truncate font-mono text-sm text-ink hover:underline"
-                      >
+                    {/* Thumbnail */}
+                    <div className="w-10 shrink-0">
+                      <img
+                        src={imageSrc(image.name)}
+                        alt=""
+                        loading="lazy"
+                        className="size-7 rounded-[1px] object-cover bg-black/10 border border-[#c8c8c8]"
+                      />
+                    </div>
+
+                    {/* File Name */}
+                    <div className="flex-1 min-w-0 pr-2">
+                      <span className="font-mono text-[11px] text-[#282828] truncate block">
                         {image.name}
-                      </a>
-                    </td>
-                    <td className="py-2.5 pr-3">
-                      {isApproved ? (
-                        <span className="inline-flex items-center rounded-sm border border-purple-300 bg-purple-100 px-2 py-0.5 text-xs font-semibold text-purple-950 dark:border-purple-800 dark:bg-purple-950 dark:text-purple-200">
-                          Approved
+                      </span>
+                    </div>
+
+                    {/* Status Badge */}
+                    <div className="w-24 shrink-0">
+                      <StatusBadge status={image.status} />
+                    </div>
+
+                    {/* Owner */}
+                    <div className="w-28 shrink-0 font-mono text-[11px] text-[#707070] truncate">
+                      {image.owner ?? "—"}
+                    </div>
+
+                    {/* Claim */}
+                    <div className="w-24 shrink-0">
+                      {image.status === "approved" ? (
+                        <span className="text-[#707070] text-[10px]">Locked</span>
+                      ) : isMine ? (
+                        <span className="text-blue-700 bg-blue-50 border border-blue-200 px-1 rounded-[2px] text-[10px] font-bold">
+                          Mine
                         </span>
-                      ) : isComplete ? (
-                        <span className="inline-flex items-center rounded-sm border border-emerald-300 bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
-                          Complete
-                        </span>
-                      ) : isIncomplete ? (
-                        <span className="inline-flex items-center rounded-sm border border-orange-300 bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-950 dark:border-orange-800 dark:bg-orange-950 dark:text-orange-200">
-                          Incomplete
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center rounded-sm border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-                          Open
-                        </span>
-                      )}
-                    </td>
-                    <td className="truncate py-2.5 pr-3 font-mono text-xs">
-                      {image.owner ? (
-                        <span
-                          className="inline-flex items-center rounded-sm bg-ink/10 px-1.5 py-0.5 font-medium text-ink"
-                          title={`Owner: ${image.owner}`}
-                        >
-                          Owner: {image.owner}
+                      ) : isTaken ? (
+                        <span className="text-amber-800 bg-amber-50 border border-amber-200 px-1 rounded-[2px] text-[10px]">
+                          {activeHolder}
                         </span>
                       ) : (
-                        <span className="text-muted" title="Unassigned">
-                          -
+                        <span className="text-[#707070] bg-neutral-100 px-1 rounded-[2px] text-[10px]">
+                          Free
                         </span>
                       )}
-                    </td>
-                    <td className="truncate py-2.5 pr-3 font-mono text-xs">
-                      {(() => {
-                        if (image.status === "approved") {
-                          return (
-                            <span className="text-muted" title="Approved (Locked)">
-                              —
-                            </span>
-                          );
-                        }
-                        const activeHolder = getActiveHolder(image);
-                        const isMine = Boolean(activeHolder && activeHolder === username);
-                        const isTaken = Boolean(activeHolder && activeHolder !== username);
-                        if (isMine) {
-                          return (
-                            <span className="inline-flex items-center rounded-sm border border-blue-300 bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-950 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
-                              Mine
-                            </span>
-                          );
-                        }
-                        if (isTaken) {
-                          return (
-                            <span className="inline-flex items-center rounded-sm border border-amber-300 bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-950 dark:border-amber-700 dark:bg-amber-900 dark:text-amber-100">
-                              Taken ({activeHolder})
-                            </span>
-                          );
-                        }
-                        return (
-                          <span className="inline-flex items-center rounded-sm bg-slate-500/10 px-2 py-0.5 text-xs font-normal text-muted">
-                            Free
-                          </span>
-                        );
-                      })()}
-                    </td>
-                    <td className="hidden py-2.5 pr-3 text-xs text-muted sm:table-cell">
-                      {(() => {
-                        if (image.status === "approved") return "—";
-                        const activeHolder = getActiveHolder(image);
-                        if (!activeHolder) return "—";
-                        const mins = getHeldMinutesRemaining(image);
-                        return `${mins}m`;
-                      })()}
-                    </td>
-                    {isAdmin ? (
-                      <td className="py-2.5 pr-3 text-right">
+                    </div>
+
+                    {/* Held Minutes */}
+                    <div className="w-16 shrink-0 font-mono text-[11px] text-[#707070]">
+                      {image.status === "approved"
+                        ? "—"
+                        : activeHolder
+                          ? `${getHeldMinutesRemaining(image)}m`
+                          : "—"}
+                    </div>
+
+                    {/* Delete Action (Admin only) */}
+                    {isAdmin && (
+                      <div className="w-10 shrink-0 text-right">
                         <button
                           type="button"
-                          aria-label={`Delete ${image.name}`}
-                          title={`Delete ${image.name}`}
-                          className="press inline-flex size-8 items-center justify-center rounded-sm text-red-600 hover:bg-red-500/15 focus-visible:ring-2 focus-visible:ring-red-500"
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             setPhotoToDelete(image);
                             setDeleteError(null);
                           }}
+                          className="press size-6 inline-flex items-center justify-center rounded-[2px] text-[#707070] hover:text-red-600 hover:bg-[#f0f0f0]"
+                          title="Delete photo"
                         >
-                          <Trash2 className="size-4" aria-hidden="true" />
+                          <Trash2 className="size-3.5" />
                         </button>
-                      </td>
-                    ) : null}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        {images && filtered.length === 0 ? (
-          <p className="text-sm text-muted">No photos match.</p>
-        ) : null}
-        {pageCount > 1 ? (
-          <div className="flex items-center gap-2">
-            <FilterButton pressed={false} onClick={() => setPage(Math.max(0, safePage - 1))}>
-              Previous
-            </FilterButton>
-            <p className="font-mono text-sm text-muted tabular-nums">
-              {safePage + 1} / {pageCount}
-            </p>
-            <FilterButton
-              pressed={false}
-              onClick={() => setPage(Math.min(pageCount - 1, safePage + 1))}
-            >
-              Next
-            </FilterButton>
-          </div>
-        ) : null}
-
-        {photoToDelete ? (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
-            onClick={(event) => {
-              if (event.target === event.currentTarget && !isDeleting) {
-                setPhotoToDelete(null);
-              }
-            }}
-          >
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="delete-photo-dialog-title"
-              className="flex w-full max-w-md flex-col gap-4 rounded-xl border border-line bg-bg p-6 text-ink shadow-2xl"
-            >
-              <div className="flex items-start justify-between gap-4 border-b border-line pb-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-red-500/15 text-red-600">
-                    <Trash2 className="size-4.5" aria-hidden="true" />
+                      </div>
+                    )}
                   </div>
-                  <h2
-                    id="delete-photo-dialog-title"
-                    className="text-base font-semibold tracking-tight text-ink"
-                  >
-                    Delete Photo
-                  </h2>
-                </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Bottom Pagination Bar */}
+          {pageCount > 1 && (
+            <div className="h-7 border-t border-[#c8c8c8] bg-[#f5f5f5] px-2 flex items-center justify-between text-xs shrink-0 select-none">
+              <span className="font-mono text-[11px] text-[#707070]">
+                Page {safePage + 1} of {pageCount} ({sorted.length} photos)
+              </span>
+
+              <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => setPhotoToDelete(null)}
-                  disabled={isDeleting}
-                  aria-label="Close dialog"
-                  className="press inline-flex size-8 items-center justify-center rounded-md text-muted hover:bg-surface-raised hover:text-ink disabled:opacity-40"
+                  disabled={safePage === 0}
+                  onClick={() => setPage(Math.max(0, safePage - 1))}
+                  className="press size-5 flex items-center justify-center rounded-[2px] border border-[#c8c8c8] bg-white text-[#282828] disabled:opacity-30"
+                  title="Previous Page"
                 >
-                  <X className="size-4" aria-hidden="true" />
-                </button>
-              </div>
-
-              <p className="text-sm leading-relaxed text-ink/80">
-                Permanently delete{" "}
-                <span className="font-mono font-semibold text-ink">{photoToDelete.name}</span>? This
-                will remove the image, its .txt label file, and all annotations from the database.
-                This action cannot be undone.
-              </p>
-
-              {deleteError ? (
-                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600">
-                  {deleteError}
-                </div>
-              ) : null}
-
-              <div className="flex items-center justify-end gap-2.5 border-t border-line pt-3">
-                <button
-                  type="button"
-                  onClick={() => setPhotoToDelete(null)}
-                  disabled={isDeleting}
-                  className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-semibold text-ink hover:bg-surface-raised disabled:opacity-40"
-                >
-                  Cancel
+                  <ChevronLeft className="size-3" />
                 </button>
                 <button
                   type="button"
-                  disabled={isDeleting}
-                  onClick={() => void handleDeletePhoto(photoToDelete)}
-                  className="press inline-flex h-9 items-center justify-center gap-1.5 rounded-sm bg-red-600 px-4 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-40"
+                  disabled={safePage >= pageCount - 1}
+                  onClick={() => setPage(Math.min(pageCount - 1, safePage + 1))}
+                  className="press size-5 flex items-center justify-center rounded-[2px] border border-[#c8c8c8] bg-white text-[#282828] disabled:opacity-30"
+                  title="Next Page"
                 >
-                  {isDeleting ? (
-                    <>
-                      <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                      <span>Deleting…</span>
-                    </>
-                  ) : (
-                    <>
-                      <Trash2 className="size-3.5" aria-hidden="true" />
-                      <span>Delete Photo</span>
-                    </>
-                  )}
+                  <ChevronRight className="size-3" />
                 </button>
               </div>
             </div>
-          </div>
-        ) : null}
-      </main>
-    </div>
-  );
-}
-
-function SortHeader({
-  field,
-  label,
-  currentField,
-  currentDir,
-  onSort,
-  className,
-}: {
-  field: SortField;
-  label: string;
-  currentField: SortField;
-  currentDir: SortDirection;
-  onSort: (field: SortField) => void;
-  className?: string;
-}) {
-  const active = currentField === field;
-  return (
-    <th className={className}>
-      <button
-        type="button"
-        className="group inline-flex items-center gap-1 font-medium text-muted hover:text-ink focus-visible:outline-none"
-        onClick={() => onSort(field)}
-        title={`Sort by ${label} (${active ? (currentDir === "asc" ? "ascending" : "descending") : "click to sort"})`}
-      >
-        <span>{label}</span>
-        <span
-          className={`inline-flex transition-colors ${
-            active ? "text-ink" : "text-muted/40 group-hover:text-muted"
-          }`}
-        >
-          {active ? (
-            currentDir === "asc" ? (
-              <ChevronUp className="size-3.5" />
-            ) : (
-              <ChevronDown className="size-3.5" />
-            )
-          ) : (
-            <ChevronsUpDown className="size-3.5" />
           )}
-        </span>
-      </button>
-    </th>
-  );
-}
+        </div>
 
-function FilterButton({
-  pressed,
-  onClick,
-  children,
-}: {
-  pressed: boolean;
-  onClick: () => void;
-  children: string;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={pressed}
-      className={
-        pressed
-          ? "press inline-flex h-11 items-center rounded-sm bg-ink px-3 text-sm font-medium text-surface"
-          : "press inline-flex h-11 items-center rounded-sm border border-line bg-surface px-3 text-sm font-medium text-ink"
-      }
-      onClick={onClick}
-    >
-      {children}
-    </button>
+        {/* Right: Inspector Pane (320px) */}
+        <aside
+          aria-label="Photo Inspector"
+          className="w-[320px] border-l border-[#c8c8c8] bg-white flex flex-col shrink-0 overflow-y-auto select-none h-full"
+        >
+          {/* Header */}
+          <div className="h-6 px-2 bg-[#f5f5f5] flex items-center justify-between border-b border-[#c8c8c8] text-[11px] font-semibold text-[#282828] shrink-0">
+            <span>PHOTO INSPECTOR</span>
+            {selectedPhoto && (
+              <span className="font-mono text-[10px] text-[#707070]">
+                #{selectedPhoto.id ?? "—"}
+              </span>
+            )}
+          </div>
+
+          {selectedPhoto ? (
+            <div className="p-3 flex flex-col gap-3">
+              {/* Photo Large Preview */}
+              <div className="w-full h-48 bg-[#242424] border border-[#c8c8c8] rounded-[2px] flex items-center justify-center overflow-hidden relative group">
+                <img
+                  src={imageSrc(selectedPhoto.name)}
+                  alt={selectedPhoto.name}
+                  className="max-h-full max-w-full object-contain"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    rememberAndOpen(
+                      selectedPhoto.name,
+                      selectedPhoto.status === "complete" || selectedPhoto.status === "approved",
+                    )
+                  }
+                  className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-1.5 text-white font-medium text-xs transition-opacity"
+                >
+                  <ExternalLink className="size-4" />
+                  <span>Open in Workspace</span>
+                </button>
+              </div>
+
+              {/* Photo Information Table */}
+              <div className="flex flex-col gap-2 bg-[#f9f9f9] border border-[#c8c8c8] rounded-[2px] p-2 text-xs">
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[10px] uppercase font-bold text-[#707070]">File Name</span>
+                  <span className="font-mono text-[11px] text-[#282828] break-all select-all font-semibold">
+                    {selectedPhoto.name}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-[#e5e5e5]">
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-[#707070] block">
+                      Status
+                    </span>
+                    <StatusBadge status={selectedPhoto.status} />
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-[#707070] block">
+                      Owner
+                    </span>
+                    <span className="font-mono text-[11px] text-[#282828]">
+                      {selectedPhoto.owner ?? "Unassigned"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-[#e5e5e5]">
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-[#707070] block">
+                      Claim State
+                    </span>
+                    <span className="font-mono text-[11px] text-[#282828]">
+                      {getActiveHolder(selectedPhoto) ?? "Free"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase font-bold text-[#707070] block">
+                      Lease
+                    </span>
+                    <span className="font-mono text-[11px] text-[#282828]">
+                      {isLeaseActive(selectedPhoto)
+                        ? `${getHeldMinutesRemaining(selectedPhoto)}m left`
+                        : "Inactive"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Primary Actions */}
+              <div className="flex flex-col gap-1.5 pt-2 border-t border-[#f0f0f0]">
+                <button
+                  type="button"
+                  onClick={() => rememberAndOpen(selectedPhoto.name, false)}
+                  className="press h-7 w-full rounded-[2px] bg-[#1473e6] hover:bg-[#0d62c7] text-white font-semibold text-xs flex items-center justify-center gap-1.5 shadow-none"
+                >
+                  <ExternalLink className="size-3.5" />
+                  <span>Open in Workspace</span>
+                </button>
+
+                {(selectedPhoto.status === "complete" || selectedPhoto.status === "approved") && (
+                  <button
+                    type="button"
+                    onClick={() => rememberAndOpen(selectedPhoto.name, true)}
+                    className="press h-7 w-full rounded-[2px] bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs flex items-center justify-center gap-1.5"
+                  >
+                    <span>Inspect in Review QA</span>
+                  </button>
+                )}
+
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPhotoToDelete(selectedPhoto);
+                      setDeleteError(null);
+                    }}
+                    className="press h-7 w-full rounded-[2px] border border-red-300 text-red-700 hover:bg-red-50 font-medium text-xs flex items-center justify-center gap-1.5 mt-2"
+                  >
+                    <Trash2 className="size-3.5" />
+                    <span>Delete Photo from Disk</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="p-6 text-center text-[#707070] text-xs">
+              Select a photo from the table to inspect details.
+            </div>
+          )}
+        </aside>
+      </div>
+
+      {/* Delete Confirmation Modal */}
+      {photoToDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+        >
+          <div className="w-full max-w-sm rounded-[2px] border border-[#c8c8c8] bg-white p-4 shadow-none">
+            <div className="flex items-center gap-2 text-red-600">
+              <Trash2 className="size-5 shrink-0" />
+              <h3 className="text-sm font-semibold text-[#282828]">Delete Photo?</h3>
+            </div>
+            <p className="mt-2 text-xs text-[#707070] leading-relaxed">
+              Permanently delete{" "}
+              <strong className="font-mono text-[#282828]">{photoToDelete.name}</strong>? This will
+              remove the image and its corresponding label file from disk.
+            </p>
+            {deleteError && (
+              <p className="mt-2 rounded-[2px] border border-red-300 bg-red-50 p-1.5 text-xs text-red-700">
+                {deleteError}
+              </p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setPhotoToDelete(null)}
+                className="press h-7 px-3 rounded-[2px] border border-[#c8c8c8] bg-white text-xs text-[#282828]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => void handleDeletePhoto(photoToDelete)}
+                className="press h-7 px-3 rounded-[2px] bg-red-600 text-xs font-semibold text-white flex items-center gap-1"
+              >
+                {isDeleting ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : (
+                  <Trash2 className="size-3" />
+                )}
+                <span>Delete</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

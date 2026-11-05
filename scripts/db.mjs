@@ -100,10 +100,7 @@ export function translateSqlAndParams(rawSql, args) {
       "(CURRENT_TIMESTAMP + INTERVAL '$1')",
     )
     // Replace GROUP_CONCAT
-    .replace(
-      /GROUP_CONCAT\s*\(\s*DISTINCT\s+([^)]+)\)/gi,
-      "STRING_AGG(DISTINCT $1, ',')",
-    )
+    .replace(/GROUP_CONCAT\s*\(\s*DISTINCT\s+([^)]+)\)/gi, "STRING_AGG(DISTINCT $1, ',')")
     .replace(/GROUP_CONCAT\s*\(\s*([^)]+)\)/gi, "STRING_AGG($1, ',')")
     // Replace INSERT OR IGNORE for images table
     .replace(/INSERT\s+OR\s+IGNORE\s+INTO\s+images/gi, "INSERT INTO images");

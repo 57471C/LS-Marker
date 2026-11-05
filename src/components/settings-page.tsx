@@ -1,17 +1,19 @@
-import { useEffect, useRef, useState } from "react";
 import {
-  AlertTriangle,
-  Archive,
-  CheckCircle2,
+  Check,
   Database,
   Download,
-  FileText,
+  FolderOpen,
   Loader2,
+  Lock,
+  Power,
+  PowerOff,
   Sparkles,
   Trash2,
+  Users,
   Wrench,
   X,
 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { AppHeader } from "@/components/app-header";
 import { BackupModal } from "@/components/backup-modal";
 import { DatasetHealthModal } from "@/components/dataset-health-modal";
@@ -30,13 +32,14 @@ import {
   deleteUser,
   downloadDatasetExport,
   fetchAdmin,
-  fetchCurrentProject,
+  fetchAiSettings,
   fetchMaintenanceStatus,
   fetchProjectHealth,
   fetchProjects,
   fetchUsers,
   lockAdmin,
   resetUserPassword,
+  setAiSettings,
   setMaintenanceMode,
   syncProjectImages,
   unlockAdmin,
@@ -52,12 +55,7 @@ import {
 } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
 
-const field =
-  "h-11 w-full rounded-sm border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent";
-const btn =
-  "press inline-flex h-11 items-center justify-center gap-2 rounded-sm border border-line bg-surface px-4 text-sm font-medium text-ink disabled:opacity-40";
-const btnPrimary =
-  "press inline-flex h-11 items-center justify-center gap-2 rounded-sm bg-ink px-4 text-sm font-medium text-surface disabled:opacity-40";
+type SettingsTab = "projects" | "export" | "database" | "ai" | "users";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -71,16 +69,19 @@ function formatBytes(bytes: number): string {
 export function SettingsPage() {
   const [unlocked, setUnlocked] = useState<boolean | null>(null);
   const [password, setPassword] = useState("");
+  const [activeTab, setActiveTab] = useState<SettingsTab>("projects");
+
   const [users, setUsers] = useState<LabUser[] | null>(null);
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [username, setUsername] = useState("");
   const [userPassword, setUserPassword] = useState("");
-  const [editing, setEditing] = useState<number | null>(null);
+  const [editingUserId, setEditingUserId] = useState<number | null>(null);
   const [nextPassword, setNextPassword] = useState("");
-  const [pendingDelete, setPendingDelete] = useState<number | null>(null);
+  const [pendingDeleteUserId, setPendingDeleteUserId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Export State
   const [projectToExport, setProjectToExport] = useState<Project | null>(null);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("yolo");
   const [exportType, setExportType] = useState<DatasetExportType>("labels_only");
@@ -92,6 +93,7 @@ export function SettingsPage() {
   const [exportError, setExportError] = useState<string | null>(null);
   const exportAbortRef = useRef<AbortController | null>(null);
 
+  // Diagnostics & Modals State
   const [checkingExifProjectId, setCheckingExifProjectId] = useState<number | null>(null);
   const [exifResult, setExifResult] = useState<ExifCheckResult | null>(null);
 
@@ -101,21 +103,25 @@ export function SettingsPage() {
   const [syncingProjectId, setSyncingProjectId] = useState<number | null>(null);
   const [syncResult, setSyncResult] = useState<SyncImagesResult | null>(null);
 
-  const [duplicateProjectId, setDuplicateProjectId] = useState<number | null>(null);
-  const [duplicateProjectName, setDuplicateProjectName] = useState<string | null>(null);
   const [duplicatesResult, setDuplicatesResult] = useState<DuplicateDetectionResult | null>(null);
 
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [isMaintenanceModalOpen, setIsMaintenanceModalOpen] = useState(false);
   const [isMaintenance, setIsMaintenance] = useState(false);
+
   const [samCached, setSamCached] = useState<boolean>(false);
   const [samCacheMessage, setSamCacheMessage] = useState<string | null>(null);
   const [clearingSamCache, setClearingSamCache] = useState(false);
+
+  const [aiEnabled, setAiEnabled] = useState<boolean>(true);
+  const [togglingAi, setTogglingAi] = useState(false);
+  const [aiMessage, setAiMessage] = useState<string | null>(null);
 
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+
   const { current: project } = useProject();
 
   useEffect(() => {
@@ -125,7 +131,7 @@ export function SettingsPage() {
         if (!cancel) setUnlocked(open);
       })
       .catch((err: unknown) => {
-        if (!cancel) setError(err instanceof Error ? err.message : "Could not check settings");
+        if (!cancel) setError(err instanceof Error ? err.message : "Could not check admin access");
       });
     fetchMaintenanceStatus()
       .then((res) => {
@@ -137,10 +143,35 @@ export function SettingsPage() {
         if (!cancel) setSamCached(cached);
       })
       .catch(() => {});
+    fetchAiSettings()
+      .then((res) => {
+        if (!cancel) setAiEnabled(res.enabled);
+      })
+      .catch(() => {});
     return () => {
       cancel = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!unlocked) return;
+    let cancel = false;
+    Promise.all([fetchUsers(), fetchProjects()])
+      .then(([userRows, projectRows]) => {
+        if (cancel) return;
+        setUsers(userRows);
+        setProjects(projectRows);
+        if (projectRows.length > 0 && !projectToExport) {
+          setProjectToExport(projectRows.find((p) => p.id === project?.id) ?? projectRows[0]);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancel) setError(err instanceof Error ? err.message : "Could not load settings");
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [unlocked, project, projectToExport]);
 
   async function handleClearSamCache() {
     setClearingSamCache(true);
@@ -168,22 +199,24 @@ export function SettingsPage() {
     setIsMaintenance(res.maintenance);
   }
 
-  useEffect(() => {
-    if (!unlocked) return;
-    let cancel = false;
-    Promise.all([fetchUsers(), fetchProjects()])
-      .then(([userRows, projectRows]) => {
-        if (cancel) return;
-        setUsers(userRows);
-        setProjects(projectRows);
-      })
-      .catch((err: unknown) => {
-        if (!cancel) setError(err instanceof Error ? err.message : "Could not load settings");
-      });
-    return () => {
-      cancel = true;
-    };
-  }, [unlocked]);
+  async function handleToggleAi() {
+    setTogglingAi(true);
+    setAiMessage(null);
+    try {
+      const next = !aiEnabled;
+      const res = await setAiSettings(next);
+      setAiEnabled(res.enabled);
+      setAiMessage(
+        res.enabled
+          ? "SAM 2.1 AI Auto-Trace enabled. Tool icon is visible in Label menu."
+          : "SAM 2.1 AI Auto-Trace disabled. Tool icon is hidden from Label menu and access is blocked.",
+      );
+    } catch (err: unknown) {
+      setAiMessage(err instanceof Error ? err.message : "Failed to update AI settings");
+    } finally {
+      setTogglingAi(false);
+    }
+  }
 
   async function run(task: () => Promise<void>) {
     setBusy(true);
@@ -191,35 +224,10 @@ export function SettingsPage() {
     try {
       await task();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Request failed");
+      setError(err instanceof Error ? err.message : "Action failed");
     } finally {
       setBusy(false);
     }
-  }
-
-  function openExportModal(p: Project, format: ExportFormat = "yolo") {
-    setProjectToExport(p);
-    setExportFormat(format);
-    const isDual = format === "dino" || format === "yolo_dino" || format === "coco_dino";
-    setExportType(isDual ? "full_tar" : "labels_only");
-    setExportScope("all");
-    setTrainSplit(80);
-    setExportError(null);
-    setBytesExported(0);
-    setExportStatusText(null);
-    setIsExporting(false);
-  }
-
-  function closeExportModal() {
-    if (exportAbortRef.current) {
-      exportAbortRef.current.abort();
-      exportAbortRef.current = null;
-    }
-    setIsExporting(false);
-    setBytesExported(0);
-    setExportStatusText(null);
-    setExportError(null);
-    setProjectToExport(null);
   }
 
   async function handleStartExport() {
@@ -244,11 +252,8 @@ export function SettingsPage() {
         onProgress: (loaded) => setBytesExported(loaded),
         onStatusChange: (status) => setExportStatusText(status),
       });
-      setProjectToExport(null);
     } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        return;
-      }
+      if (err instanceof DOMException && err.name === "AbortError") return;
       setExportError(err instanceof Error ? err.message : "Export failed");
     } finally {
       exportAbortRef.current = null;
@@ -318,405 +323,27 @@ export function SettingsPage() {
     }
   }
 
+  const tabClass = (tab: SettingsTab) =>
+    `h-7 px-2.5 flex items-center gap-1.5 text-xs font-medium text-left transition-colors border-l-2 whitespace-nowrap ${
+      activeTab === tab
+        ? "border-[#1473e6] bg-[#1473e6]/10 text-[#1473e6] font-semibold"
+        : "border-transparent text-[#707070] hover:text-[#282828] hover:bg-[#f0f0f0]"
+    }`;
+
   return (
-    <div className="flex min-h-dvh flex-col bg-bg text-ink">
-      <AppHeader current="settings" />
-      <main className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-8 px-4 py-6">
-        <div className="flex flex-col gap-1">
-          <h1 className="text-lg font-medium tracking-tight">Settings</h1>
-          <p className="max-w-xl text-sm text-muted">
-            Manage projects, download YOLO dataset exports, and configure labeller user accounts.
-          </p>
-        </div>
-        {error ? (
-          <p className="rounded-sm border border-line bg-surface px-3 py-2 text-sm" role="alert">
-            {error}
-          </p>
-        ) : null}
-        {unlocked === null ? <p className="text-sm text-muted">Checking the lock…</p> : null}
-        {unlocked === false ? (
-          <form
-            className="flex max-w-sm flex-col gap-3 rounded-xl border border-line bg-surface p-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void run(async () => {
-                await unlockAdmin(password);
-                setPassword("");
-                setUnlocked(true);
-              });
-            }}
-          >
-            <label className="flex flex-col gap-2 text-sm font-medium">
-              Settings password
-              <input
-                className={field}
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                required
-              />
-            </label>
-            <p className="text-sm text-muted">The shared password is admin.</p>
-            <button type="submit" className={btnPrimary} disabled={busy}>
-              Unlock
-            </button>
-          </form>
-        ) : null}
-        {unlocked ? (
-          <>
-            <section className="flex flex-col gap-3">
-              <div className="flex flex-col gap-1">
-                <h2 className="text-base font-semibold tracking-tight">Projects</h2>
-                <p className="text-sm text-muted">
-                  Available projects with photo counts and completion status.
-                </p>
-              </div>
-
-              <div className="overflow-x-auto rounded-xl border border-line bg-surface">
-                <table className="w-full border-collapse text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-line bg-surface-raised/40 text-xs font-semibold uppercase tracking-wider text-muted">
-                      <th className="px-4 py-3">Name</th>
-                      <th className="px-4 py-3">Path</th>
-                      <th className="px-4 py-3">Photo QTY/Complete</th>
-                      <th className="px-4 py-3 text-right">Commands</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-line">
-                    {(projects ?? []).map((p) => (
-                      <tr key={p.id} className="hover:bg-surface-raised/20">
-                        <td className="px-4 py-3 font-medium text-ink">
-                          <div className="flex items-center gap-2">
-                            <span>{p.name}</span>
-                            {project?.id === p.id ? (
-                              <span className="rounded-sm bg-ink/10 px-1.5 py-0.5 text-xs text-muted">
-                                active
-                              </span>
-                            ) : null}
-                          </div>
-                        </td>
-                        <td
-                          className="max-w-md truncate px-4 py-3 font-mono text-xs text-muted"
-                          title={p.resolvedFolder}
-                        >
-                          {p.folder}
-                        </td>
-                        <td className="px-4 py-3">
-                          {p.folderOk ? (
-                            <span className="font-mono text-sm">
-                              {p.totalPhotos ?? 0} / {p.completePhotos ?? 0}
-                              {p.approvedPhotos !== undefined && p.approvedPhotos > 0 ? (
-                                <span className="ml-1 text-xs text-purple-600 dark:text-purple-400 font-normal">
-                                  ({p.approvedPhotos} approved)
-                                </span>
-                              ) : null}
-                            </span>
-                          ) : (
-                            <span
-                              className="text-xs text-red-500"
-                              title={p.folderError || "Folder missing"}
-                            >
-                              Folder missing
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <div className="inline-flex items-center justify-end gap-2">
-                            <button
-                              type="button"
-                              className="press inline-flex h-9 items-center rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
-                              disabled={!p.folderOk || (p.totalPhotos ?? 0) === 0}
-                              onClick={() => openExportModal(p)}
-                              title="Export dataset (YOLO / COCO / DINO Catalogue)"
-                            >
-                              Export
-                            </button>
-                            <button
-                              type="button"
-                              className="press inline-flex h-9 items-center gap-1.5 rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
-                              disabled={
-                                !p.folderOk ||
-                                (p.totalPhotos ?? 0) === 0 ||
-                                checkingExifProjectId === p.id
-                              }
-                              onClick={() => void handleCheckExif(p)}
-                              title="Check images for EXIF orientation tags"
-                            >
-                              {checkingExifProjectId === p.id ? (
-                                <>
-                                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                                  <span>Checking…</span>
-                                </>
-                              ) : (
-                                "Check EXIF"
-                              )}
-                            </button>
-                            <button
-                              type="button"
-                              className="press inline-flex h-9 items-center gap-1.5 rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
-                              disabled={!p.folderOk || checkingHealthProjectId === p.id}
-                              onClick={() => void handleCheckHealth(p)}
-                              title="Inspect dataset composition & class distribution"
-                            >
-                              {checkingHealthProjectId === p.id ? (
-                                <>
-                                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                                  <span>Loading…</span>
-                                </>
-                              ) : (
-                                "Health"
-                              )}
-                            </button>
-                            <button
-                              type="button"
-                              className="press inline-flex h-9 items-center gap-1.5 rounded-sm border border-line bg-surface px-3 text-xs font-medium text-ink hover:bg-surface-raised disabled:opacity-40"
-                              disabled={!p.folderOk || syncingProjectId === p.id}
-                              onClick={() => void handleRescan(p)}
-                              title="Rescan and synchronize photos from disk folder"
-                            >
-                              {syncingProjectId === p.id ? (
-                                <>
-                                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                                  <span>Rescanning…</span>
-                                </>
-                              ) : (
-                                "Rescan"
-                              )}
-                            </button>
-                            <button
-                              type="button"
-                              className="press inline-flex h-9 items-center rounded-sm border border-line bg-surface px-3 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 disabled:opacity-40"
-                              onClick={() => {
-                                setProjectToDelete(p);
-                                setAdminPassword("");
-                                setDeleteError(null);
-                              }}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                    {projects && projects.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="px-4 py-6 text-center text-sm text-muted">
-                          No projects available.
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-            <section className="flex flex-col gap-3">
-              <div className="flex flex-col gap-1">
-                <h2 className="text-base font-semibold tracking-tight">Labellers</h2>
-                <p className="text-sm text-muted">Add new labellers or manage user passwords.</p>
-              </div>
-
-              <form
-                className="grid gap-3 rounded-xl border border-line bg-surface p-4 sm:grid-cols-[1fr_1fr_auto]"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void run(async () => {
-                    await createUser(username, userPassword);
-                    setUsers(await fetchUsers());
-                    setUsername("");
-                    setUserPassword("");
-                  });
-                }}
-              >
-                <label className="flex flex-col gap-2 text-sm font-medium">
-                  Username
-                  <input
-                    className={field}
-                    value={username}
-                    onChange={(event) => setUsername(event.target.value)}
-                    required
-                  />
-                </label>
-                <label className="flex flex-col gap-2 text-sm font-medium">
-                  Password
-                  <input
-                    className={field}
-                    type="password"
-                    autoComplete="new-password"
-                    value={userPassword}
-                    onChange={(event) => setUserPassword(event.target.value)}
-                    required
-                  />
-                </label>
-                <div className="flex items-end">
-                  <button type="submit" className={btnPrimary} disabled={busy}>
-                    Add user
-                  </button>
-                </div>
-              </form>
-              <ul className="flex flex-col gap-2">
-                {(users ?? []).map((user) => (
-                  <li key={user.id} className="rounded-lg border border-line bg-surface p-3">
-                    {editing === user.id ? (
-                      <form
-                        className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          void run(async () => {
-                            await resetUserPassword(user.id, nextPassword);
-                            setEditing(null);
-                            setNextPassword("");
-                          });
-                        }}
-                      >
-                        <p className="flex h-11 items-center font-mono text-sm">{user.username}</p>
-                        <input
-                          className={field}
-                          type="password"
-                          autoComplete="new-password"
-                          placeholder="New password"
-                          value={nextPassword}
-                          onChange={(event) => setNextPassword(event.target.value)}
-                          required
-                        />
-                        <div className="flex gap-2">
-                          <button type="submit" className={btnPrimary} disabled={busy}>
-                            Save
-                          </button>
-                          <button type="button" className={btn} onClick={() => setEditing(null)}>
-                            Cancel
-                          </button>
-                        </div>
-                      </form>
-                    ) : (
-                      <div className="flex flex-wrap items-center gap-3">
-                        <p className="min-w-0 flex-1 font-mono text-sm">{user.username}</p>
-                        <button
-                          type="button"
-                          className={btn}
-                          onClick={() => {
-                            setEditing(user.id);
-                            setNextPassword("");
-                            setPendingDelete(null);
-                          }}
-                        >
-                          Reset password
-                        </button>
-                        <button
-                          type="button"
-                          className={btn}
-                          onClick={() => {
-                            if (pendingDelete !== user.id) {
-                              setPendingDelete(user.id);
-                              return;
-                            }
-                            void run(async () => {
-                              await deleteUser(user.id);
-                              setUsers(await fetchUsers());
-                              setPendingDelete(null);
-                            });
-                          }}
-                        >
-                          {pendingDelete === user.id ? "Confirm" : "Delete"}
-                        </button>
-                      </div>
-                    )}
-                  </li>
-                ))}
-                {users && users.length === 0 ? (
-                  <li className="text-sm text-muted">No labellers yet.</li>
-                ) : null}
-              </ul>
-            </section>
-
-            <section className="flex flex-col gap-3">
-              <div className="flex flex-col gap-1">
-                <h2 className="text-base font-semibold tracking-tight">
-                  Local AI Model Cache (SAM 2.1)
-                </h2>
-                <p className="text-sm text-muted">
-                  SAM 2.1 Hiera Tiny ONNX weights (~120 MB) are cached in your browser&apos;s native
-                  Cache Storage (<code className="font-mono text-xs">{CACHE_NAME}</code>) for
-                  instant offline loading.
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface p-4">
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2 text-sm font-medium text-ink">
-                    <Sparkles className="size-4 text-purple-600 dark:text-purple-400" />
-                    <span>SAM 2.1 Hiera Tiny (Encoder + Decoder)</span>
-                    <span
-                      className={`rounded-sm px-2 py-0.5 font-mono text-xs font-semibold ${
-                        samCached
-                          ? "border border-emerald-300 bg-emerald-100 text-emerald-950 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
-                          : "border border-line bg-bg text-muted"
-                      }`}
-                    >
-                      {samCached ? "Cached on Disk" : "Not Cached"}
-                    </span>
-                  </div>
-                  {samCacheMessage ? (
-                    <p className="font-mono text-xs text-emerald-700 dark:text-emerald-300">
-                      {samCacheMessage}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-muted">
-                      Clear the local model cache if updated ONNX weights have been deployed to{" "}
-                      <code className="font-mono">/public/models</code>.
-                    </p>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  className={btn}
-                  disabled={clearingSamCache}
-                  onClick={() => void handleClearSamCache()}
-                  title="Delete ls-marker-sam2-cache-v1 from browser Cache Storage"
-                >
-                  {clearingSamCache ? (
-                    <Loader2 className="size-4 animate-spin text-muted" aria-hidden="true" />
-                  ) : (
-                    <Trash2 className="size-4 text-muted" aria-hidden="true" />
-                  )}
-                  <span>Clear Model Cache</span>
-                </button>
-              </div>
-            </section>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  className={btn}
-                  onClick={() => setIsBackupModalOpen(true)}
-                  title="Download safe SQLite snapshot"
-                >
-                  <Database className="size-4 text-muted" aria-hidden="true" />
-                  <span>Backup Database</span>
-                </button>
-
-                <button
-                  type="button"
-                  className={
-                    isMaintenance
-                      ? "press inline-flex h-11 items-center justify-center gap-2 rounded-sm border-2 border-amber-600 bg-amber-400 px-4 text-sm font-bold text-amber-950 shadow-xs ring-2 ring-amber-500/40 hover:bg-amber-300 dark:border-amber-400 dark:bg-amber-500 dark:text-amber-950"
-                      : "press inline-flex h-11 items-center justify-center gap-2 rounded-sm border border-amber-500 bg-amber-100 px-4 text-sm font-bold text-amber-950 shadow-xs hover:bg-amber-200 active:bg-amber-300 dark:border-amber-600 dark:bg-amber-950/60 dark:text-amber-100 dark:hover:bg-amber-900/60"
-                  }
-                  onClick={() => setIsMaintenanceModalOpen(true)}
-                  title="Toggle maintenance mode to safely backup and pull git updates"
-                >
-                  <Wrench
-                    className={`size-4 ${isMaintenance ? "text-amber-950" : "text-amber-900 dark:text-amber-200"}`}
-                    aria-hidden="true"
-                  />
-                  <span>{isMaintenance ? "Maintenance Mode: Active" : "Maintenance Mode"}</span>
-                </button>
-              </div>
-
+    <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#f0f0f0] text-[#282828] select-none text-xs">
+      {/* 28px Top Bar */}
+      <AppHeader
+        current="settings"
+        meta={
+          unlocked ? (
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-[10px] text-emerald-800 bg-emerald-100 border border-emerald-300 px-1.5 py-0.2 rounded-[2px] font-semibold flex items-center gap-1">
+                <Check className="size-3 text-emerald-700" />
+                Admin Unlocked
+              </span>
               <button
                 type="button"
-                className={btn}
                 onClick={() => {
                   void run(async () => {
                     await lockAdmin();
@@ -725,675 +352,891 @@ export function SettingsPage() {
                     setProjects(null);
                   });
                 }}
+                className="press h-5 px-1.5 rounded-[2px] border border-[#c8c8c8] bg-white text-[#707070] hover:text-[#282828] text-[10px] font-mono flex items-center gap-1"
+                title="Lock admin access"
               >
-                Lock settings
+                <Lock className="size-2.5" />
+                <span>Lock</span>
               </button>
             </div>
-          </>
-        ) : null}
+          ) : (
+            <span className="font-mono text-[10px] text-amber-900 bg-amber-100 border border-amber-300 px-1.5 py-0.2 rounded-[2px] font-semibold flex items-center gap-1">
+              <Lock className="size-2.5 text-amber-700" />
+              Admin Locked
+            </span>
+          )
+        }
+      />
 
-        {projectToExport ? (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
-            onClick={(event) => {
-              if (event.target === event.currentTarget && !isExporting) {
-                closeExportModal();
-              }
-            }}
-          >
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="export-dialog-title"
-              className="flex w-full max-w-xl flex-col gap-5 rounded-xl border border-line bg-bg p-6 text-ink shadow-2xl"
+      {/* Main Container */}
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        {error && (
+          <div className="p-1.5 bg-red-50 border-b border-red-200 text-red-800 text-xs flex items-center justify-between shrink-0">
+            <span>{error}</span>
+            <button type="button" onClick={() => setError(null)}>
+              <X className="size-3.5" />
+            </button>
+          </div>
+        )}
+
+        {unlocked === false ? (
+          /* Admin Password Gate (Centered Compact Card) */
+          <div className="flex-1 flex items-center justify-center p-4">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void run(async () => {
+                  await unlockAdmin(password);
+                  setPassword("");
+                  setUnlocked(true);
+                });
+              }}
+              className="w-80 bg-white border border-[#c8c8c8] rounded-[2px] p-4 flex flex-col gap-3 shadow-none"
             >
-              <div className="flex items-start justify-between gap-4 border-b border-line pb-4">
-                <div className="flex flex-col gap-1">
-                  <h2
-                    id="export-dialog-title"
-                    className="text-base font-semibold tracking-tight text-ink"
-                  >
-                    Export{" "}
-                    {exportFormat === "dino"
-                      ? "DINO Catalogue"
-                      : exportFormat === "coco"
-                        ? "COCO JSON"
-                        : exportFormat === "yolo_dino"
-                          ? "YOLO + DINO"
-                          : exportFormat === "coco_dino"
-                            ? "COCO + DINO"
-                            : "YOLO"}{" "}
-                    Dataset: {projectToExport.name}
-                  </h2>
-                  <p className="font-mono text-xs text-muted">
-                    {projectToExport.resolvedFolder || projectToExport.folder} &middot;{" "}
-                    {projectToExport.completePhotos ?? 0} labeled /{" "}
-                    {projectToExport.totalPhotos ?? 0} total photos
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={closeExportModal}
-                  aria-label="Close export modal"
-                  className="press inline-flex size-8 items-center justify-center rounded-md text-muted hover:bg-surface-raised hover:text-ink"
-                >
-                  <X className="size-4" aria-hidden="true" />
-                </button>
+              <div className="flex items-center gap-2 text-[#282828]">
+                <Lock className="size-4 text-[#1473e6]" />
+                <h2 className="text-xs font-semibold uppercase tracking-wider">
+                  Admin Authentication
+                </h2>
               </div>
+              <p className="text-[11px] text-[#707070] leading-relaxed">
+                Shared admin password required for projects, users, backups, and maintenance
+                settings.
+              </p>
+              <div>
+                <input
+                  type="password"
+                  placeholder="Admin password (admin)"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  className="w-full h-7 px-2 rounded-[2px] border border-[#c8c8c8] bg-white text-xs outline-none focus:border-[#1473e6]"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={busy}
+                className="press h-7 rounded-[2px] bg-[#1473e6] text-white font-medium text-xs hover:bg-[#0d62c7] disabled:opacity-40"
+              >
+                {busy ? "Unlocking..." : "Unlock Admin Settings"}
+              </button>
+            </form>
+          </div>
+        ) : unlocked ? (
+          /* Multi-Pane Tabbed Workspace */
+          <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
+            {/* Left Tabs Strip (210px) */}
+            <aside
+              aria-label="Settings Categories"
+              className="w-[210px] border-r border-[#c8c8c8] bg-white flex flex-col shrink-0 py-1 select-none"
+            >
+              <button
+                type="button"
+                onClick={() => setActiveTab("projects")}
+                className={tabClass("projects")}
+              >
+                <FolderOpen className="size-3.5" />
+                <span>Projects &amp; Sync</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("export")}
+                className={tabClass("export")}
+              >
+                <Download className="size-3.5" />
+                <span>Dataset Export</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("database")}
+                className={tabClass("database")}
+              >
+                <Database className="size-3.5" />
+                <span>Database &amp; Maintenance</span>
+              </button>
+              <button type="button" onClick={() => setActiveTab("ai")} className={tabClass("ai")}>
+                <Sparkles className="size-3.5" />
+                <span>AI Models &amp; Cache</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("users")}
+                className={tabClass("users")}
+              >
+                <Users className="size-3.5" />
+                <span>Labeller Users</span>
+              </button>
+            </aside>
 
-              {/* Format selector */}
-              <div className="flex flex-col gap-2">
-                <label className="text-xs font-medium text-ink">Format</label>
+            {/* Main Content Workspace Panel */}
+            <main className="flex-1 min-w-0 min-h-0 bg-[#f0f0f0] p-2 overflow-y-auto">
+              {/* TAB 1: PROJECTS & SYNC */}
+              {activeTab === "projects" && (
                 <div className="flex flex-col gap-2">
-                  <div className="grid grid-cols-3 gap-2 rounded-lg border border-line bg-surface p-1">
-                    <button
-                      type="button"
-                      disabled={isExporting}
-                      onClick={() => setExportFormat("yolo")}
-                      className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
-                        exportFormat === "yolo"
-                          ? "bg-ink text-surface shadow-xs"
-                          : "text-muted hover:text-ink"
-                      }`}
-                    >
-                      YOLO
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isExporting}
-                      onClick={() => setExportFormat("coco")}
-                      className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
-                        exportFormat === "coco"
-                          ? "bg-blue-600 text-white shadow-xs"
-                          : "text-muted hover:text-ink"
-                      }`}
-                    >
-                      COCO JSON
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isExporting}
-                      onClick={() => {
-                        setExportFormat("dino");
-                        setExportType("full_tar");
-                      }}
-                      className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
-                        exportFormat === "dino"
-                          ? "bg-emerald-600 text-white shadow-xs"
-                          : "text-muted hover:text-ink"
-                      }`}
-                    >
-                      DINO Catalogue
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 rounded-lg border border-line bg-surface p-1">
-                    <button
-                      type="button"
-                      disabled={isExporting}
-                      onClick={() => {
-                        setExportFormat("yolo_dino");
-                        setExportType("full_tar");
-                      }}
-                      className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
-                        exportFormat === "yolo_dino"
-                          ? "bg-purple-600 text-white shadow-xs"
-                          : "text-muted hover:text-ink"
-                      }`}
-                    >
-                      YOLO + DINO
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isExporting}
-                      onClick={() => {
-                        setExportFormat("coco_dino");
-                        setExportType("full_tar");
-                      }}
-                      className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
-                        exportFormat === "coco_dino"
-                          ? "bg-indigo-600 text-white shadow-xs"
-                          : "text-muted hover:text-ink"
-                      }`}
-                    >
-                      COCO + DINO
-                    </button>
-                  </div>
-                </div>
-                {exportFormat === "yolo_dino" || exportFormat === "coco_dino" ? (
-                  <p className="text-[11px] font-medium text-purple-700 dark:text-purple-400">
-                    Exports two .tar files from the same labels.
-                  </p>
-                ) : null}
-              </div>
-
-              {/* Include Images (Scope) selector */}
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-ink">Include Images</label>
-                <div className="grid grid-cols-2 gap-2 rounded-lg border border-line bg-surface p-1">
-                  <button
-                    type="button"
-                    disabled={isExporting}
-                    onClick={() => setExportScope("all")}
-                    className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
-                      exportScope === "all"
-                        ? "bg-ink text-surface shadow-xs"
-                        : "text-muted hover:text-ink"
-                    }`}
-                  >
-                    All Completed
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isExporting}
-                    onClick={() => setExportScope("approved")}
-                    className={`press flex h-9 items-center justify-center rounded-md text-xs font-semibold transition-all ${
-                      exportScope === "approved"
-                        ? "bg-purple-600 text-white shadow-xs"
-                        : "text-muted hover:text-ink"
-                    }`}
-                  >
-                    Approved Only
-                  </button>
-                </div>
-                {exportScope === "approved" ? (
-                  <p className="text-[11px] text-purple-700">
-                    Only photos that have passed QA review will be packaged into the dataset.
-                  </p>
-                ) : null}
-              </div>
-
-              {exportFormat === "dino" ? (
-                <div className="flex items-start gap-3.5 rounded-lg border border-emerald-500/40 bg-emerald-50/60 p-4 dark:bg-emerald-950/20">
-                  <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border border-emerald-200 bg-emerald-100 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900 dark:text-emerald-300">
-                    <Archive className="size-4" aria-hidden="true" />
-                  </div>
-                  <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="text-sm font-semibold text-ink">
-                      DINO Catalogue (.tar stream)
-                    </span>
-                    <p className="text-xs leading-relaxed text-muted">
-                      Crops every annotated part from source photos, letterboxes to 224×224 (padded
-                      with mid-grey RGB 114,114,114) at JPEG quality 80, and streams{" "}
-                      <code className="font-mono text-ink">catalogue.json</code> with part
-                      descriptions, dimensions, and relative crop paths into an uncompressed TAR
-                      archive.
+                  <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-2.5">
+                    <h2 className="text-xs font-semibold text-[#282828] mb-1">Project Directory</h2>
+                    <p className="text-[11px] text-[#707070] mb-2">
+                      Manage scan roots, synchronize disk changes without data loss, and verify
+                      dataset integrity.
                     </p>
-                  </div>
-                </div>
-              ) : exportFormat === "yolo_dino" || exportFormat === "coco_dino" ? (
-                <div className="flex items-start gap-3.5 rounded-lg border border-purple-500/40 bg-purple-50/60 p-4 dark:bg-purple-950/20">
-                  <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border border-purple-200 bg-purple-100 text-purple-700 dark:border-purple-800 dark:bg-purple-900 dark:text-purple-300">
-                    <Archive className="size-4" aria-hidden="true" />
-                  </div>
-                  <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="text-sm font-semibold text-ink">
-                      Dual Dataset Export (.tar streams)
-                    </span>
-                    <p className="text-xs leading-relaxed text-muted">
-                      Full datasets only. In a single download action, downloads:
-                    </p>
-                    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-muted">
-                      <li>
-                        <strong className="text-ink">
-                          {exportFormat === "yolo_dino" ? "YOLO" : "COCO"} Dataset:
-                        </strong>{" "}
-                        Mapped to general categories (nut, bolt, washer, etc.) with train/val split.
-                      </li>
-                      <li>
-                        <strong className="text-ink">DINO Catalogue:</strong> 224×224 letterboxed
-                        part crops with IC codes and dimensions in{" "}
-                        <code className="font-mono text-ink">catalogue.json</code>.
-                      </li>
-                    </ul>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-3" role="radiogroup" aria-label="Export Method">
-                  <label
-                    className={`flex cursor-pointer items-start gap-3.5 rounded-lg border p-4 transition-colors ${
-                      exportType === "labels_only"
-                        ? "border-blue-500 bg-blue-50/70"
-                        : "border-line bg-surface hover:bg-surface-raised/60"
-                    } ${isExporting ? "pointer-events-none opacity-60" : ""}`}
-                  >
-                    <input
-                      type="radio"
-                      name="dataset-export-type"
-                      value="labels_only"
-                      checked={exportType === "labels_only"}
-                      disabled={isExporting}
-                      onChange={() => setExportType("labels_only")}
-                      className="sr-only"
-                    />
-                    <div
-                      className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border ${
-                        exportType === "labels_only"
-                          ? "border-blue-200 bg-blue-100 text-blue-700"
-                          : "border-line bg-bg text-muted"
-                      }`}
-                    >
-                      <FileText className="size-4" aria-hidden="true" />
-                    </div>
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-semibold text-ink">
-                          {exportFormat === "coco"
-                            ? "Reference / Annotations Only"
-                            : "Labels Only (Fast / Reference)"}
-                        </span>
-                        {exportType === "labels_only" ? (
-                          <CheckCircle2
-                            className="size-4 shrink-0 text-blue-600"
-                            aria-hidden="true"
-                          />
-                        ) : null}
-                      </div>
-                      <p className="text-xs leading-relaxed text-muted">
-                        {exportFormat === "coco"
-                          ? "Best for Detectron2 / MMDetection on local storage. Exports annotations/instances_train.json and instances_val.json referencing existing image filenames, plus export_manifest.json. Instant download (< 5 MB)."
-                          : "Best if you train on the same machine where images reside. Images remain in their original folders; exports YOLO label files, train/val path lists, and data.yaml. Instant download (< 5 MB)."}
-                      </p>
-                    </div>
-                  </label>
 
-                  <label
-                    className={`flex cursor-pointer items-start gap-3.5 rounded-lg border p-4 transition-colors ${
-                      exportType === "full_tar"
-                        ? "border-blue-500 bg-blue-50/70"
-                        : "border-line bg-surface hover:bg-surface-raised/60"
-                    } ${isExporting ? "pointer-events-none opacity-60" : ""}`}
-                  >
-                    <input
-                      type="radio"
-                      name="dataset-export-type"
-                      value="full_tar"
-                      checked={exportType === "full_tar"}
-                      disabled={isExporting}
-                      onChange={() => setExportType("full_tar")}
-                      className="sr-only"
-                    />
-                    <div
-                      className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border ${
-                        exportType === "full_tar"
-                          ? "border-blue-200 bg-blue-100 text-blue-700"
-                          : "border-line bg-bg text-muted"
-                      }`}
-                    >
-                      <Archive className="size-4" aria-hidden="true" />
+                    <div className="overflow-x-auto border border-[#c8c8c8] rounded-[2px]">
+                      <table className="w-full border-collapse text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-[#c8c8c8] bg-[#f5f5f5] text-[11px] font-semibold text-[#707070]">
+                            <th className="px-2 py-1.5">Project</th>
+                            <th className="px-2 py-1.5">Disk Path</th>
+                            <th className="px-2 py-1.5">Photos (Done / Total)</th>
+                            <th className="px-2 py-1.5 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#f0f0f0]">
+                          {(projects ?? []).map((p) => (
+                            <tr key={p.id} className="hover:bg-[#f9f9f9]">
+                              <td className="px-2 py-1.5 font-bold text-[#282828]">
+                                <div className="flex items-center gap-1.5">
+                                  <span>{p.name}</span>
+                                  {project?.id === p.id && (
+                                    <span className="font-mono text-[9px] bg-blue-100 text-blue-800 px-1 rounded-[2px]">
+                                      active
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-2 py-1.5 font-mono text-[11px] text-[#707070] truncate max-w-xs">
+                                {p.folder}
+                              </td>
+                              <td className="px-2 py-1.5 font-mono text-[11px]">
+                                {p.folderOk ? (
+                                  <span>
+                                    <strong className="text-emerald-700">
+                                      {p.completePhotos ?? 0}
+                                    </strong>{" "}
+                                    / {p.totalPhotos ?? 0}
+                                    {p.approvedPhotos ? (
+                                      <span className="ml-1 text-purple-700">
+                                        ({p.approvedPhotos} approved)
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                ) : (
+                                  <span className="text-red-600 font-sans">Folder missing</span>
+                                )}
+                              </td>
+                              <td className="px-2 py-1.5 text-right">
+                                <div className="inline-flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setProjectToExport(p);
+                                      setActiveTab("export");
+                                    }}
+                                    className="press h-5 px-1.5 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] text-[10px]"
+                                  >
+                                    Export
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={checkingExifProjectId === p.id}
+                                    onClick={() => void handleCheckExif(p)}
+                                    className="press h-5 px-1.5 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] text-[10px] disabled:opacity-40"
+                                  >
+                                    {checkingExifProjectId === p.id ? "Checking..." : "EXIF"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={checkingHealthProjectId === p.id}
+                                    onClick={() => void handleCheckHealth(p)}
+                                    className="press h-5 px-1.5 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] text-[10px] disabled:opacity-40"
+                                  >
+                                    {checkingHealthProjectId === p.id ? "Loading..." : "Health"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={syncingProjectId === p.id}
+                                    onClick={() => void handleRescan(p)}
+                                    className="press h-5 px-1.5 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] text-[10px] disabled:opacity-40"
+                                  >
+                                    {syncingProjectId === p.id ? "Rescanning..." : "Rescan"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setProjectToDelete(p);
+                                      setAdminPassword("");
+                                      setDeleteError(null);
+                                    }}
+                                    className="press h-5 px-1.5 rounded-[2px] border border-red-200 text-red-600 hover:bg-red-50 text-[10px]"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-semibold text-ink">
-                          Full Dataset (.tar stream)
+                  </div>
+
+                  {/* EXIF Check Popover/Result */}
+                  {exifResult && (
+                    <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-2.5">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-semibold text-xs text-[#282828]">
+                          EXIF Check: {exifResult.projectName}
                         </span>
-                        {exportType === "full_tar" ? (
-                          <CheckCircle2
-                            className="size-4 shrink-0 text-blue-600"
-                            aria-hidden="true"
-                          />
-                        ) : null}
+                        <button type="button" onClick={() => setExifResult(null)}>
+                          <X className="size-3.5 text-[#707070]" />
+                        </button>
                       </div>
-                      <p className="text-xs leading-relaxed text-muted">
-                        {exportFormat === "coco"
-                          ? "Streams images/train/, images/val/, and annotations/instances_train.json, instances_val.json directly as an uncompressed TAR archive. Ready for immediate remote training runs."
-                          : "Streams images and label pairs directly as an uncompressed TAR archive. Safe for huge datasets, collision-proof filenames, with zero memory overhead."}
+                      <p className="text-[11px] text-[#707070] mb-2">
+                        {exifResult.flaggedCount === 0
+                          ? `All ${exifResult.totalImages} images have clean orientation tags (Orientation 1).`
+                          : `Warning: ${exifResult.flaggedCount} of ${exifResult.totalImages} images have orientation transforms that may cause rotation shifts.`}
                       </p>
+                      {exifResult.flaggedFiles.length > 0 && (
+                        <div className="max-h-24 overflow-y-auto font-mono text-[10px] bg-[#f9f9f9] p-1.5 border border-[#e5e5e5] rounded-[2px]">
+                          {exifResult.flaggedFiles.map((f) => (
+                            <div key={f} className="text-amber-800">
+                              {f}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  </label>
+                  )}
                 </div>
               )}
 
-              {exportFormat !== "dino" ? (
-                <div className="flex flex-col gap-2.5 rounded-lg border border-line bg-surface p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <label htmlFor="train-val-split" className="text-xs font-medium text-ink">
-                      Train / Val Split
-                    </label>
-                    <span className="font-mono text-xs font-semibold text-blue-600">
-                      {trainSplit}% Train / {100 - trainSplit}% Val
-                    </span>
-                  </div>
-                  {exportFormat === "yolo_dino" || exportFormat === "coco_dino" ? (
-                    <p className="text-[11px] text-muted">
-                      Applies to the {exportFormat === "yolo_dino" ? "YOLO" : "COCO"} dataset
-                      archive.
+              {/* TAB 2: DATASET EXPORT */}
+              {activeTab === "export" && (
+                <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-3 flex flex-col gap-3">
+                  <div>
+                    <h2 className="text-xs font-semibold text-[#282828]">
+                      Dataset Export (.tar / YOLO / COCO / DINO)
+                    </h2>
+                    <p className="text-[11px] text-[#707070]">
+                      Stream full TAR dataset archives or labels-only packages directly from SQLite
+                      / PostgreSQL.
                     </p>
-                  ) : null}
-                  <div className="flex items-center gap-3">
-                    <input
-                      id="train-val-split"
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={5}
-                      disabled={isExporting}
-                      value={trainSplit}
-                      onChange={(event) => setTrainSplit(Number(event.target.value))}
-                      className="h-2 flex-1 cursor-pointer appearance-none rounded-lg bg-line accent-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-                    />
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        min={0}
-                        max={100}
-                        disabled={isExporting}
-                        aria-label="Train split percentage"
-                        value={trainSplit}
-                        onChange={(event) => {
-                          const val = Number(event.target.value);
-                          if (Number.isFinite(val)) {
-                            setTrainSplit(Math.max(0, Math.min(100, Math.round(val))));
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* Project Selection */}
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-[#707070] block mb-1">
+                        Select Project
+                      </label>
+                      <select
+                        value={projectToExport?.id ?? ""}
+                        onChange={(e) => {
+                          const id = Number(e.target.value);
+                          setProjectToExport((projects ?? []).find((p) => p.id === id) ?? null);
+                        }}
+                        className="w-full h-7 rounded-[2px] border border-[#c8c8c8] bg-white text-xs px-2"
+                      >
+                        {(projects ?? []).map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} ({p.completePhotos ?? 0} labeled)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Format Selection */}
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-[#707070] block mb-1">
+                        Format
+                      </label>
+                      <select
+                        value={exportFormat}
+                        onChange={(e) => {
+                          const fmt = e.target.value as ExportFormat;
+                          setExportFormat(fmt);
+                          if (fmt === "dino" || fmt === "yolo_dino" || fmt === "coco_dino") {
+                            setExportType("full_tar");
                           }
                         }}
-                        className="h-8 w-16 rounded-sm border border-line bg-bg px-2 text-right font-mono text-xs text-ink outline-none focus-visible:border-blue-600 disabled:opacity-50"
+                        className="w-full h-7 rounded-[2px] border border-[#c8c8c8] bg-white text-xs px-2"
+                      >
+                        <option value="yolo">YOLO (.tar)</option>
+                        <option value="coco">COCO JSON (.tar)</option>
+                        <option value="dino">DINO Catalogue (.tar)</option>
+                        <option value="yolo_dino">YOLO + DINO Combined</option>
+                        <option value="coco_dino">COCO + DINO Combined</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-1 border-t border-[#f0f0f0]">
+                    {/* Scope Selection */}
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-[#707070] block mb-1">
+                        Scope
+                      </label>
+                      <div className="flex gap-2">
+                        <label className="flex items-center gap-1.5 cursor-pointer text-xs">
+                          <input
+                            type="radio"
+                            name="scope"
+                            checked={exportScope === "all"}
+                            onChange={() => setExportScope("all")}
+                          />
+                          <span>All Completed</span>
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer text-xs">
+                          <input
+                            type="radio"
+                            name="scope"
+                            checked={exportScope === "approved"}
+                            onChange={() => setExportScope("approved")}
+                          />
+                          <span>Approved Only (QA Frozen)</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Content Type */}
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-[#707070] block mb-1">
+                        Package Content
+                      </label>
+                      <div className="flex gap-2">
+                        <label className="flex items-center gap-1.5 cursor-pointer text-xs">
+                          <input
+                            type="radio"
+                            name="type"
+                            checked={exportType === "full_tar"}
+                            onChange={() => setExportType("full_tar")}
+                          />
+                          <span>Full TAR (Images + Labels)</span>
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer text-xs">
+                          <input
+                            type="radio"
+                            name="type"
+                            checked={exportType === "labels_only"}
+                            disabled={
+                              exportFormat === "dino" ||
+                              exportFormat === "yolo_dino" ||
+                              exportFormat === "coco_dino"
+                            }
+                            onChange={() => setExportType("labels_only")}
+                          />
+                          <span>Labels Only (.tar)</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Train / Validation Split */}
+                  {exportFormat !== "dino" && (
+                    <div className="pt-1 border-t border-[#f0f0f0]">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[10px] uppercase font-bold text-[#707070]">
+                          Train / Validation Split
+                        </span>
+                        <span className="font-mono text-[11px] font-bold text-[#1473e6]">
+                          {trainSplit}% Train / {100 - trainSplit}% Val
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="50"
+                        max="100"
+                        step="5"
+                        value={trainSplit}
+                        onChange={(e) => setTrainSplit(Number(e.target.value))}
+                        className="w-full accent-[#1473e6]"
                       />
-                      <span className="font-mono text-xs text-muted">%</span>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {isExporting ? (
-                <div
-                  className="flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Loader2 className="size-4 animate-spin text-blue-600" aria-hidden="true" />
-                    <span>
-                      {exportStatusText ||
-                        (exportFormat === "dino"
-                          ? "Streaming DINO catalogue archive…"
-                          : exportFormat === "yolo_dino"
-                            ? "Streaming YOLO + DINO dual archives…"
-                            : exportFormat === "coco_dino"
-                              ? "Streaming COCO + DINO dual archives…"
-                              : exportFormat === "coco"
-                                ? exportType === "labels_only"
-                                  ? "Streaming COCO annotations archive…"
-                                  : "Streaming full COCO dataset archive…"
-                                : exportType === "labels_only"
-                                  ? "Streaming YOLO labels-only archive…"
-                                  : "Streaming full YOLO dataset archive…")}
-                    </span>
-                  </div>
-                  <span className="font-mono font-semibold text-blue-800">
-                    {formatBytes(bytesExported)}
-                  </span>
-                </div>
-              ) : null}
-
-              {exportError ? (
-                <p
-                  className="rounded-md border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-700"
-                  role="alert"
-                >
-                  {exportError}
-                </p>
-              ) : null}
-
-              <div className="flex items-center justify-end gap-2.5 border-t border-line pt-4">
-                <button
-                  type="button"
-                  onClick={closeExportModal}
-                  className="press inline-flex h-10 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-medium text-ink hover:bg-surface-raised"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={isExporting}
-                  onClick={() => void handleStartExport()}
-                  className="press inline-flex h-10 items-center justify-center gap-2 rounded-sm bg-blue-600 px-5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {isExporting ? (
-                    <>
-                      <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                      Streaming Export…
-                    </>
-                  ) : (
-                    <>
-                      <Download className="size-4" aria-hidden="true" />
-                      Download Export
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {projectToDelete ? (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4">
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="delete-project-title"
-              className="flex w-full max-w-md flex-col gap-4 rounded-xl border border-line bg-bg p-5 shadow-lg"
-            >
-              <div className="flex flex-col gap-1">
-                <h2 id="delete-project-title" className="text-base font-semibold text-ink">
-                  Delete project &ldquo;{projectToDelete.name}&rdquo;?
-                </h2>
-                <p className="text-sm text-muted">
-                  This will clear the .txt files and db records for this project, and leave the
-                  photos and folder structure alone.
-                </p>
-              </div>
-
-              <div className="break-all rounded-sm border border-line bg-surface p-2.5 font-mono text-xs text-muted">
-                {projectToDelete.resolvedFolder || projectToDelete.folder}
-              </div>
-
-              {deleteError ? (
-                <p
-                  className="rounded-sm border border-line bg-surface px-3 py-2 text-sm text-red-600"
-                  role="alert"
-                >
-                  {deleteError}
-                </p>
-              ) : null}
-
-              <form
-                className="flex flex-col gap-4"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void handleDeleteProject();
-                }}
-              >
-                <label className="flex flex-col gap-1.5 text-sm font-medium">
-                  Admin password
-                  <input
-                    className={field}
-                    type="password"
-                    autoComplete="current-password"
-                    placeholder="Enter admin password"
-                    value={adminPassword}
-                    onChange={(event) => setAdminPassword(event.target.value)}
-                    required
-                    autoFocus
-                  />
-                </label>
-
-                <div className="flex justify-end gap-2 pt-1">
-                  <button
-                    type="button"
-                    className={btn}
-                    onClick={() => {
-                      setProjectToDelete(null);
-                      setAdminPassword("");
-                      setDeleteError(null);
-                    }}
-                    disabled={deleting}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="press inline-flex h-11 items-center justify-center gap-2 rounded-sm bg-red-600 px-4 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-40"
-                    disabled={deleting || !adminPassword}
-                  >
-                    {deleting ? "Deleting…" : "Confirm Delete"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        ) : null}
-
-        {exifResult ? (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4 backdrop-blur-xs"
-            onClick={(event) => {
-              if (event.target === event.currentTarget) {
-                setExifResult(null);
-              }
-            }}
-          >
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="exif-dialog-title"
-              className="flex w-full max-w-lg flex-col gap-4 rounded-xl border border-line bg-bg p-6 text-ink shadow-2xl"
-            >
-              <div className="flex items-start justify-between gap-4 border-b border-line pb-3">
-                <div className="flex items-center gap-3">
-                  {exifResult.flaggedCount === 0 ? (
-                    <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-700">
-                      <CheckCircle2 className="size-5" aria-hidden="true" />
-                    </div>
-                  ) : (
-                    <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-700">
-                      <AlertTriangle className="size-5" aria-hidden="true" />
                     </div>
                   )}
-                  <div className="flex flex-col gap-0.5">
-                    <h2
-                      id="exif-dialog-title"
-                      className="text-base font-semibold tracking-tight text-ink"
+
+                  {/* Progress & Error Readout */}
+                  {isExporting && (
+                    <div className="p-2 bg-[#f9f9f9] border border-[#c8c8c8] rounded-[2px] flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="size-3.5 animate-spin text-[#1473e6]" />
+                        <span className="text-xs font-mono">
+                          {exportStatusText || "Streaming TAR dataset..."} (
+                          {formatBytes(bytesExported)})
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => exportAbortRef.current?.abort()}
+                        className="press h-5 px-2 rounded-[2px] border border-red-300 text-red-600 hover:bg-red-50 text-[10px]"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+
+                  {exportError && (
+                    <div className="p-2 bg-red-50 border border-red-200 text-red-800 text-xs rounded-[2px]">
+                      {exportError}
+                    </div>
+                  )}
+
+                  {/* Action Button */}
+                  <div className="pt-2 border-t border-[#f0f0f0]">
+                    <button
+                      type="button"
+                      disabled={isExporting || !projectToExport}
+                      onClick={() => void handleStartExport()}
+                      className="press h-7 px-4 rounded-[2px] bg-[#1473e6] hover:bg-[#0d62c7] text-white font-medium text-xs flex items-center gap-1.5 disabled:opacity-40"
                     >
-                      EXIF Orientation Diagnostic: {exifResult.projectName}
-                    </h2>
-                    <p className="font-mono text-xs text-muted">
-                      {exifResult.totalImages} images scanned &middot; {exifResult.flaggedCount}{" "}
-                      flagged
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setExifResult(null)}
-                  aria-label="Close modal"
-                  className="press inline-flex size-8 items-center justify-center rounded-md text-muted hover:bg-surface-raised hover:text-ink"
-                >
-                  <X className="size-4" aria-hidden="true" />
-                </button>
-              </div>
-
-              {exifResult.flaggedCount === 0 ? (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
-                  <p className="text-sm font-medium text-emerald-900">
-                    All clear: Checked {exifResult.totalImages} images in &ldquo;
-                    {exifResult.projectName}&rdquo;. 0 EXIF orientation tags detected. Coordinates
-                    will align 1:1.
-                  </p>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-3">
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-                    <p className="text-sm font-medium text-amber-900">
-                      Warning: Found {exifResult.flaggedCount} of {exifResult.totalImages} images
-                      with EXIF orientation tags. These images may render rotated in browsers while
-                      reading unrotated dimensions during model training.
-                    </p>
-                  </div>
-
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-muted">Flagged image files:</span>
-                    <div className="max-h-60 overflow-y-auto rounded-lg border border-line bg-surface p-2 font-mono text-xs text-amber-950 divide-y divide-line">
-                      {exifResult.flaggedFiles.map((file) => (
-                        <div key={file} className="py-1.5 px-2 break-all">
-                          {file}
-                        </div>
-                      ))}
-                    </div>
+                      <Download className="size-3.5" />
+                      <span>Download Dataset Archive (.tar)</span>
+                    </button>
                   </div>
                 </div>
               )}
 
-              <div className="flex justify-end border-t border-line pt-3">
-                <button
-                  type="button"
-                  onClick={() => setExifResult(null)}
-                  className="press inline-flex h-9 items-center justify-center rounded-sm border border-line bg-surface px-4 text-xs font-semibold text-ink hover:bg-surface-raised"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
+              {/* TAB 3: DATABASE & MAINTENANCE */}
+              {activeTab === "database" && (
+                <div className="flex flex-col gap-2">
+                  <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-3 flex items-center justify-between">
+                    <div>
+                      <h2 className="text-xs font-semibold text-[#282828]">
+                        PostgreSQL Database Backup
+                      </h2>
+                      <p className="text-[11px] text-[#707070]">
+                        Download a consistent SQL snapshot of all projects, images, boxes, classes,
+                        and users.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsBackupModalOpen(true)}
+                      className="press h-7 px-3 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] text-xs font-medium flex items-center gap-1.5"
+                    >
+                      <Database className="size-3.5 text-[#1473e6]" />
+                      <span>Backup Database</span>
+                    </button>
+                  </div>
+
+                  <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-3 flex items-center justify-between">
+                    <div>
+                      <h2 className="text-xs font-semibold text-[#282828]">
+                        System Maintenance Mode
+                      </h2>
+                      <p className="text-[11px] text-[#707070]">
+                        Temporarily pauses active labeling and claims so schema migrations or git
+                        updates run safely.
+                      </p>
+                      <div className="mt-1">
+                        <span
+                          className={`font-mono text-[10px] px-1.5 py-0.2 rounded-[2px] font-semibold ${
+                            isMaintenance
+                              ? "bg-amber-400 text-amber-950"
+                              : "bg-emerald-100 text-emerald-800"
+                          }`}
+                        >
+                          Status: {isMaintenance ? "Active (Paused)" : "Normal (Live)"}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsMaintenanceModalOpen(true)}
+                      className="press h-7 px-3 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] text-xs font-medium flex items-center gap-1.5"
+                    >
+                      <Wrench className="size-3.5 text-amber-600" />
+                      <span>Configure Maintenance</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: AI MODELS & CACHE */}
+              {activeTab === "ai" && (
+                <div className="flex flex-col gap-2">
+                  {/* Availability / Disable Control */}
+                  <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-3 flex flex-col gap-2.5">
+                    <div>
+                      <h2 className="text-xs font-semibold text-[#282828]">
+                        AI Auto-Trace Tool Availability
+                      </h2>
+                      <p className="text-[11px] text-[#707070]">
+                        Control whether the SAM 2.1 AI Auto-Trace feature is enabled across the
+                        workspace. When disabled, the tool icon is completely hidden from the Label
+                        menu and annotators are blocked from running model inferences.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center justify-between p-2 bg-[#f9f9f9] border border-[#c8c8c8] rounded-[2px]">
+                      <div className="flex items-center gap-2">
+                        <Sparkles className="size-4 text-purple-600 shrink-0" />
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-xs text-[#282828]">
+                              SAM 2.1 Auto-Trace
+                            </span>
+                            <span
+                              className={`font-mono text-[10px] px-1.5 py-0.2 rounded-[2px] font-bold border ${
+                                aiEnabled
+                                  ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                                  : "bg-rose-100 text-rose-800 border-rose-300"
+                              }`}
+                            >
+                              {aiEnabled ? "Enabled" : "Disabled"}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-[#707070]">
+                            {aiEnabled
+                              ? "Icon visible in Label menu • Annotators can trace shapes"
+                              : "Icon hidden from Label menu • Annotators blocked from using AI"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={togglingAi}
+                        onClick={() => void handleToggleAi()}
+                        className={`press h-6 px-3 rounded-[2px] text-xs font-medium flex items-center gap-1 border disabled:opacity-40 ${
+                          aiEnabled
+                            ? "bg-white border-[#c8c8c8] text-rose-600 hover:bg-rose-50 hover:border-rose-300"
+                            : "bg-[#1473e6] border-[#1473e6] text-white hover:bg-[#0d62c7]"
+                        }`}
+                      >
+                        {togglingAi ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : aiEnabled ? (
+                          <PowerOff className="size-3" />
+                        ) : (
+                          <Power className="size-3" />
+                        )}
+                        <span>{aiEnabled ? "Disable AI Tool" : "Enable AI Tool"}</span>
+                      </button>
+                    </div>
+
+                    {aiMessage && (
+                      <p
+                        className={`font-mono text-[11px] p-2 border rounded-[2px] ${
+                          aiEnabled
+                            ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+                            : "text-amber-800 bg-amber-50 border-amber-200"
+                        }`}
+                      >
+                        {aiMessage}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Local AI Model Cache */}
+                  <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-3 flex flex-col gap-2.5">
+                    <div>
+                      <h2 className="text-xs font-semibold text-[#282828]">
+                        Local AI Model Cache (SAM 2.1)
+                      </h2>
+                      <p className="text-[11px] text-[#707070]">
+                        SAM 2.1 Hiera Tiny ONNX weights (~120 MB) are permanently stored in browser
+                        Cache Storage (
+                        <code className="font-mono text-[#282828]">{CACHE_NAME}</code>) so
+                        offline/LAN annotators experience sub-50ms model boots.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center justify-between p-2 bg-[#f9f9f9] border border-[#c8c8c8] rounded-[2px]">
+                      <div className="flex items-center gap-2">
+                        <Sparkles className="size-4 text-purple-600" />
+                        <span className="font-semibold text-xs text-[#282828]">
+                          SAM 2.1 Hiera Tiny
+                        </span>
+                        <span
+                          className={`font-mono text-[10px] px-1.5 py-0.2 rounded-[2px] font-bold ${
+                            samCached
+                              ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                              : "bg-neutral-100 text-neutral-600 border border-[#c8c8c8]"
+                          }`}
+                        >
+                          {samCached ? "Cached on Local Disk" : "Not Cached"}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={clearingSamCache}
+                        onClick={() => void handleClearSamCache()}
+                        className="press h-6 px-2.5 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-red-600 text-xs font-medium flex items-center gap-1 disabled:opacity-40"
+                      >
+                        {clearingSamCache ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <Trash2 className="size-3" />
+                        )}
+                        <span>Clear Cache</span>
+                      </button>
+                    </div>
+
+                    {samCacheMessage && (
+                      <p className="font-mono text-[11px] text-emerald-700 bg-emerald-50 p-2 border border-emerald-200 rounded-[2px]">
+                        {samCacheMessage}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 5: USER MANAGEMENT */}
+              {activeTab === "users" && (
+                <div className="flex flex-col gap-2">
+                  {/* Create User Form */}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void run(async () => {
+                        await createUser(username.trim(), userPassword);
+                        setUsers(await fetchUsers());
+                        setUsername("");
+                        setUserPassword("");
+                      });
+                    }}
+                    className="bg-white border border-[#c8c8c8] rounded-[2px] p-2.5 flex items-center gap-2"
+                  >
+                    <span className="font-semibold text-xs text-[#282828] shrink-0">
+                      Add Labeller:
+                    </span>
+                    <input
+                      type="text"
+                      placeholder="Username"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      required
+                      className="h-6 w-36 px-1.5 rounded-[2px] border border-[#c8c8c8] text-xs bg-white"
+                    />
+                    <input
+                      type="password"
+                      placeholder="Password"
+                      autoComplete="new-password"
+                      value={userPassword}
+                      onChange={(e) => setUserPassword(e.target.value)}
+                      required
+                      className="h-6 w-36 px-1.5 rounded-[2px] border border-[#c8c8c8] text-xs bg-white"
+                    />
+                    <button
+                      type="submit"
+                      disabled={busy}
+                      className="press h-6 px-3 rounded-[2px] bg-[#1473e6] text-white text-xs font-medium hover:bg-[#0d62c7]"
+                    >
+                      Create User
+                    </button>
+                  </form>
+
+                  {/* Users Table */}
+                  <div className="bg-white border border-[#c8c8c8] rounded-[2px] overflow-hidden">
+                    <table className="w-full border-collapse text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-[#c8c8c8] bg-[#f5f5f5] text-[11px] font-semibold text-[#707070]">
+                          <th className="px-3 py-1.5">Username</th>
+                          <th className="px-3 py-1.5">User ID</th>
+                          <th className="px-3 py-1.5 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#f0f0f0]">
+                        {(users ?? []).map((u) => (
+                          <tr key={u.id} className="hover:bg-[#f9f9f9]">
+                            <td className="px-3 py-1.5 font-bold font-mono text-[#282828]">
+                              {u.username}
+                            </td>
+                            <td className="px-3 py-1.5 font-mono text-[11px] text-[#707070]">
+                              #{u.id}
+                            </td>
+                            <td className="px-3 py-1.5 text-right">
+                              {editingUserId === u.id ? (
+                                <form
+                                  onSubmit={(e) => {
+                                    e.preventDefault();
+                                    void run(async () => {
+                                      await resetUserPassword(u.id, nextPassword);
+                                      setEditingUserId(null);
+                                      setNextPassword("");
+                                    });
+                                  }}
+                                  className="inline-flex items-center gap-1.5"
+                                >
+                                  <input
+                                    type="password"
+                                    placeholder="New Password"
+                                    value={nextPassword}
+                                    onChange={(e) => setNextPassword(e.target.value)}
+                                    required
+                                    className="h-5 w-28 px-1.5 rounded-[2px] border border-[#c8c8c8] text-xs"
+                                  />
+                                  <button
+                                    type="submit"
+                                    className="press h-5 px-2 rounded-[2px] bg-[#1473e6] text-white text-[10px]"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingUserId(null)}
+                                    className="press h-5 px-1.5 rounded-[2px] border border-[#c8c8c8] text-[#707070] text-[10px]"
+                                  >
+                                    Cancel
+                                  </button>
+                                </form>
+                              ) : (
+                                <div className="inline-flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingUserId(u.id);
+                                      setNextPassword("");
+                                      setPendingDeleteUserId(null);
+                                    }}
+                                    className="press h-5 px-2 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] text-[10px]"
+                                  >
+                                    Reset Password
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (pendingDeleteUserId !== u.id) {
+                                        setPendingDeleteUserId(u.id);
+                                        return;
+                                      }
+                                      void run(async () => {
+                                        await deleteUser(u.id);
+                                        setUsers(await fetchUsers());
+                                        setPendingDeleteUserId(null);
+                                      });
+                                    }}
+                                    className={`press h-5 px-2 rounded-[2px] border text-[10px] ${
+                                      pendingDeleteUserId === u.id
+                                        ? "bg-red-600 text-white border-red-600"
+                                        : "border-[#c8c8c8] text-red-600 hover:bg-red-50"
+                                    }`}
+                                  >
+                                    {pendingDeleteUserId === u.id ? "Confirm Delete" : "Delete"}
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </main>
           </div>
         ) : null}
+      </div>
 
-        {healthResult ? (
-          <DatasetHealthModal
-            health={healthResult}
-            onClose={() => setHealthResult(null)}
-            onOpenDuplicates={() => {
-              if (healthResult.duplicates) {
-                setDuplicateProjectId(healthResult.projectId ?? null);
-                setDuplicateProjectName(healthResult.projectName);
-                setDuplicatesResult(healthResult.duplicates);
-              }
-            }}
-          />
-        ) : null}
+      {/* Delete Project Confirmation Modal */}
+      {projectToDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+        >
+          <div className="w-full max-w-sm rounded-[2px] border border-[#c8c8c8] bg-white p-4 shadow-none text-xs">
+            <div className="flex items-center gap-2 text-red-600">
+              <Trash2 className="size-5 shrink-0" />
+              <h3 className="text-sm font-semibold text-[#282828]">Delete Project?</h3>
+            </div>
+            <p className="mt-2 text-[#707070] leading-relaxed">
+              Permanently delete project{" "}
+              <strong className="text-[#282828]">{projectToDelete.name}</strong> and all associated
+              annotations from the database?
+            </p>
+            <div className="mt-3">
+              <label className="text-[10px] uppercase font-bold text-[#707070] block mb-1">
+                Admin Password Required
+              </label>
+              <input
+                type="password"
+                placeholder="Enter admin password"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                className="w-full h-7 px-2 rounded-[2px] border border-[#c8c8c8] bg-white text-xs"
+              />
+            </div>
+            {deleteError && (
+              <p className="mt-2 text-red-700 bg-red-50 p-1.5 border border-red-200 rounded-[2px]">
+                {deleteError}
+              </p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setProjectToDelete(null)}
+                className="press h-7 px-3 rounded-[2px] border border-[#c8c8c8] bg-white text-xs text-[#282828]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleting || !adminPassword}
+                onClick={() => void handleDeleteProject()}
+                className="press h-7 px-3 rounded-[2px] bg-red-600 text-xs font-semibold text-white flex items-center gap-1"
+              >
+                {deleting ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : (
+                  <Trash2 className="size-3" />
+                )}
+                <span>Delete Project</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
-        {syncResult ? (
-          <RescanModal
-            result={syncResult}
-            onClose={() => setSyncResult(null)}
-            onOpenDuplicates={() => {
-              if (syncResult.duplicates) {
-                setDuplicateProjectId(syncResult.projectId);
-                setDuplicateProjectName(syncResult.projectName);
-                setDuplicatesResult(syncResult.duplicates);
-              }
-            }}
-          />
-        ) : null}
-
-        {duplicatesResult ? (
-          <DuplicateCleanupModal
-            isOpen={true}
-            projectId={duplicateProjectId ?? undefined}
-            projectName={duplicateProjectName ?? undefined}
-            duplicates={duplicatesResult}
-            onClose={() => setDuplicatesResult(null)}
-            onCleanupComplete={async () => {
-              const nextProjects = await fetchProjects();
-              setProjects(nextProjects);
-              await fetchCurrentProject().catch(() => null);
-              if (duplicateProjectId) {
-                try {
-                  const updatedHealth = await fetchProjectHealth(duplicateProjectId);
-                  setHealthResult(updatedHealth);
-                } catch {
-                  /* ignore */
-                }
-              }
-            }}
-          />
-        ) : null}
-
-        <BackupModal isOpen={isBackupModalOpen} onClose={() => setIsBackupModalOpen(false)} />
-        <MaintenanceModal
-          isOpen={isMaintenanceModalOpen}
-          isMaintenance={isMaintenance}
-          onClose={() => setIsMaintenanceModalOpen(false)}
-          onToggle={handleToggleMaintenance}
+      {/* Auxiliary Modals */}
+      <BackupModal isOpen={isBackupModalOpen} onClose={() => setIsBackupModalOpen(false)} />
+      <MaintenanceModal
+        isOpen={isMaintenanceModalOpen}
+        isMaintenance={isMaintenance}
+        onClose={() => setIsMaintenanceModalOpen(false)}
+        onToggle={handleToggleMaintenance}
+      />
+      {syncResult && (
+        <RescanModal
+          result={syncResult}
+          onClose={() => setSyncResult(null)}
+          onOpenDuplicates={() => {
+            if (syncResult.duplicates) setDuplicatesResult(syncResult.duplicates);
+          }}
         />
-      </main>
+      )}
+      {healthResult && (
+        <DatasetHealthModal
+          health={healthResult}
+          onClose={() => setHealthResult(null)}
+          onOpenDuplicates={() => {
+            if (healthResult.duplicates) {
+              setDuplicatesResult(healthResult.duplicates);
+            }
+          }}
+        />
+      )}
+      {duplicatesResult && (
+        <DuplicateCleanupModal
+          isOpen={true}
+          projectId={healthResult?.projectId}
+          projectName={healthResult?.projectName}
+          duplicates={duplicatesResult}
+          onClose={() => setDuplicatesResult(null)}
+          onCleanupComplete={async () => {
+            setDuplicatesResult(null);
+            try {
+              const updatedHealth = await fetchProjectHealth();
+              setHealthResult(updatedHealth);
+            } catch {
+              /* ignore */
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
