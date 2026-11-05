@@ -45,7 +45,6 @@ import {
   claimImageById,
   completeImage,
   cropImage,
-  datasetExportUrl,
   fetchAdmin,
   fetchCatalogue,
   fetchCropInfo,
@@ -1410,17 +1409,6 @@ export function Labeler() {
     } finally {
       setSavingDims(false);
     }
-  }
-
-  function downloadTar(format: "yolo" | "coco" | "dino") {
-    if (projectId == null) return;
-    const url = datasetExportUrl(projectId, "full_tar", 80, format);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${project?.name ?? "dataset"}_${format}.tar`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   }
 
   const position = images.length === 0 ? "0 / 0" : `${safeIndex + 1} / ${images.length}`;
@@ -2926,34 +2914,6 @@ export function Labeler() {
               Save (Ctrl+S)
             </button>
           )}
-
-          {/* Tar Export Entry Points */}
-          <div className="flex items-center gap-1 pl-1 border-l border-[#c8c8c8]">
-            <button
-              type="button"
-              onClick={() => downloadTar("yolo")}
-              className="press h-7 px-2 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] font-mono text-[10px]"
-              title="Download YOLO .tar export"
-            >
-              YOLO
-            </button>
-            <button
-              type="button"
-              onClick={() => downloadTar("coco")}
-              className="press h-7 px-2 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] font-mono text-[10px]"
-              title="Download COCO .tar export"
-            >
-              COCO
-            </button>
-            <button
-              type="button"
-              onClick={() => downloadTar("dino")}
-              className="press h-7 px-2 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] font-mono text-[10px]"
-              title="Download DINO Catalogue .tar export"
-            >
-              DINO
-            </button>
-          </div>
 
           {/* Status text */}
           <div className="min-w-[70px] text-right font-mono text-[10px] text-[#707070]">
