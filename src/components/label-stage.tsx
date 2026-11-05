@@ -1153,12 +1153,28 @@ export function LabelStage({
     <div
       ref={frameRef}
       data-pan={spaceMode === "off" ? undefined : spaceMode}
-      className="relative h-full min-h-72 w-full overflow-hidden rounded-lg bg-ink"
+      className="relative h-full w-full overflow-hidden rounded-none bg-[#f0f0f0]"
       onPointerDownCapture={onFramePointerDownCapture}
       onPointerMove={onFramePointerMove}
       onPointerUp={endPan}
       onPointerCancel={endPan}
     >
+      {placed ? (
+        <div
+          className="pointer-events-none absolute select-none"
+          style={{
+            left: placed.left,
+            top: placed.top,
+            width: placed.width,
+            height: placed.height,
+            backgroundColor: "#242424",
+            backgroundImage:
+              "linear-gradient(45deg, #1e1e1e 25%, transparent 25%), linear-gradient(-45deg, #1e1e1e 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #1e1e1e 75%), linear-gradient(-45deg, transparent 75%, #1e1e1e 75%)",
+            backgroundSize: "16px 16px",
+            backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0px",
+          }}
+        />
+      ) : null}
       <img
         ref={imgRef}
         src={src}
@@ -1213,22 +1229,24 @@ export function LabelStage({
               const isFilled = renderMode === "filled";
               return (
                 <g key={box.key}>
+                  {/* High-contrast dark outline under-stroke */}
+                  <polygon
+                    points={box.points.map(([px, py]) => `${px * 1000},${py * 1000}`).join(" ")}
+                    fill="none"
+                    stroke="#000000"
+                    strokeOpacity={0.75}
+                    strokeWidth={selected ? 3 : 2.5}
+                    vectorEffect="non-scaling-stroke"
+                  />
                   <polygon
                     data-box={box.key}
                     points={box.points.map(([px, py]) => `${px * 1000},${py * 1000}`).join(" ")}
                     fill={isFilled ? color : "transparent"}
                     fillOpacity={isFilled ? (selected ? 0.35 : 0.22) : 0}
-                    stroke={color}
-                    strokeWidth={isFilled ? 1 : selected ? 2.5 : 1.5}
+                    stroke={selected ? "#1473e6" : color}
+                    strokeWidth={1.5}
                     vectorEffect="non-scaling-stroke"
                     className={`pointer-events-auto ${spaceMode === "off" && !readOnly ? "cursor-move" : ""}`}
-                    style={{
-                      filter: isFilled
-                        ? undefined
-                        : selected
-                          ? "drop-shadow(0 0 2px rgba(255,255,255,0.8))"
-                          : undefined,
-                    }}
                   />
                   {/* Vertex grab handles: invisible in filled mode, semi-transparent in outline mode */}
                   {selected && !readOnly
@@ -1242,10 +1260,9 @@ export function LabelStage({
                           r={(isFilled ? 5 : 2.7) / view.zoom}
                           className="pointer-events-auto cursor-crosshair"
                           fill={isFilled ? "transparent" : "#ffffff"}
-                          fillOpacity={isFilled ? 0 : 0.55}
-                          stroke={isFilled ? "transparent" : "#1c1b19"}
-                          strokeOpacity={isFilled ? 0 : 0.65}
-                          strokeWidth={1}
+                          fillOpacity={isFilled ? 0 : 0.75}
+                          stroke={isFilled ? "transparent" : "#1473e6"}
+                          strokeWidth={1.2}
                           vectorEffect="non-scaling-stroke"
                         />
                       ))
@@ -1254,7 +1271,7 @@ export function LabelStage({
               );
             })}
 
-            {/* SAM2 live interactive multi-point preview polygon & foreground/background indicators */}
+            {/* SAM2 live interactive multi-point preview polygon & foreground/background crosshair indicators */}
             {sam2Enabled && (samDraftPolygon || samPromptPoints.length > 0) ? (
               <g className="pointer-events-none">
                 {samDraftPolygon && samDraftPolygon.length >= 3 && activeClassId != null ? (
@@ -1270,20 +1287,58 @@ export function LabelStage({
                     vectorEffect="non-scaling-stroke"
                   />
                 ) : null}
-                {samPromptPoints.map((pt) => (
-                  <circle
-                    key={`sam-draft-pt-${pt.label}-${pt.x}-${pt.y}`}
-                    cx={pt.x * 1000}
-                    cy={pt.y * 1000}
-                    r={4 / view.zoom}
-                    fill={pt.label === 1 ? "#10b981" : "#ef4444"}
-                    fillOpacity={0.75}
-                    stroke="#ffffff"
-                    strokeOpacity={0.8}
-                    strokeWidth={1}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ))}
+                {samPromptPoints.map((pt) => {
+                  const isPositive = pt.label === 1;
+                  const ptColor = isPositive ? "#10b981" : "#ef4444";
+                  const arm = 5.5 / view.zoom;
+                  const sw = 1.5 / view.zoom;
+                  const outlineW = 2.8 / view.zoom;
+                  return (
+                    <g key={`sam-draft-pt-${pt.label}-${pt.x}-${pt.y}`}>
+                      {/* Dark contrast outline */}
+                      <line
+                        x1={pt.x * 1000 - arm}
+                        y1={pt.y * 1000}
+                        x2={pt.x * 1000 + arm}
+                        y2={pt.y * 1000}
+                        stroke="#000000"
+                        strokeWidth={outlineW}
+                      />
+                      <line
+                        x1={pt.x * 1000}
+                        y1={pt.y * 1000 - arm}
+                        x2={pt.x * 1000}
+                        y2={pt.y * 1000 + arm}
+                        stroke="#000000"
+                        strokeWidth={outlineW}
+                      />
+                      {/* Sharp crosshair */}
+                      <line
+                        x1={pt.x * 1000 - arm}
+                        y1={pt.y * 1000}
+                        x2={pt.x * 1000 + arm}
+                        y2={pt.y * 1000}
+                        stroke={ptColor}
+                        strokeWidth={sw}
+                      />
+                      <line
+                        x1={pt.x * 1000}
+                        y1={pt.y * 1000 - arm}
+                        x2={pt.x * 1000}
+                        y2={pt.y * 1000 + arm}
+                        stroke={ptColor}
+                        strokeWidth={sw}
+                      />
+                      {/* Center micro dot */}
+                      <circle
+                        cx={pt.x * 1000}
+                        cy={pt.y * 1000}
+                        r={1.2 / view.zoom}
+                        fill="#ffffff"
+                      />
+                    </g>
+                  );
+                })}
               </g>
             ) : null}
 
@@ -1533,27 +1588,27 @@ export function LabelStage({
               <div
                 key={box.key}
                 data-box={box.key}
-                className={`box-mark absolute ${spaceMode === "off" && !readOnly ? "cursor-move" : ""} ${selected ? "is-selected z-10" : "z-0"}`}
+                className={`box-mark absolute rounded-none ${spaceMode === "off" && !readOnly ? "cursor-move" : ""} ${selected ? "is-selected z-10" : "z-0"}`}
                 style={{
                   ...styleOf(box),
-                  borderWidth: isFilled ? 1 : selected ? 2 : 1.5,
+                  borderWidth: isFilled ? 1 : 1.5,
                   borderStyle: "solid",
-                  borderColor: color,
+                  borderColor: selected ? "#1473e6" : color,
                   backgroundColor: isFilled ? `${color}38` : "transparent",
-                  boxShadow: isFilled
-                    ? selected
-                      ? "0 0 0 1px rgba(0, 0, 0, 0.65)"
-                      : "0 0 0 1px rgba(0, 0, 0, 0.25)"
-                    : selected
-                      ? `0 0 0 1px #faf9f7, 0 0 0 3px ${color}`
-                      : "0 0 0 1px rgba(28, 27, 25, 0.45)",
+                  boxShadow: selected
+                    ? "0 0 0 1px #ffffff, 0 0 0 2.5px #1473e6"
+                    : "0 0 0 1px rgba(0, 0, 0, 0.75)",
+                  borderRadius: 0,
                 }}
               >
                 <span
-                  className={`pointer-events-none absolute whitespace-nowrap rounded-xs px-1.5 py-0.5 font-mono text-xs shadow-xs ${
-                    isTop ? "top-0 left-0" : "bottom-full left-0 mb-1"
+                  className={`pointer-events-none absolute whitespace-nowrap rounded-[2px] px-1 py-0.2 font-mono text-[10px] leading-tight font-medium ${
+                    isTop ? "top-0 left-0" : "bottom-full left-0 mb-0.5"
                   }`}
-                  style={{ background: color, color: inkOn(color) }}
+                  style={{
+                    background: selected ? "#1473e6" : color,
+                    color: inkOn(selected ? "#1473e6" : color),
+                  }}
                 >
                   {labelFor(box.classId)}
                 </span>
@@ -1573,14 +1628,14 @@ export function LabelStage({
                                       ? "-bottom-2.5 -left-2.5"
                                       : "-right-2.5 -bottom-2.5"
                               }`
-                            : `h-4 w-4 rounded-xs border border-ink bg-surface ${
+                            : `h-3 w-3 rounded-[1px] border border-[#1473e6] bg-white shadow-xs ${
                                 corner === "nw"
-                                  ? "-top-2 -left-2"
+                                  ? "-top-1.5 -left-1.5"
                                   : corner === "ne"
-                                    ? "-top-2 -right-2"
+                                    ? "-top-1.5 -right-1.5"
                                     : corner === "sw"
-                                      ? "-bottom-2 -left-2"
-                                      : "-right-2 -bottom-2"
+                                      ? "-bottom-1.5 -left-1.5"
+                                      : "-right-1.5 -bottom-1.5"
                               }`
                         } ${
                           spaceMode !== "off"
@@ -1680,7 +1735,7 @@ export function LabelStage({
 
       {/* Floating Crop Control Bar (docked in frameRef so it does not scale with pan/zoom) */}
       {cropMode ? (
-        <div className="pointer-events-auto absolute bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-line bg-surface/95 px-3.5 py-2 shadow-2xl backdrop-blur-md">
+        <div className="pointer-events-auto absolute bottom-3 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-[2px] border border-[#c8c8c8] bg-white px-3 py-1.5 text-xs text-[#282828] shadow-none">
           {pendingCrop ? (
             <>
               <div className="flex items-center gap-1.5 pr-1 font-mono text-xs">
