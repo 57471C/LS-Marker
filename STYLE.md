@@ -172,3 +172,4 @@ All modals must follow this exact template:
 4. Is text set to `#282828` (primary) and `#6e6e6e` (secondary) without low-contrast muddy text?
 5. Did `npm run lint` (`biome check .`) pass with **0 errors**?
 6. Did `npm run typecheck` pass with **0 errors**?
+
