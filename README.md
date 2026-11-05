@@ -4,17 +4,23 @@ Draw bounding boxes and segmentation polygons on part photos, run QA review, aud
 
 ## Windows Setup
 
-1. Install [Node.js 22](https://nodejs.org/).
-2. In this folder run `npm install`.  
-   `better-sqlite3` ships a prebuild. If install tries to compile and fails, install the Visual Studio Build Tools workload “Desktop development with C++”, then run `npm install` again.
-3. *(Optional — for AI Auto-Trace)* Place the binary SAM2.1 Hiera Tiny ONNX models in `public/models/` (gitignored):
+1. Install [Node.js 22](https://nodejs.org/) and [PostgreSQL](https://www.postgresql.org/).
+2. In this folder run `npm install`.
+3. Configure the PostgreSQL database connection:
+   - Ensure the PostgreSQL database exists (e.g. `ls_marker`).
+   - Create a local `.env` file (copy from `.env.example`):
+     ```ini
+     DATABASE_URL=postgresql://ls_marker:admin@localhost:5432/ls_marker
+     ```
+   - (Optional) If migrating from existing SQLite data, run `node scripts/migrate-sqlite-to-pg.mjs`. See [`MIGRATION.md`](MIGRATION.md) for details.
+4. *(Optional — for AI Auto-Trace)* Place the binary SAM2.1 Hiera Tiny ONNX models in `public/models/` (gitignored):
    - `public/models/sam2_hiera_tiny_encoder.onnx` (~104 MB)
    - `public/models/sam2_hiera_tiny_decoder.onnx` (~16 MB)
-4. Run `npm run dev`.
-5. Open the address it prints. The app listens on port **8080**.
-6. Sign in, then pick a project or create one. A project is a name plus a photo folder that already exists (`C:/Users/you/Pictures/parts` is fine). Each project has its own parts catalogue.
+5. Run `npm run dev`.
+6. Open the address it prints. The app listens on port **8080**.
+7. Sign in, then pick a project or create one. A project is a name plus a photo folder that already exists (`C:/Users/you/Pictures/parts` is fine). Each project has its own parts catalogue.
 
-`labelling.config.json` only names the first project’s folder (`samples` unless you change it before the first run). After that, projects live in the SQLite database (`data/labels.db`).
+`labelling.config.json` only names the first project’s folder (`samples` unless you change it before the first run). Projects, classes, users, and photo claims live in the PostgreSQL database.
 
 ## Canvas & Labelling Tools
 

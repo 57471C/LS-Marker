@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import sharp from "sharp";
 import tar from "tar-stream";
+import { getDb as getPgDb } from "./db.mjs";
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
@@ -98,164 +99,32 @@ class HttpError extends Error {
   }
 }
 
-/** @type {Promise<import("better-sqlite3").Database> | null} */
+/** @type {Promise<any> | null} */
 let dbPromise = null;
 
 /**
  * @param {string} root
  */
-export function getDb(root) {
+export async function getDb(root) {
   if (!dbPromise) {
-    dbPromise = import("better-sqlite3")
-      .then((mod) => {
-        const Database = mod.default;
-        const dir = path.join(root, "data");
-        fs.mkdirSync(dir, { recursive: true });
-        const db = new Database(path.join(dir, "labels.db"));
-        db.pragma("journal_mode = WAL");
-        db.exec(`
-          CREATE TABLE IF NOT EXISTS projects (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            folder TEXT NOT NULL,
-            created_at TEXT NOT NULL
-          );
-          CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY,
-            username TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL
-          );
-          CREATE TABLE IF NOT EXISTS sessions (
-            token TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            expires_at TEXT NOT NULL
-          );
-          CREATE TABLE IF NOT EXISTS admin_sessions (
-            token TEXT PRIMARY KEY,
-            expires_at TEXT NOT NULL
-          );
-        `);
-        const classCols = db.prepare("PRAGMA table_info(classes)").all();
-        if (classCols.length && !classCols.some((col) => col.name === "color")) {
-          db.exec("ALTER TABLE classes ADD COLUMN color TEXT");
+    dbPromise = (async () => {
+      const db = await getPgDb(root);
+      await ensureDefaultProject(db, root);
+      const projects = await db.prepare("SELECT id, folder FROM projects").all();
+      for (const project of projects) {
+        await assignMissingColors(db, project.id);
+        rememberProjectFolder(path.resolve(root, project.folder));
+        try {
+          await syncProjectImages(db, root, project);
+        } catch {
+          /* folder may not be ready */
         }
-        if (classCols.length && !classCols.some((col) => col.name === "project_id")) {
-          migrateLegacy(db, root);
-        } else {
-          db.exec(`
-            CREATE TABLE IF NOT EXISTS classes (
-              project_id INTEGER NOT NULL,
-              id INTEGER NOT NULL,
-              ic TEXT NOT NULL,
-              des TEXT NOT NULL,
-              color TEXT,
-              part_type TEXT DEFAULT NULL,
-              dim1_name TEXT DEFAULT NULL,
-              dim1_mm REAL DEFAULT NULL,
-              dim2_name TEXT DEFAULT NULL,
-              dim2_mm REAL DEFAULT NULL,
-              dim3_name TEXT DEFAULT NULL,
-              dim3_mm REAL DEFAULT NULL,
-              PRIMARY KEY (project_id, id),
-              UNIQUE (project_id, ic)
-            );
-            CREATE TABLE IF NOT EXISTS image_claims (
-              project_id INTEGER NOT NULL,
-              rel_path TEXT NOT NULL,
-              claimed_by TEXT,
-              claimed_at TEXT,
-              status TEXT DEFAULT 'open',
-              completed_at TEXT,
-              PRIMARY KEY (project_id, rel_path)
-            );
-            CREATE TABLE IF NOT EXISTS images (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              project_id INTEGER NOT NULL DEFAULT 1,
-              file_path TEXT NOT NULL,
-              name TEXT NOT NULL,
-              status TEXT DEFAULT 'unlabeled',
-              locked_by TEXT DEFAULT NULL,
-              locked_at DATETIME DEFAULT NULL,
-              completed_at DATETIME DEFAULT NULL,
-              reviewed_by TEXT DEFAULT NULL,
-              reviewed_at DATETIME DEFAULT NULL,
-              owner TEXT DEFAULT NULL,
-              UNIQUE (project_id, file_path)
-            );
-            CREATE TABLE IF NOT EXISTS system_settings (
-              key TEXT PRIMARY KEY,
-              value TEXT
-            );
-          `);
-          const claimCols = db.prepare("PRAGMA table_info(image_claims)").all();
-          if (claimCols.length && !claimCols.some((col) => col.name === "status")) {
-            db.exec("ALTER TABLE image_claims ADD COLUMN status TEXT DEFAULT 'open'");
-          }
-          if (claimCols.length && !claimCols.some((col) => col.name === "completed_at")) {
-            db.exec("ALTER TABLE image_claims ADD COLUMN completed_at TEXT");
-          }
-          const imgCols = db.prepare("PRAGMA table_info(images)").all();
-          if (imgCols.length && !imgCols.some((col) => col.name === "locked_by")) {
-            db.exec("ALTER TABLE images ADD COLUMN locked_by TEXT DEFAULT NULL");
-          }
-          if (imgCols.length && !imgCols.some((col) => col.name === "locked_at")) {
-            db.exec("ALTER TABLE images ADD COLUMN locked_at DATETIME DEFAULT NULL");
-          }
-          if (imgCols.length && !imgCols.some((col) => col.name === "name")) {
-            db.exec("ALTER TABLE images ADD COLUMN name TEXT");
-          }
-          if (imgCols.length && !imgCols.some((col) => col.name === "file_path")) {
-            db.exec("ALTER TABLE images ADD COLUMN file_path TEXT");
-          }
-          if (imgCols.length && !imgCols.some((col) => col.name === "project_id")) {
-            db.exec("ALTER TABLE images ADD COLUMN project_id INTEGER NOT NULL DEFAULT 1");
-          }
-          if (imgCols.length && !imgCols.some((col) => col.name === "status")) {
-            db.exec("ALTER TABLE images ADD COLUMN status TEXT DEFAULT 'unlabeled'");
-          }
-          if (imgCols.length && !imgCols.some((col) => col.name === "completed_at")) {
-            db.exec("ALTER TABLE images ADD COLUMN completed_at DATETIME DEFAULT NULL");
-          }
-          if (imgCols.length && !imgCols.some((col) => col.name === "reviewed_by")) {
-            db.exec("ALTER TABLE images ADD COLUMN reviewed_by TEXT DEFAULT NULL");
-          }
-          if (imgCols.length && !imgCols.some((col) => col.name === "reviewed_at")) {
-            db.exec("ALTER TABLE images ADD COLUMN reviewed_at DATETIME DEFAULT NULL");
-          }
-          if (imgCols.length && !imgCols.some((col) => col.name === "owner")) {
-            db.exec("ALTER TABLE images ADD COLUMN owner TEXT DEFAULT NULL");
-          }
-          ensureDefaultProject(db, root);
-        }
-        const currentClassCols = db.prepare("PRAGMA table_info(classes)").all();
-        const addClassCol = (colName, colType) => {
-          if (currentClassCols.length && !currentClassCols.some((c) => c.name === colName)) {
-            db.exec(`ALTER TABLE classes ADD COLUMN ${colName} ${colType}`);
-          }
-        };
-        addClassCol("part_type", "TEXT DEFAULT NULL");
-        addClassCol("dim1_name", "TEXT DEFAULT NULL");
-        addClassCol("dim1_mm", "REAL DEFAULT NULL");
-        addClassCol("dim2_name", "TEXT DEFAULT NULL");
-        addClassCol("dim2_mm", "REAL DEFAULT NULL");
-        addClassCol("dim3_name", "TEXT DEFAULT NULL");
-        addClassCol("dim3_mm", "REAL DEFAULT NULL");
-        for (const project of db.prepare("SELECT id, folder FROM projects").all()) {
-          assignMissingColors(db, project.id);
-          rememberProjectFolder(path.resolve(root, project.folder));
-          try {
-            syncProjectImages(db, root, project);
-          } catch {
-            /* folder may not be ready */
-          }
-        }
-        return db;
-      })
-      .catch((err) => {
-        dbPromise = null;
-        throw err;
-      });
+      }
+      return db;
+    })().catch((err) => {
+      dbPromise = null;
+      throw err;
+    });
   }
   return dbPromise;
 }
@@ -269,83 +138,33 @@ const DEMO_CLASSES = [
 ];
 
 /**
- * Move the single global class list and claims onto project 1.
- * @param {import("better-sqlite3").Database} db
- * @param {string} root
- */
-function migrateLegacy(db, root) {
-  const config = readConfig(root);
-  const folder = config.imageFolder;
-  const base = path.basename(path.resolve(root, folder)) || "Project";
-  const name = base.toLowerCase() === "samples" ? "Samples" : base;
-  const info = db
-    .prepare("INSERT INTO projects (name, folder, created_at) VALUES (?, ?, ?)")
-    .run(name, folder, new Date().toISOString());
-  const projectId = Number(info.lastInsertRowid);
-  db.exec(`
-    CREATE TABLE classes_next (
-      project_id INTEGER NOT NULL,
-      id INTEGER NOT NULL,
-      ic TEXT NOT NULL,
-      des TEXT NOT NULL,
-      color TEXT,
-      PRIMARY KEY (project_id, id),
-      UNIQUE (project_id, ic)
-    );
-  `);
-  db.prepare(
-    `INSERT INTO classes_next (project_id, id, ic, des, color)
-     SELECT ?, id, ic, des, color FROM classes`,
-  ).run(projectId);
-  db.exec("DROP TABLE classes");
-  db.exec("ALTER TABLE classes_next RENAME TO classes");
-  db.exec(`
-    CREATE TABLE claims_next (
-      project_id INTEGER NOT NULL,
-      rel_path TEXT NOT NULL,
-      claimed_by TEXT,
-      claimed_at TEXT,
-      PRIMARY KEY (project_id, rel_path)
-    );
-  `);
-  const claimCols = db.prepare("PRAGMA table_info(image_claims)").all();
-  if (claimCols.length) {
-    db.prepare(
-      `INSERT INTO claims_next (project_id, rel_path, claimed_by, claimed_at)
-       SELECT ?, rel_path, claimed_by, claimed_at FROM image_claims`,
-    ).run(projectId);
-    db.exec("DROP TABLE image_claims");
-  }
-  db.exec("ALTER TABLE claims_next RENAME TO image_claims");
-}
-
-/**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {number} projectId
  */
-function seedProject(db, projectId) {
+async function seedProject(db, projectId) {
   const insert = db.prepare("INSERT INTO classes (project_id, id, ic, des) VALUES (?, ?, ?, ?)");
-  db.transaction(() => {
-    for (const row of DEMO_CLASSES) insert.run(projectId, row[0], row[1], row[2]);
-  })();
+  const tx = db.transaction(async () => {
+    for (const row of DEMO_CLASSES) await insert.run(projectId, row[0], row[1], row[2]);
+  });
+  await tx();
 }
 
 /**
  * First launch: the configured folder becomes the Samples project.
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {string} root
  */
-function ensureDefaultProject(db, root) {
-  const count = db.prepare("SELECT COUNT(*) AS n FROM projects").get();
+async function ensureDefaultProject(db, root) {
+  const count = await db.prepare("SELECT COUNT(*) AS n FROM projects").get();
   if (count && count.n > 0) return;
   const config = readConfig(root);
   const folder = config.imageFolder;
   const base = path.basename(path.resolve(root, folder)) || "Project";
   const name = base.toLowerCase() === "samples" ? "Samples" : base;
-  const info = db
+  const info = await db
     .prepare("INSERT INTO projects (name, folder, created_at) VALUES (?, ?, ?)")
     .run(name, folder, new Date().toISOString());
-  if (name === "Samples") seedProject(db, Number(info.lastInsertRowid));
+  if (name === "Samples") await seedProject(db, Number(info.lastInsertRowid));
 }
 
 /**
@@ -359,11 +178,11 @@ export const normalizePath = (p) => {
 
 /**
  * Safe, zero-risk rescan and synchronization of project images.
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {string} root
  * @param {{ id: number, name?: string, folder: string }} project
  */
-export function rescanProjectImages(db, root, project) {
+export async function rescanProjectImages(db, root, project) {
   const resolvedFolder = path.resolve(root, project.folder);
   const error = folderError(resolvedFolder);
   if (error) {
@@ -374,7 +193,7 @@ export function rescanProjectImages(db, root, project) {
   const diskNormalized = rawDiskFiles.map((p) => normalizePath(p));
   const diskSet = new Set(diskNormalized);
 
-  const existingRows = db
+  const existingRows = await db
     .prepare(
       "SELECT id, project_id, file_path, name, status, reviewed_at FROM images WHERE project_id = ?",
     )
@@ -410,11 +229,11 @@ export function rescanProjectImages(db, root, project) {
   const updateStatusStmt = db.prepare("UPDATE images SET status = ? WHERE id = ?");
   const updatePathStmt = db.prepare("UPDATE images SET file_path = ?, name = ? WHERE id = ?");
 
-  const tx = db.transaction(() => {
+  const tx = db.transaction(async () => {
     // 1. Add New Files
     for (const diskPath of diskSet) {
       if (!existingMap.has(diskPath)) {
-        const info = insertStmt.run(project.id, diskPath, diskPath);
+        const info = await insertStmt.run(project.id, diskPath, diskPath);
         if (info.changes > 0) {
           newlyAdded++;
         }
@@ -429,7 +248,7 @@ export function rescanProjectImages(db, root, project) {
       // Standardize Windows path separators if needed
       if (row.file_path !== normPath) {
         try {
-          updatePathStmt.run(normPath, normPath, row.id);
+          await updatePathStmt.run(normPath, normPath, row.id);
         } catch {
           /* ignore duplicate constraint if already normalized */
         }
@@ -437,12 +256,12 @@ export function rescanProjectImages(db, root, project) {
 
       if (!onDisk) {
         if (row.status === "unlabeled") {
-          deleteStmt.run(row.id);
-          deleteClaimStmt.run(project.id, row.file_path);
-          deleteClaimStmt.run(project.id, normPath);
+          await deleteStmt.run(row.id);
+          await deleteClaimStmt.run(project.id, row.file_path);
+          await deleteClaimStmt.run(project.id, normPath);
           prunedUnlabeled++;
         } else if (row.status === "completed" || row.status === "approved") {
-          updateStatusStmt.run("missing", row.id);
+          await updateStatusStmt.run("missing", row.id);
           missingCompleted++;
         } else if (row.status === "missing") {
           missingCompleted++;
@@ -450,18 +269,19 @@ export function rescanProjectImages(db, root, project) {
       } else {
         if (row.status === "missing") {
           const restoredStatus = row.reviewed_at ? "approved" : "completed";
-          updateStatusStmt.run(restoredStatus, row.id);
+          await updateStatusStmt.run(restoredStatus, row.id);
           restored++;
         }
       }
     }
   });
 
-  tx();
+  await tx();
 
-  const totalActive = db
+  const countRow = await db
     .prepare("SELECT COUNT(*) AS count FROM images WHERE project_id = ? AND status != 'missing'")
-    .get(project.id).count;
+    .get(project.id);
+  const totalActive = countRow?.count ?? 0;
 
   return {
     ok: true,
@@ -477,14 +297,14 @@ export function rescanProjectImages(db, root, project) {
 }
 
 /**
- * Synchronize images from the project folder into the SQLite images table.
- * @param {import("better-sqlite3").Database} db
+ * Synchronize images from the project folder into the images table.
+ * @param {any} db
  * @param {string} root
  * @param {{ id: number, folder: string }} project
  */
-export function syncProjectImages(db, root, project) {
+export async function syncProjectImages(db, root, project) {
   try {
-    rescanProjectImages(db, root, project);
+    await rescanProjectImages(db, root, project);
   } catch (err) {
     if (err instanceof HttpError) return [];
     throw err;
@@ -514,7 +334,7 @@ export function hashFileSha256(filePath) {
  * annotations, box count, and shallower paths) and lists extras for cleanup.
  * @param {string} root
  * @param {{ id: number, folder: string, name?: string }} project
- * @param {import("better-sqlite3").Database} db
+ * @param {import("./db.mjs").PostgresDatabase} db
  */
 export async function detectProjectDuplicates(root, project, db) {
   const resolvedFolder = path.resolve(root, project.folder);
@@ -527,7 +347,7 @@ export async function detectProjectDuplicates(root, project, db) {
   }
 
   // Load image rows from DB for status checking
-  const dbRows = db
+  const dbRows = await db
     .prepare("SELECT file_path, status, reviewed_at FROM images WHERE project_id = ?")
     .all(project.id);
   const statusMap = new Map();
@@ -650,7 +470,7 @@ export async function detectProjectDuplicates(root, project, db) {
  * Preserves the single best image in each duplicate set.
  * @param {string} root
  * @param {{ id: number, folder: string, name?: string }} project
- * @param {import("better-sqlite3").Database} db
+ * @param {import("./db.mjs").PostgresDatabase} db
  */
 export async function cleanupProjectDuplicates(root, project, db) {
   const resolvedFolder = path.resolve(root, project.folder);
@@ -669,7 +489,7 @@ export async function cleanupProjectDuplicates(root, project, db) {
     "DELETE FROM image_claims WHERE project_id = ? AND rel_path = ?",
   );
 
-  const tx = db.transaction(() => {
+  const tx = db.transaction(async () => {
     for (const group of groups) {
       const keptNorm = group.kept.relPath;
       for (const extra of group.extras) {
@@ -709,10 +529,10 @@ export async function cleanupProjectDuplicates(root, project, db) {
           }
         }
 
-        deleteImageStmt.run(project.id, extraNorm);
-        deleteImageStmt.run(project.id, extraNorm.replace(/\//g, "\\"));
-        deleteClaimStmt.run(project.id, extraNorm);
-        deleteClaimStmt.run(project.id, extraNorm.replace(/\//g, "\\"));
+        await deleteImageStmt.run(project.id, extraNorm);
+        await deleteImageStmt.run(project.id, extraNorm.replace(/\//g, "\\"));
+        await deleteClaimStmt.run(project.id, extraNorm);
+        await deleteClaimStmt.run(project.id, extraNorm.replace(/\//g, "\\"));
 
         removed.push({
           relPath: extraNorm,
@@ -727,10 +547,10 @@ export async function cleanupProjectDuplicates(root, project, db) {
     }
   });
 
-  tx();
+  await tx();
 
   try {
-    rescanProjectImages(db, root, project);
+    await rescanProjectImages(db, root, project);
   } catch (err) {
     console.error("[duplicates] Post-cleanup rescan failed:", err);
   }
@@ -784,51 +604,49 @@ function spareColor(used, id) {
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {number} projectId
  */
-function usedColors(db, projectId) {
-  return new Set(
-    db
-      .prepare("SELECT color FROM classes WHERE project_id = ?")
-      .all(projectId)
-      .map((row) => row.color)
-      .filter(isHexColor),
-  );
+async function usedColors(db, projectId) {
+  const rows = await db.prepare("SELECT color FROM classes WHERE project_id = ?").all(projectId);
+  return new Set(rows.map((row) => row.color).filter(isHexColor));
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {number} projectId
  */
-function pickColor(db, projectId) {
-  const used = usedColors(db, projectId);
+async function pickColor(db, projectId) {
+  const used = await usedColors(db, projectId);
   const free = CLASS_PALETTE.filter((color) => !used.has(color));
   if (free.length > 0) return free[Math.floor(Math.random() * free.length)];
-  const next = db
+  const next = await db
     .prepare("SELECT COALESCE(MAX(id), 0) AS id FROM classes WHERE project_id = ?")
     .get(projectId);
-  return spareColor(used, next.id + 1);
+  return spareColor(used, Number(next?.id ?? 0) + 1);
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {number} projectId
  */
-function assignMissingColors(db, projectId) {
-  const rows = db.prepare("SELECT id, color FROM classes WHERE project_id = ?").all(projectId);
+async function assignMissingColors(db, projectId) {
+  const rows = await db
+    .prepare("SELECT id, color FROM classes WHERE project_id = ?")
+    .all(projectId);
   const missing = rows.filter((row) => !isHexColor(row.color));
   if (missing.length === 0) return;
-  const used = usedColors(db, projectId);
+  const used = await usedColors(db, projectId);
   const free = shuffle(CLASS_PALETTE.filter((color) => !used.has(color)));
   const update = db.prepare("UPDATE classes SET color = ? WHERE project_id = ? AND id = ?");
-  db.transaction(() => {
+  const tx = db.transaction(async () => {
     for (const row of missing) {
       const color = free.pop() ?? spareColor(used, row.id);
       used.add(color);
-      update.run(color, projectId, row.id);
+      await update.run(color, projectId, row.id);
     }
-  })();
+  });
+  await tx();
 }
 
 function hashPassword(password) {
@@ -888,14 +706,14 @@ function writeCookie(res, name, value, maxAge) {
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {import("http").IncomingMessage} req
  */
-function currentUser(db, req) {
+async function currentUser(db, req) {
   const token = readCookies(req).partlab;
   if (!token) return null;
   const now = new Date().toISOString();
-  const row = db
+  const row = await db
     .prepare(
       `SELECT users.id AS id, users.username AS username
        FROM sessions JOIN users ON users.id = sessions.user_id
@@ -903,19 +721,19 @@ function currentUser(db, req) {
     )
     .get(token, now);
   if (!row || typeof row.username !== "string") return null;
-  const admin = adminOpen(db, req) || row.username.toLowerCase() === "admin";
+  const admin = (await adminOpen(db, req)) || row.username.toLowerCase() === "admin";
   return { id: row.id, username: row.username, admin };
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {import("http").IncomingMessage} req
  */
-function adminOpen(db, req) {
+async function adminOpen(db, req) {
   const token = readCookies(req).partlab_admin;
   if (!token) return false;
   const now = new Date().toISOString();
-  const row = db
+  const row = await db
     .prepare("SELECT token FROM admin_sessions WHERE token = ? AND expires_at > ?")
     .get(token, now);
   return Boolean(row);
@@ -937,13 +755,13 @@ function cleanPassword(value) {
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {number} projectId
  * @param {string} rel
  * @param {string} username
  */
-function claimForWrite(db, projectId, rel, username) {
-  const imgRow = db
+async function claimForWrite(db, projectId, rel, username) {
+  const imgRow = await db
     .prepare("SELECT id, status FROM images WHERE project_id = ? AND file_path = ?")
     .get(projectId, rel);
   if (imgRow && imgRow.status === "approved") {
@@ -952,7 +770,7 @@ function claimForWrite(db, projectId, rel, username) {
       "Photo is approved and locked. Must be unlocked by an admin or reviewer to edit.",
     );
   }
-  const row = db
+  const row = await db
     .prepare(
       "SELECT claimed_by, claimed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
     )
@@ -961,16 +779,20 @@ function claimForWrite(db, projectId, rel, username) {
   const isExpired =
     row?.claimed_at && new Date(row.claimed_at).getTime() < Date.now() - 15 * 60 * 1000;
   if (!row?.claimed_by || isExpired || row.claimed_by === username) {
-    db.prepare(
-      `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status) VALUES (?, ?, ?, ?, 'open')
+    await db
+      .prepare(
+        `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status) VALUES (?, ?, ?, ?, 'open')
        ON CONFLICT(project_id, rel_path) DO UPDATE SET
          claimed_by = excluded.claimed_by,
          claimed_at = excluded.claimed_at,
          status = CASE WHEN image_claims.status = 'incomplete' THEN 'open' ELSE COALESCE(image_claims.status, 'open') END`,
-    ).run(projectId, rel, username, now);
-    db.prepare(
-      "UPDATE images SET locked_by = ?, locked_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
-    ).run(username, projectId, rel);
+      )
+      .run(projectId, rel, username, now);
+    await db
+      .prepare(
+        "UPDATE images SET locked_by = ?, locked_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
+      )
+      .run(username, projectId, rel);
     return;
   }
   throw new HttpError(409, `Claimed by ${row.claimed_by}`);
@@ -1129,29 +951,26 @@ function parseClassCsv(text) {
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {number} projectId
  * @param {{ ic: string, des: string }[]} rows
  */
-function importClasses(db, projectId, rows) {
-  const seen = new Set(
-    db
-      .prepare("SELECT ic FROM classes WHERE project_id = ?")
-      .all(projectId)
-      .map((row) => String(row.ic).trim().toLowerCase()),
-  );
-  const used = usedColors(db, projectId);
+async function importClasses(db, projectId, rows) {
+  const seenRows = await db.prepare("SELECT ic FROM classes WHERE project_id = ?").all(projectId);
+  const seen = new Set(seenRows.map((row) => String(row.ic).trim().toLowerCase()));
+  const used = await usedColors(db, projectId);
   const free = shuffle(CLASS_PALETTE.filter((color) => !used.has(color)));
-  let nextId = db
+  const nextIdRow = await db
     .prepare("SELECT COALESCE(MAX(id), -1) + 1 AS id FROM classes WHERE project_id = ?")
-    .get(projectId).id;
+    .get(projectId);
+  let nextId = Number(nextIdRow?.id ?? 0);
   const insert = db.prepare(
     "INSERT INTO classes (project_id, id, ic, des, color) VALUES (?, ?, ?, ?, ?)",
   );
   let added = 0;
   let skipped = 0;
   let invalid = 0;
-  db.transaction(() => {
+  const tx = db.transaction(async () => {
     for (const row of rows) {
       const ic = row.ic.trim();
       const des = row.des.trim();
@@ -1174,11 +993,12 @@ function importClasses(db, projectId, rows) {
       seen.add(key);
       const color = free.pop() ?? spareColor(used, nextId);
       used.add(color);
-      insert.run(projectId, nextId, ic, des, color);
+      await insert.run(projectId, nextId, ic, des, color);
       nextId += 1;
       added += 1;
     }
-  })();
+  });
+  await tx();
   return { added, skipped, invalid };
 }
 
@@ -1731,7 +1551,7 @@ async function streamFileIntoTar(pack, entryName, filePath, isAborted, setActive
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {import("./db.mjs").PostgresDatabase} db
  * @param {{ id: number, name: string, folder: string }} project
  * @param {string} resolvedFolder
  * @param {"labels_only" | "full_tar"} exportType
@@ -1740,7 +1560,7 @@ async function streamFileIntoTar(pack, entryName, filePath, isAborted, setActive
  * @param {"all" | "approved"} [exportScope]
  * @param {"ic" | "general"} [classMode]
  */
-export function prepareExportPlan(
+export async function prepareExportPlan(
   db,
   project,
   resolvedFolder,
@@ -1750,7 +1570,7 @@ export function prepareExportPlan(
   exportScope = "all",
   classMode = "ic",
 ) {
-  const dbClasses = listClasses(db, project.id);
+  const dbClasses = await listClasses(db, project.id);
   /** @type {{ id: number, ic: string }[]} */
   let classes = [];
   /** @type {Map<number, number> | null} */
@@ -1805,17 +1625,17 @@ export function prepareExportPlan(
   }
 
   const claimsMap = new Map(
-    db
-      .prepare("SELECT rel_path, status FROM image_claims WHERE project_id = ?")
-      .all(project.id)
-      .map((r) => [r.rel_path, r.status]),
+    (
+      await db
+        .prepare("SELECT rel_path, status FROM image_claims WHERE project_id = ?")
+        .all(project.id)
+    ).map((r) => [r.rel_path, r.status]),
   );
 
   const imagesMap = new Map(
-    db
-      .prepare("SELECT file_path, status FROM images WHERE project_id = ?")
-      .all(project.id)
-      .map((r) => [r.file_path, r.status]),
+    (
+      await db.prepare("SELECT file_path, status FROM images WHERE project_id = ?").all(project.id)
+    ).map((r) => [r.file_path, r.status]),
   );
 
   const allRelImages = listImages(resolvedFolder, Infinity);
@@ -1963,7 +1783,7 @@ export function buildDimensionsJson(project, classes) {
 /**
  * @param {import("http").IncomingMessage} req
  * @param {import("http").ServerResponse} res
- * @param {import("better-sqlite3").Database} db
+ * @param {import("./db.mjs").PostgresDatabase} db
  * @param {{ id: number, name: string, folder: string }} project
  * @param {string} resolvedFolder
  * @param {"labels_only" | "full_tar"} exportType
@@ -1986,7 +1806,7 @@ async function streamYoloExport(
   classMode = "ic",
   customFileName = null,
 ) {
-  const { classes, items, manifest, classMap } = prepareExportPlan(
+  const { classes, items, manifest, classMap } = await prepareExportPlan(
     db,
     project,
     resolvedFolder,
@@ -2141,7 +1961,7 @@ async function streamYoloExport(
  * and relative crop paths without any train/val split.
  * @param {import("http").IncomingMessage} req
  * @param {import("http").ServerResponse} res
- * @param {import("better-sqlite3").Database} db
+ * @param {import("./db.mjs").PostgresDatabase} db
  * @param {{ id: number, name: string, folder: string }} project
  * @param {string} resolvedFolder
  * @param {"all" | "approved"} [exportScope]
@@ -2156,7 +1976,7 @@ async function streamDinoCatalogueExport(
   exportScope = "all",
   customFileName = null,
 ) {
-  const { classes: baseClasses, items } = prepareExportPlan(
+  const { classes: baseClasses, items } = await prepareExportPlan(
     db,
     project,
     resolvedFolder,
@@ -2166,7 +1986,7 @@ async function streamDinoCatalogueExport(
     exportScope,
   );
 
-  const dbClasses = listClasses(db, project.id);
+  const dbClasses = await listClasses(db, project.id);
   const sourceClasses = dbClasses.length > 0 ? dbClasses : baseClasses;
   const hasMm = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
 
@@ -2368,7 +2188,7 @@ async function streamDinoCatalogueExport(
  * Streams COCO dataset export directly to response.
  * @param {import("http").IncomingMessage} req
  * @param {import("http").ServerResponse} res
- * @param {import("better-sqlite3").Database} db
+ * @param {import("./db.mjs").PostgresDatabase} db
  * @param {{ id: number, name: string, folder: string }} project
  * @param {string} resolvedFolder
  * @param {"labels_only" | "full_tar"} exportType
@@ -2389,7 +2209,7 @@ async function streamCocoExport(
   classMode = "ic",
   customFileName = null,
 ) {
-  const { classes, items, manifest, classMap } = prepareExportPlan(
+  const { classes, items, manifest, classMap } = await prepareExportPlan(
     db,
     project,
     resolvedFolder,
@@ -2667,13 +2487,13 @@ export function formatBoxLine(box) {
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {number} projectId
  * @param {string} folder
  */
-function writeClassesFile(db, projectId, folder) {
+async function writeClassesFile(db, projectId, folder) {
   if (folderError(folder)) return;
-  const rows = db
+  const rows = await db
     .prepare("SELECT id, ic FROM classes WHERE project_id = ? ORDER BY id")
     .all(projectId);
   const max = rows.reduce((acc, row) => Math.max(acc, row.id), -1);
@@ -2691,11 +2511,11 @@ function writeClassesFile(db, projectId, folder) {
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {number} projectId
  */
-function listClasses(db, projectId) {
-  return db
+async function listClasses(db, projectId) {
+  return await db
     .prepare(
       `SELECT id, ic, des, color, part_type, dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
        FROM classes WHERE project_id = ? ORDER BY id`,
@@ -2817,9 +2637,9 @@ export function computeClassDimensionsStatus(cls) {
 /**
  * @param {string} root
  * @param {{ id: number, name: string, folder: string }} project
- * @param {import("better-sqlite3").Database} [db]
+ * @param {any} [db]
  */
-function publicProject(root, project, db) {
+async function publicProject(root, project, db) {
   const resolvedFolder = path.resolve(root, project.folder);
   const error = folderError(resolvedFolder);
   let totalPhotos = 0;
@@ -2833,16 +2653,18 @@ function publicProject(root, project, db) {
       let dbImagesMap = null;
       if (db) {
         claimsMap = new Map(
-          db
-            .prepare("SELECT rel_path, status FROM image_claims WHERE project_id = ?")
-            .all(project.id)
-            .map((r) => [r.rel_path, r.status]),
+          (
+            await db
+              .prepare("SELECT rel_path, status FROM image_claims WHERE project_id = ?")
+              .all(project.id)
+          ).map((r) => [r.rel_path, r.status]),
         );
         dbImagesMap = new Map(
-          db
-            .prepare("SELECT file_path, status FROM images WHERE project_id = ?")
-            .all(project.id)
-            .map((r) => [r.file_path, r.status]),
+          (
+            await db
+              .prepare("SELECT file_path, status FROM images WHERE project_id = ?")
+              .all(project.id)
+          ).map((r) => [r.file_path, r.status]),
         );
       }
       for (const name of images) {
@@ -2877,7 +2699,7 @@ function publicProject(root, project, db) {
 /**
  * @param {string} root
  * @param {{ id: number, name: string, folder: string }} project
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  */
 export async function computeProjectHealth(root, project, db) {
   const resolvedFolder = path.resolve(root, project.folder);
@@ -2885,13 +2707,13 @@ export async function computeProjectHealth(root, project, db) {
   if (error) throw new HttpError(400, error);
 
   try {
-    syncProjectImages(db, root, project);
+    await syncProjectImages(db, root, project);
   } catch {
     /* ignore sync error */
   }
 
   /** @type {{ id: number, ic: string, des?: string, color?: string }[]} */
-  let classes = listClasses(db, project.id);
+  let classes = await listClasses(db, project.id);
   if (classes.length === 0) {
     const classesFile = path.join(resolvedFolder, "classes.txt");
     if (fs.existsSync(classesFile)) {
@@ -2907,17 +2729,17 @@ export async function computeProjectHealth(root, project, db) {
   }
 
   const claimsMap = new Map(
-    db
-      .prepare("SELECT rel_path, status FROM image_claims WHERE project_id = ?")
-      .all(project.id)
-      .map((r) => [r.rel_path, r.status]),
+    (
+      await db
+        .prepare("SELECT rel_path, status FROM image_claims WHERE project_id = ?")
+        .all(project.id)
+    ).map((r) => [r.rel_path, r.status]),
   );
 
   const imagesMap = new Map(
-    db
-      .prepare("SELECT file_path, status FROM images WHERE project_id = ?")
-      .all(project.id)
-      .map((r) => [r.file_path, r.status]),
+    (
+      await db.prepare("SELECT file_path, status FROM images WHERE project_id = ?").all(project.id)
+    ).map((r) => [r.file_path, r.status]),
   );
 
   const allRelImages = listImages(resolvedFolder, Infinity);
@@ -3045,25 +2867,26 @@ export async function computeProjectHealth(root, project, db) {
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  */
-export function getBackupStatus(db) {
-  const row = db
+export async function getBackupStatus(db) {
+  const row = await db
     .prepare(`
-      SELECT COUNT(*) AS activeCount, GROUP_CONCAT(DISTINCT locked_by) AS activeUsers
+      SELECT COUNT(*) AS "activeCount", STRING_AGG(DISTINCT locked_by, ',') AS "activeUsers"
       FROM images
       WHERE locked_by IS NOT NULL 
-        AND locked_at > datetime('now', '-15 minutes')
+        AND locked_at > (CURRENT_TIMESTAMP - INTERVAL '15 minutes')
     `)
     .get();
 
-  const activeUsers = row?.activeUsers
-    ? row.activeUsers
+  const rawUsers = row?.activeUsers || row?.activeusers;
+  const activeUsers = rawUsers
+    ? rawUsers
         .split(",")
         .map((u) => u.trim())
         .filter(Boolean)
     : [];
-  const activeCount = Number(row?.activeCount || 0);
+  const activeCount = Number(row?.activeCount || row?.activecount || 0);
 
   return {
     activeCount,
@@ -3072,7 +2895,7 @@ export function getBackupStatus(db) {
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {string} destPath
  */
 export async function createDatabaseBackup(db, destPath) {
@@ -3081,13 +2904,13 @@ export async function createDatabaseBackup(db, destPath) {
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {string} key
  * @param {string | null} defaultValue
  */
-export function getSystemSetting(db, key, defaultValue = null) {
+export async function getSystemSetting(db, key, defaultValue = null) {
   try {
-    const row = db.prepare("SELECT value FROM system_settings WHERE key = ?").get(key);
+    const row = await db.prepare("SELECT value FROM system_settings WHERE key = ?").get(key);
     return row ? row.value : defaultValue;
   } catch {
     return defaultValue;
@@ -3095,39 +2918,41 @@ export function getSystemSetting(db, key, defaultValue = null) {
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {string} key
  * @param {string} value
  */
-export function setSystemSetting(db, key, value) {
+export async function setSystemSetting(db, key, value) {
   try {
-    db.prepare(`
+    await db
+      .prepare(`
       INSERT INTO system_settings (key, value)
       VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `).run(key, String(value));
+    `)
+      .run(key, String(value));
   } catch (err) {
     console.error("[label-api] setSystemSetting", err);
   }
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  */
-export function isMaintenanceMode(db) {
-  return getSystemSetting(db, "maintenance_mode", "0") === "1";
+export async function isMaintenanceMode(db) {
+  return (await getSystemSetting(db, "maintenance_mode", "0")) === "1";
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {string} root
  * @param {number} imageId
  */
-export function deleteProjectImage(db, root, imageId) {
-  const imageRow = db.prepare("SELECT * FROM images WHERE id = ?").get(imageId);
+export async function deleteProjectImage(db, root, imageId) {
+  const imageRow = await db.prepare("SELECT * FROM images WHERE id = ?").get(imageId);
   if (!imageRow) throw new HttpError(404, "Image not found");
 
-  const project = db.prepare("SELECT * FROM projects WHERE id = ?").get(imageRow.project_id);
+  const project = await db.prepare("SELECT * FROM projects WHERE id = ?").get(imageRow.project_id);
   if (!project) throw new HttpError(404, "Project not found");
 
   const projectFolder = path.resolve(root, project.folder);
@@ -3149,60 +2974,58 @@ export function deleteProjectImage(db, root, imageId) {
     }
   }
 
-  db.transaction(() => {
-    db.prepare("DELETE FROM image_claims WHERE project_id = ? AND rel_path = ?").run(
-      imageRow.project_id,
-      imageRow.file_path,
-    );
-    db.prepare("DELETE FROM images WHERE id = ?").run(imageRow.id);
-  })();
+  const tx = db.transaction(async () => {
+    await db
+      .prepare("DELETE FROM image_claims WHERE project_id = ? AND rel_path = ?")
+      .run(imageRow.project_id, imageRow.file_path);
+    await db.prepare("DELETE FROM images WHERE id = ?").run(imageRow.id);
+  });
+  await tx();
 
   return { success: true, deletedId: imageRow.id };
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {import("http").IncomingMessage} req
  */
-function currentProject(db, req) {
+async function currentProject(db, req) {
   const id = Number(readCookies(req).partlab_project);
   if (!Number.isInteger(id) || id <= 0) return null;
-  const row = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(id);
+  const row = await db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(id);
   return row && typeof row.name === "string" ? row : null;
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {import("http").IncomingMessage} req
  */
-function requireProject(db, req) {
-  const project = currentProject(db, req);
+async function requireProject(db, req) {
+  const project = await currentProject(db, req);
   if (project) return project;
-  const all = db.prepare("SELECT id, name, folder FROM projects").all();
+  const all = await db.prepare("SELECT id, name, folder FROM projects").all();
   if (all.length === 1) return all[0];
   throw new HttpError(409, "Open a project");
 }
 
 /**
- * @param {import("better-sqlite3").Database} db
+ * @param {any} db
  * @param {string} root
  * @param {string} name
  * @param {string} folder
  */
-function createProject(db, root, name, folder) {
+async function createProject(db, root, name, folder) {
   const resolved = path.resolve(root, folder);
   const error = folderError(resolved);
   if (error) throw new HttpError(400, `${error}: ${resolved}`);
-  const taken = db
-    .prepare("SELECT id, folder FROM projects")
-    .all()
-    .some((row) => path.resolve(root, row.folder) === resolved);
+  const all = await db.prepare("SELECT id, folder FROM projects").all();
+  const taken = all.some((row) => path.resolve(root, row.folder) === resolved);
   if (taken) throw new HttpError(409, "That folder is already a project");
-  const info = db
+  const info = await db
     .prepare("INSERT INTO projects (name, folder, created_at) VALUES (?, ?, ?)")
     .run(name, folder, new Date().toISOString());
   rememberProjectFolder(resolved);
-  const row = db
+  const row = await db
     .prepare("SELECT id, name, folder FROM projects WHERE id = ?")
     .get(Number(info.lastInsertRowid));
   return row;
@@ -3218,9 +3041,10 @@ function createProject(db, root, name, folder) {
  */
 export function parseUtcTime(dateStr) {
   if (!dateStr) return 0;
+  if (dateStr instanceof Date) return dateStr.getTime();
   const str = String(dateStr).trim();
   if (!str) return 0;
-  if (str.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(str)) {
+  if (str.endsWith("Z") || /[+-]\d{2}(:\d{2})?$/.test(str)) {
     return new Date(str).getTime();
   }
   const iso = str.includes("T") ? `${str}Z` : `${str.replace(" ", "T")}Z`;
@@ -3240,12 +3064,12 @@ export async function catalogue(root, project) {
   let images = [];
   if (!error) {
     try {
-      writeClassesFile(db, project.id, resolvedFolder);
+      await writeClassesFile(db, project.id, resolvedFolder);
     } catch (err) {
       console.error("[label-api] classes.txt", err);
     }
-    syncProjectImages(db, root, project);
-    const dbImages = db
+    await syncProjectImages(db, root, project);
+    const dbImages = await db
       .prepare(
         `SELECT 
           images.id, images.project_id, images.file_path, images.name, images.status, 
@@ -3313,7 +3137,7 @@ export async function catalogue(root, project) {
     folderOk: !error,
     folderError: error,
     images,
-    classes: listClasses(db, project.id),
+    classes: await listClasses(db, project.id),
   };
 }
 
@@ -3331,8 +3155,8 @@ async function guard(req, res, url, root, method, pathname) {
   const now = new Date().toISOString();
 
   if (method === "GET" && pathname === "/api/me") {
-    const user = currentUser(db, req);
-    if (!user && adminOpen(db, req)) {
+    const user = await currentUser(db, req);
+    if (!user && (await adminOpen(db, req))) {
       send(res, 200, { user: { id: 0, username: "admin", admin: true } });
       return true;
     }
@@ -3345,19 +3169,17 @@ async function guard(req, res, url, root, method, pathname) {
     const username = typeof body.username === "string" ? body.username.trim() : "";
     const password = typeof body.password === "string" ? body.password : "";
     const row = username
-      ? db.prepare("SELECT id, password_hash FROM users WHERE username = ?").get(username)
+      ? await db.prepare("SELECT id, password_hash FROM users WHERE username = ?").get(username)
       : null;
     if (!row || !verifyPassword(password, row.password_hash)) {
       throw new HttpError(401, "Wrong username or password");
     }
-    db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now);
+    await db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now);
     const token = crypto.randomBytes(32).toString("hex");
     const expires = new Date(Date.now() + SESSION_MS).toISOString();
-    db.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)").run(
-      token,
-      row.id,
-      expires,
-    );
+    await db
+      .prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)")
+      .run(token, row.id, expires);
     writeCookie(res, "partlab", token, Math.floor(SESSION_MS / 1000));
     send(res, 200, { id: row.id, username });
     return true;
@@ -3365,14 +3187,14 @@ async function guard(req, res, url, root, method, pathname) {
 
   if (method === "POST" && pathname === "/api/logout") {
     const token = readCookies(req).partlab;
-    if (token) db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+    if (token) await db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
     writeCookie(res, "partlab", "", 0);
     send(res, 200, { ok: true });
     return true;
   }
 
   if (method === "GET" && pathname === "/api/admin") {
-    send(res, 200, { unlocked: adminOpen(db, req) });
+    send(res, 200, { unlocked: await adminOpen(db, req) });
     return true;
   }
 
@@ -3380,10 +3202,12 @@ async function guard(req, res, url, root, method, pathname) {
     const body = await readBody(req);
     const password = typeof body.password === "string" ? body.password : "";
     if (!sameSecret(password, ADMIN_PASSWORD)) throw new HttpError(401, "Wrong settings password");
-    db.prepare("DELETE FROM admin_sessions WHERE expires_at <= ?").run(now);
+    await db.prepare("DELETE FROM admin_sessions WHERE expires_at <= ?").run(now);
     const token = crypto.randomBytes(32).toString("hex");
     const expires = new Date(Date.now() + ADMIN_MS).toISOString();
-    db.prepare("INSERT INTO admin_sessions (token, expires_at) VALUES (?, ?)").run(token, expires);
+    await db
+      .prepare("INSERT INTO admin_sessions (token, expires_at) VALUES (?, ?)")
+      .run(token, expires);
     writeCookie(res, "partlab_admin", token, Math.floor(ADMIN_MS / 1000));
     send(res, 200, { unlocked: true });
     return true;
@@ -3391,15 +3215,15 @@ async function guard(req, res, url, root, method, pathname) {
 
   if (method === "POST" && pathname === "/api/admin/lock") {
     const token = readCookies(req).partlab_admin;
-    if (token) db.prepare("DELETE FROM admin_sessions WHERE token = ?").run(token);
+    if (token) await db.prepare("DELETE FROM admin_sessions WHERE token = ?").run(token);
     writeCookie(res, "partlab_admin", "", 0);
     send(res, 200, { unlocked: false });
     return true;
   }
 
-  const user = currentUser(db, req);
-  const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
-  const inMaintenance = isMaintenanceMode(db);
+  const user = await currentUser(db, req);
+  const admin = (await adminOpen(db, req)) || user?.admin === true || user?.username === "admin";
+  const inMaintenance = await isMaintenanceMode(db);
 
   if (inMaintenance && !admin) {
     const isSafeRead = method === "GET" || pathname.startsWith("/api/system/");
@@ -3416,7 +3240,7 @@ async function guard(req, res, url, root, method, pathname) {
     if (!admin) throw new HttpError(401, "Settings locked");
     if (method === "GET") {
       send(res, 200, {
-        users: db
+        users: await db
           .prepare(
             "SELECT id, username, created_at AS createdAt FROM users ORDER BY username COLLATE NOCASE",
           )
@@ -3429,7 +3253,7 @@ async function guard(req, res, url, root, method, pathname) {
       const username = cleanUsername(body.username);
       const password = cleanPassword(body.password);
       try {
-        const info = db
+        const info = await db
           .prepare("INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)")
           .run(username, hashPassword(password), now);
         send(res, 200, { id: Number(info.lastInsertRowid), username });
@@ -3445,7 +3269,7 @@ async function guard(req, res, url, root, method, pathname) {
       const id = Number(body.id);
       if (!Number.isInteger(id)) throw new HttpError(400, "Bad id");
       const password = cleanPassword(body.password);
-      const result = db
+      const result = await db
         .prepare("UPDATE users SET password_hash = ? WHERE id = ?")
         .run(hashPassword(password), id);
       if (result.changes === 0) throw new HttpError(404, "User not found");
@@ -3455,10 +3279,10 @@ async function guard(req, res, url, root, method, pathname) {
     if (method === "DELETE") {
       const id = Number(url.searchParams.get("id"));
       if (!Number.isInteger(id)) throw new HttpError(400, "Bad id");
-      const existing = db.prepare("SELECT id FROM users WHERE id = ?").get(id);
+      const existing = await db.prepare("SELECT id FROM users WHERE id = ?").get(id);
       if (!existing) throw new HttpError(404, "User not found");
-      db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
-      db.prepare("DELETE FROM users WHERE id = ?").run(id);
+      await db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
+      await db.prepare("DELETE FROM users WHERE id = ?").run(id);
       send(res, 200, { ok: true });
       return true;
     }
@@ -3467,8 +3291,8 @@ async function guard(req, res, url, root, method, pathname) {
 
   if (pathname === "/api/images/next" || (pathname === "/api/claim/next" && method === "POST")) {
     if (!user) throw new HttpError(401, "Sign in");
-    const project = requireProject(db, req);
-    syncProjectImages(db, root, project);
+    const project = await requireProject(db, req);
+    await syncProjectImages(db, root, project);
 
     const claimQuery = `
       UPDATE images
@@ -3485,12 +3309,15 @@ async function guard(req, res, url, root, method, pathname) {
       )
       RETURNING *;
     `;
-    const claimed = db.prepare(claimQuery).get({ userId: user.username, projectId: project.id });
+    const claimed = await db
+      .prepare(claimQuery)
+      .get({ userId: user.username, projectId: project.id });
     if (!claimed) {
       send(res, 200, { image: null, message: "No unlabeled photos available" });
       return true;
     }
-    db.prepare(`
+    await db
+      .prepare(`
       INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
       VALUES (?, ?, ?, ?, 'open', NULL)
       ON CONFLICT(project_id, rel_path) DO UPDATE SET
@@ -3498,7 +3325,8 @@ async function guard(req, res, url, root, method, pathname) {
         claimed_at = excluded.claimed_at,
         status = 'open',
         completed_at = NULL
-    `).run(project.id, claimed.file_path, user.username, claimed.locked_at);
+    `)
+      .run(project.id, claimed.file_path, user.username, claimed.locked_at);
 
     send(res, 200, {
       ok: true,
@@ -3525,19 +3353,19 @@ async function guard(req, res, url, root, method, pathname) {
     const name = typeof body.name === "string" ? body.name : "";
     let project = null;
     if (Number.isInteger(imageId) && imageId > 0) {
-      const imgRow = db.prepare("SELECT project_id FROM images WHERE id = ?").get(imageId);
+      const imgRow = await db.prepare("SELECT project_id FROM images WHERE id = ?").get(imageId);
       if (imgRow) {
-        project = db
+        project = await db
           .prepare("SELECT id, name, folder FROM projects WHERE id = ?")
           .get(imgRow.project_id);
       }
     }
     if (!project) {
-      project = requireProject(db, req);
+      project = await requireProject(db, req);
     }
-    syncProjectImages(db, root, project);
+    await syncProjectImages(db, root, project);
 
-    const targetImg = db
+    const targetImg = await db
       .prepare(
         "SELECT id, project_id, file_path, status, locked_by, locked_at FROM images WHERE (project_id = :projectId OR :projectId = -1) AND (id = :imageId OR file_path = :name)",
       )
@@ -3556,13 +3384,13 @@ async function guard(req, res, url, root, method, pathname) {
     let locked = null;
     if (body.takeover && admin) {
       if (Number.isInteger(imageId) && imageId > 0) {
-        locked = db
+        locked = await db
           .prepare(
             "UPDATE images SET locked_by = :userId, locked_at = CURRENT_TIMESTAMP WHERE id = :imageId RETURNING *",
           )
           .get({ userId: user.username, imageId });
       } else if (name) {
-        locked = db
+        locked = await db
           .prepare(
             "UPDATE images SET locked_by = :userId, locked_at = CURRENT_TIMESTAMP WHERE project_id = :projectId AND file_path = :name RETURNING *",
           )
@@ -3585,7 +3413,7 @@ async function guard(req, res, url, root, method, pathname) {
         )
         RETURNING *;
       `;
-      locked = db.prepare(lockQuery).get({
+      locked = await db.prepare(lockQuery).get({
         userId: user.username,
         projectId: project ? project.id : -1,
         imageId: Number.isInteger(imageId) && imageId > 0 ? imageId : -1,
@@ -3594,7 +3422,7 @@ async function guard(req, res, url, root, method, pathname) {
     }
 
     if (!locked) {
-      const existing = db
+      const existing = await db
         .prepare(
           "SELECT locked_by, locked_at FROM images WHERE (project_id = :projectId OR :projectId = -1) AND (id = :imageId OR file_path = :name)",
         )
@@ -3615,7 +3443,8 @@ async function guard(req, res, url, root, method, pathname) {
     }
 
     if (project) {
-      db.prepare(`
+      await db
+        .prepare(`
         INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
         VALUES (?, ?, ?, ?, 'open', NULL)
         ON CONFLICT(project_id, rel_path) DO UPDATE SET
@@ -3623,7 +3452,8 @@ async function guard(req, res, url, root, method, pathname) {
           claimed_at = excluded.claimed_at,
           status = 'open',
           completed_at = NULL
-      `).run(project.id, locked.file_path, user.username, locked.locked_at);
+      `)
+        .run(project.id, locked.file_path, user.username, locked.locked_at);
     }
 
     send(res, 200, {
@@ -3659,18 +3489,18 @@ async function guard(req, res, url, root, method, pathname) {
 
     let project = null;
     if (Number.isInteger(imageId) && imageId > 0) {
-      const imgRow = db.prepare("SELECT project_id FROM images WHERE id = ?").get(imageId);
+      const imgRow = await db.prepare("SELECT project_id FROM images WHERE id = ?").get(imageId);
       if (imgRow) {
-        project = db
+        project = await db
           .prepare("SELECT id, name, folder FROM projects WHERE id = ?")
           .get(imgRow.project_id);
       }
     }
     if (!project) {
-      project = requireProject(db, req);
+      project = await requireProject(db, req);
     }
 
-    const targetImg = db
+    const targetImg = await db
       .prepare(
         "SELECT id, project_id, file_path, status, locked_by, locked_at, owner, reviewed_by FROM images WHERE project_id = :projectId AND (id = :imageId OR file_path = :name)",
       )
@@ -3699,29 +3529,34 @@ async function guard(req, res, url, root, method, pathname) {
       }
 
       const now = new Date().toISOString();
-      db.transaction(() => {
-        db.prepare(
-          `UPDATE images
+      const tx = db.transaction(async () => {
+        await db
+          .prepare(
+            `UPDATE images
            SET status = 'completed',
                locked_by = :userId,
                locked_at = CURRENT_TIMESTAMP,
                reviewed_by = NULL,
                reviewed_at = NULL
            WHERE id = :id`,
-        ).run({
-          userId: user.username,
-          id: targetImg.id,
-        });
+          )
+          .run({
+            userId: user.username,
+            id: targetImg.id,
+          });
 
-        db.prepare(
-          `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+        await db
+          .prepare(
+            `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
            VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'complete', CURRENT_TIMESTAMP)
            ON CONFLICT(project_id, rel_path) DO UPDATE SET
              claimed_by = excluded.claimed_by,
              claimed_at = excluded.claimed_at,
              status = 'complete'`,
-        ).run(project.id, targetImg.file_path, user.username);
-      })();
+          )
+          .run(project.id, targetImg.file_path, user.username);
+      });
+      await tx();
 
       send(res, 200, {
         ok: true,
@@ -3754,7 +3589,7 @@ async function guard(req, res, url, root, method, pathname) {
         AND (id = :imageId OR file_path = :name)
         AND (locked_by = :userId OR :admin = 1);
     `;
-    db.prepare(unlockQuery).run({
+    await db.prepare(unlockQuery).run({
       userId: user.username,
       projectId: project.id,
       imageId: Number.isInteger(imageId) ? imageId : -1,
@@ -3763,11 +3598,13 @@ async function guard(req, res, url, root, method, pathname) {
     });
 
     if (name || targetImg.file_path) {
-      db.prepare(`
+      await db
+        .prepare(`
         UPDATE image_claims
         SET claimed_by = NULL, claimed_at = NULL
         WHERE project_id = ? AND rel_path = ? AND (claimed_by = ? OR ? = 1)
-      `).run(project.id, name || targetImg.file_path, user.username, admin ? 1 : 0);
+      `)
+        .run(project.id, name || targetImg.file_path, user.username, admin ? 1 : 0);
     }
 
     send(res, 200, { ok: true });
@@ -3776,7 +3613,7 @@ async function guard(req, res, url, root, method, pathname) {
 
   if (pathname === "/api/images/skip" && method === "POST") {
     if (!user) throw new HttpError(401, "Sign in");
-    const project = requireProject(db, req);
+    const project = await requireProject(db, req);
     const body = await readBody(req);
     const imageId = Number(body.id);
     const name = typeof body.name === "string" ? body.name : "";
@@ -3791,7 +3628,7 @@ async function guard(req, res, url, root, method, pathname) {
         AND (id = :imageId OR file_path = :name)
         AND (locked_by = :userId OR locked_by IS NULL OR :admin = 1);
     `;
-    db.prepare(skipQuery).run({
+    await db.prepare(skipQuery).run({
       userId: user.username,
       projectId: project.id,
       imageId: Number.isInteger(imageId) ? imageId : -1,
@@ -3800,7 +3637,8 @@ async function guard(req, res, url, root, method, pathname) {
     });
 
     if (name) {
-      db.prepare(`
+      await db
+        .prepare(`
         INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
         VALUES (?, ?, NULL, NULL, 'incomplete', NULL)
         ON CONFLICT(project_id, rel_path) DO UPDATE SET
@@ -3808,7 +3646,8 @@ async function guard(req, res, url, root, method, pathname) {
           claimed_at = NULL,
           status = 'incomplete',
           completed_at = NULL
-      `).run(project.id, name);
+      `)
+        .run(project.id, name);
     }
 
     send(res, 200, { ok: true, status: "incomplete" });
@@ -3818,10 +3657,10 @@ async function guard(req, res, url, root, method, pathname) {
   if (pathname === "/api/images/review/next" && method === "GET") {
     const reviewer = user || (admin ? { id: 0, username: "admin", admin: true } : null);
     if (!reviewer) throw new HttpError(401, "Sign in");
-    const project = requireProject(db, req);
-    syncProjectImages(db, root, project);
+    const project = await requireProject(db, req);
+    await syncProjectImages(db, root, project);
 
-    const pendingRow = db
+    const pendingRow = await db
       .prepare(
         `SELECT 
           images.id, images.project_id, images.file_path, images.name, images.status, 
@@ -3837,13 +3676,14 @@ async function guard(req, res, url, root, method, pathname) {
       )
       .get({ projectId: project.id });
 
-    const pendingCount = db
+    const pendingCountRow = await db
       .prepare(
         `SELECT COUNT(*) AS count
          FROM images
          WHERE project_id = ? AND status = 'completed' AND reviewed_at IS NULL`,
       )
-      .get(project.id).count;
+      .get(project.id);
+    const pendingCount = pendingCountRow?.count ?? 0;
 
     if (!pendingRow) {
       send(res, 200, {
@@ -3855,7 +3695,7 @@ async function guard(req, res, url, root, method, pathname) {
       return true;
     }
 
-    const claimRow = db
+    const claimRow = await db
       .prepare(
         "SELECT claimed_by, completed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
       )
@@ -3888,7 +3728,7 @@ async function guard(req, res, url, root, method, pathname) {
   if (pathname === "/api/images/review/action" && method === "POST") {
     const reviewer = user || (admin ? { id: 0, username: "admin", admin: true } : null);
     if (!reviewer) throw new HttpError(401, "Sign in");
-    const project = requireProject(db, req);
+    const project = await requireProject(db, req);
     const body = await readBody(req);
     const action = typeof body.action === "string" ? body.action.trim().toLowerCase() : "";
     if (action !== "approve" && action !== "reject") {
@@ -3898,7 +3738,7 @@ async function guard(req, res, url, root, method, pathname) {
     const imageId = Number(body.image_id ?? body.id);
     const name = typeof body.name === "string" ? body.name.trim() : "";
 
-    const imageRow = db
+    const imageRow = await db
       .prepare(
         `SELECT id, project_id, file_path, name, status
          FROM images
@@ -3924,22 +3764,26 @@ async function guard(req, res, url, root, method, pathname) {
         const lines = boxes.map(formatBoxLine);
         fs.writeFileSync(labelPath, lines.length ? `${lines.join("\n")}\n` : "");
       }
-      db.prepare(
-        `UPDATE images
+      await db
+        .prepare(
+          `UPDATE images
          SET status = 'approved',
              owner = :reviewerId,
              reviewed_by = :reviewerId,
              reviewed_at = CURRENT_TIMESTAMP
          WHERE id = :id`,
-      ).run({
-        reviewerId: reviewer.username,
-        id: imageRow.id,
-      });
-      db.prepare(
-        `UPDATE image_claims
+        )
+        .run({
+          reviewerId: reviewer.username,
+          id: imageRow.id,
+        });
+      await db
+        .prepare(
+          `UPDATE image_claims
          SET status = 'approved'
          WHERE project_id = ? AND rel_path = ?`,
-      ).run(project.id, imageRow.file_path);
+        )
+        .run(project.id, imageRow.file_path);
     } else {
       // reject: revert to unlabeled and remove label file so annotator starts fresh
       if (fs.existsSync(labelPath)) {
@@ -3949,8 +3793,9 @@ async function guard(req, res, url, root, method, pathname) {
           fs.writeFileSync(labelPath, "");
         }
       }
-      db.prepare(
-        `UPDATE images
+      await db
+        .prepare(
+          `UPDATE images
          SET status = 'unlabeled',
              locked_by = NULL,
              locked_at = NULL,
@@ -3958,17 +3803,20 @@ async function guard(req, res, url, root, method, pathname) {
              reviewed_by = NULL,
              reviewed_at = NULL
          WHERE id = :id`,
-      ).run({
-        id: imageRow.id,
-      });
-      db.prepare(
-        `UPDATE image_claims
+        )
+        .run({
+          id: imageRow.id,
+        });
+      await db
+        .prepare(
+          `UPDATE image_claims
          SET status = 'incomplete',
              claimed_by = NULL,
              claimed_at = NULL,
              completed_at = NULL
          WHERE project_id = ? AND rel_path = ?`,
-      ).run(project.id, imageRow.file_path);
+        )
+        .run(project.id, imageRow.file_path);
     }
 
     send(res, 200, {
@@ -3983,7 +3831,7 @@ async function guard(req, res, url, root, method, pathname) {
 
   if (pathname === "/api/claim") {
     if (!user) throw new HttpError(401, "Sign in");
-    const project = requireProject(db, req);
+    const project = await requireProject(db, req);
     const resolvedFolder = path.resolve(root, project.folder);
     const folderProblem = folderError(resolvedFolder);
     if (folderProblem) throw new HttpError(400, folderProblem);
@@ -3994,14 +3842,14 @@ async function guard(req, res, url, root, method, pathname) {
       if (!fs.existsSync(imageFull) || !fs.statSync(imageFull).isFile()) {
         throw new HttpError(404, "Image not found");
       }
-      const row = db
+      const row = await db
         .prepare(
           "SELECT claimed_by, claimed_at, status, completed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
         )
         .get(project.id, name);
       const action = typeof body.action === "string" ? body.action : "claim";
 
-      const imgRow = db
+      const imgRow = await db
         .prepare(
           "SELECT id, status, locked_by, locked_at FROM images WHERE project_id = ? AND file_path = ?",
         )
@@ -4027,18 +3875,22 @@ async function guard(req, res, url, root, method, pathname) {
         ) {
           throw new HttpError(403, `Claimed by ${activeClaimedBy}`);
         }
-        db.prepare(
-          `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+        await db
+          .prepare(
+            `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
            VALUES (?, ?, NULL, NULL, 'incomplete', NULL)
            ON CONFLICT(project_id, rel_path) DO UPDATE SET
              claimed_by = NULL,
              claimed_at = NULL,
              status = 'incomplete',
              completed_at = NULL`,
-        ).run(project.id, name);
-        db.prepare(
-          "UPDATE images SET status = 'incomplete', locked_by = NULL, locked_at = NULL WHERE project_id = ? AND file_path = ?",
-        ).run(project.id, name);
+          )
+          .run(project.id, name);
+        await db
+          .prepare(
+            "UPDATE images SET status = 'incomplete', locked_by = NULL, locked_at = NULL WHERE project_id = ? AND file_path = ?",
+          )
+          .run(project.id, name);
         send(res, 200, {
           name,
           claimedBy: null,
@@ -4061,18 +3913,22 @@ async function guard(req, res, url, root, method, pathname) {
           fs.writeFileSync(labelFileFor(imageFull), lines.length ? `${lines.join("\n")}\n` : "");
         }
         const claimedAt = row?.claimed_at || now;
-        db.prepare(
-          `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+        await db
+          .prepare(
+            `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
            VALUES (?, ?, ?, ?, 'complete', ?)
            ON CONFLICT(project_id, rel_path) DO UPDATE SET
              claimed_by = excluded.claimed_by,
              claimed_at = COALESCE(image_claims.claimed_at, excluded.claimed_at),
              status = 'complete',
              completed_at = excluded.completed_at`,
-        ).run(project.id, name, user.username, claimedAt, now);
-        db.prepare(
-          "UPDATE images SET status = 'completed', owner = ?, locked_by = NULL, locked_at = NULL, completed_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
-        ).run(user.username, project.id, name);
+          )
+          .run(project.id, name, user.username, claimedAt, now);
+        await db
+          .prepare(
+            "UPDATE images SET status = 'completed', owner = ?, locked_by = NULL, locked_at = NULL, completed_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
+          )
+          .run(user.username, project.id, name);
         send(res, 200, {
           name,
           claimedBy: user.username,
@@ -4089,18 +3945,22 @@ async function guard(req, res, url, root, method, pathname) {
         send(res, 409, { error: `Image currently claimed by ${row.claimed_by}` });
         return true;
       }
-      db.prepare(
-        `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+      await db
+        .prepare(
+          `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
          VALUES (?, ?, ?, ?, 'open', NULL)
          ON CONFLICT(project_id, rel_path) DO UPDATE SET
            claimed_by = excluded.claimed_by,
            claimed_at = excluded.claimed_at,
            status = 'open',
            completed_at = NULL`,
-      ).run(project.id, name, user.username, now);
-      db.prepare(
-        "UPDATE images SET locked_by = ?, locked_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
-      ).run(user.username, project.id, name);
+        )
+        .run(project.id, name, user.username, now);
+      await db
+        .prepare(
+          "UPDATE images SET locked_by = ?, locked_at = CURRENT_TIMESTAMP WHERE project_id = ? AND file_path = ?",
+        )
+        .run(user.username, project.id, name);
       send(res, 200, {
         success: true,
         ok: true,
@@ -4120,12 +3980,12 @@ async function guard(req, res, url, root, method, pathname) {
     if (method === "DELETE") {
       const name = url.searchParams.get("name") || "";
       resolveInside(resolvedFolder, name);
-      const row = db
+      const row = await db
         .prepare(
           "SELECT claimed_by, claimed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
         )
         .get(project.id, name);
-      const imgRow = db
+      const imgRow = await db
         .prepare(
           "SELECT id, status, locked_by, locked_at FROM images WHERE project_id = ? AND file_path = ?",
         )
@@ -4137,18 +3997,22 @@ async function guard(req, res, url, root, method, pathname) {
       if (activeClaimedBy && activeClaimedBy !== user.username && !admin && !isExpired) {
         throw new HttpError(403, `Claimed by ${activeClaimedBy}`);
       }
-      db.prepare(
-        `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+      await db
+        .prepare(
+          `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
          VALUES (?, ?, NULL, NULL, 'incomplete', NULL)
          ON CONFLICT(project_id, rel_path) DO UPDATE SET
            claimed_by = NULL,
            claimed_at = NULL,
            status = 'incomplete',
            completed_at = NULL`,
-      ).run(project.id, name);
-      db.prepare(
-        "UPDATE images SET status = 'incomplete', locked_by = NULL, locked_at = NULL WHERE project_id = ? AND file_path = ?",
-      ).run(project.id, name);
+        )
+        .run(project.id, name);
+      await db
+        .prepare(
+          "UPDATE images SET status = 'incomplete', locked_by = NULL, locked_at = NULL WHERE project_id = ? AND file_path = ?",
+        )
+        .run(project.id, name);
       send(res, 200, { ok: true, status: "incomplete" });
       return true;
     }
@@ -4206,9 +4070,9 @@ export async function handle(req, res, url, root) {
   if (await guard(req, res, url, root, method, pathname)) return;
 
   const db = await getDb(root);
-  const user = currentUser(db, req);
-  const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
-  const inMaintenance = isMaintenanceMode(db);
+  const user = await currentUser(db, req);
+  const admin = (await adminOpen(db, req)) || user?.admin === true || user?.username === "admin";
+  const inMaintenance = await isMaintenanceMode(db);
 
   if (inMaintenance && !admin) {
     const isSafeRead = method === "GET" || pathname.startsWith("/api/system/");
@@ -4223,8 +4087,8 @@ export async function handle(req, res, url, root) {
 
   if (method === "GET" && pathname === "/api/project") {
     const db = await getDb(root);
-    const project = currentProject(db, req);
-    send(res, 200, { project: project ? publicProject(root, project, db) : null });
+    const project = await currentProject(db, req);
+    send(res, 200, { project: project ? await publicProject(root, project, db) : null });
     return;
   }
 
@@ -4261,13 +4125,15 @@ export async function handle(req, res, url, root) {
 
     let project = null;
     if (Number.isInteger(projectId)) {
-      project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId);
+      project = await db
+        .prepare("SELECT id, name, folder FROM projects WHERE id = ?")
+        .get(projectId);
     } else if (projectName) {
-      project = db
+      project = await db
         .prepare("SELECT id, name, folder FROM projects WHERE name = ? COLLATE NOCASE")
         .get(projectName);
     } else {
-      project = currentProject(db, req);
+      project = await currentProject(db, req);
     }
 
     if (!project) throw new HttpError(404, "Project not found");
@@ -4297,13 +4163,15 @@ export async function handle(req, res, url, root) {
 
     let project = null;
     if (Number.isInteger(projectId)) {
-      project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId);
+      project = await db
+        .prepare("SELECT id, name, folder FROM projects WHERE id = ?")
+        .get(projectId);
     } else if (projectName) {
-      project = db
+      project = await db
         .prepare("SELECT id, name, folder FROM projects WHERE name = ? COLLATE NOCASE")
         .get(projectName);
     } else {
-      project = currentProject(db, req);
+      project = await currentProject(db, req);
     }
 
     if (!project) throw new HttpError(404, "Project not found");
@@ -4371,17 +4239,19 @@ export async function handle(req, res, url, root) {
 
     let project = null;
     if (Number.isInteger(projectId)) {
-      project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId);
+      project = await db
+        .prepare("SELECT id, name, folder FROM projects WHERE id = ?")
+        .get(projectId);
     } else if (projectName) {
-      project = db
+      project = await db
         .prepare("SELECT id, name, folder FROM projects WHERE name = ? COLLATE NOCASE")
         .get(projectName);
     } else {
-      project = currentProject(db, req);
+      project = await currentProject(db, req);
     }
 
     if (!project) throw new HttpError(404, "Project not found");
-    const result = rescanProjectImages(db, root, project);
+    const result = await rescanProjectImages(db, root, project);
     try {
       result.duplicates = await detectProjectDuplicates(root, project, db);
     } catch (err) {
@@ -4408,8 +4278,8 @@ export async function handle(req, res, url, root) {
         projectId = Number(url.searchParams.get("project_id"));
     }
     const project = Number.isInteger(projectId)
-      ? db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId)
-      : currentProject(db, req);
+      ? await db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId)
+      : await currentProject(db, req);
     if (!project) throw new HttpError(404, "Project not found");
     const duplicates = await detectProjectDuplicates(root, project, db);
     send(res, 200, duplicates);
@@ -4437,8 +4307,8 @@ export async function handle(req, res, url, root) {
         projectId = Number(url.searchParams.get("projectId"));
     }
     const project = Number.isInteger(projectId)
-      ? db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId)
-      : currentProject(db, req);
+      ? await db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(projectId)
+      : await currentProject(db, req);
     if (!project) throw new HttpError(404, "Project not found");
     const result = await cleanupProjectDuplicates(root, project, db);
     send(res, 200, result);
@@ -4447,10 +4317,12 @@ export async function handle(req, res, url, root) {
 
   if (method === "GET" && pathname === "/api/projects") {
     const db = await getDb(root);
-    const rows = db
+    const rows = await db
       .prepare("SELECT id, name, folder FROM projects ORDER BY name COLLATE NOCASE")
       .all();
-    send(res, 200, { projects: rows.map((row) => publicProject(root, row, db)) });
+    send(res, 200, {
+      projects: await Promise.all(rows.map((row) => publicProject(root, row, db))),
+    });
     return;
   }
 
@@ -4459,9 +4331,9 @@ export async function handle(req, res, url, root) {
     const body = await readBody(req);
     const name = cleanText(body.name, "Name", 60);
     const folder = cleanText(body.folder, "Folder", 1000);
-    const project = createProject(db, root, name, folder);
+    const project = await createProject(db, root, name, folder);
     writeCookie(res, "partlab_project", String(project.id), Math.floor(SESSION_MS / 1000));
-    send(res, 200, { project: publicProject(root, project, db) });
+    send(res, 200, { project: await publicProject(root, project, db) });
     return;
   }
 
@@ -4470,10 +4342,10 @@ export async function handle(req, res, url, root) {
     const body = await readBody(req);
     const id = Number(body.id);
     if (!Number.isInteger(id)) throw new HttpError(400, "Bad id");
-    const project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(id);
+    const project = await db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(id);
     if (!project) throw new HttpError(404, "Project not found");
     writeCookie(res, "partlab_project", String(project.id), Math.floor(SESSION_MS / 1000));
-    send(res, 200, { project: publicProject(root, project, db) });
+    send(res, 200, { project: await publicProject(root, project, db) });
     return;
   }
 
@@ -4490,7 +4362,7 @@ export async function handle(req, res, url, root) {
     const password =
       typeof body.password === "string" ? body.password : url.searchParams.get("password") || "";
     if (!sameSecret(password, ADMIN_PASSWORD)) throw new HttpError(401, "Wrong admin password");
-    const project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(id);
+    const project = await db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(id);
     if (!project) throw new HttpError(404, "Project not found");
 
     const resolvedFolder = path.resolve(root, project.folder);
@@ -4498,12 +4370,13 @@ export async function handle(req, res, url, root) {
       removeTxtFiles(resolvedFolder);
     }
 
-    db.transaction(() => {
-      db.prepare("DELETE FROM image_claims WHERE project_id = ?").run(id);
-      db.prepare("DELETE FROM images WHERE project_id = ?").run(id);
-      db.prepare("DELETE FROM classes WHERE project_id = ?").run(id);
-      db.prepare("DELETE FROM projects WHERE id = ?").run(id);
-    })();
+    const tx = db.transaction(async () => {
+      await db.prepare("DELETE FROM image_claims WHERE project_id = ?").run(id);
+      await db.prepare("DELETE FROM images WHERE project_id = ?").run(id);
+      await db.prepare("DELETE FROM classes WHERE project_id = ?").run(id);
+      await db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+    });
+    await tx();
 
     projectFolders.delete(resolvedFolder);
     const curId = Number(readCookies(req).partlab_project);
@@ -4517,24 +4390,24 @@ export async function handle(req, res, url, root) {
   if (method === "GET" && pathname === "/api/system/maintenance") {
     const db = await getDb(root);
     send(res, 200, {
-      maintenance: isMaintenanceMode(db),
-      message: getSystemSetting(db, "maintenance_message", ""),
+      maintenance: await isMaintenanceMode(db),
+      message: (await getSystemSetting(db, "maintenance_message", "")) || "",
     });
     return;
   }
 
   if (method === "POST" && pathname === "/api/system/maintenance") {
     const db = await getDb(root);
-    const user = currentUser(db, req);
-    const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
+    const user = await currentUser(db, req);
+    const admin = (await adminOpen(db, req)) || user?.admin === true || user?.username === "admin";
     if (!admin) {
       throw new HttpError(403, "Forbidden: Admin access required");
     }
     const body = await readBody(req).catch(() => ({}));
     const enabled = Boolean(body.enabled);
-    setSystemSetting(db, "maintenance_mode", enabled ? "1" : "0");
+    await setSystemSetting(db, "maintenance_mode", enabled ? "1" : "0");
     if (typeof body.message === "string") {
-      setSystemSetting(db, "maintenance_message", body.message);
+      await setSystemSetting(db, "maintenance_message", body.message);
     }
     send(res, 200, {
       success: true,
@@ -4546,7 +4419,7 @@ export async function handle(req, res, url, root) {
 
   if (method === "GET" && pathname === "/api/system/backup-status") {
     const db = await getDb(root);
-    const status = getBackupStatus(db);
+    const status = await getBackupStatus(db);
     send(res, 200, status);
     return;
   }
@@ -4554,7 +4427,7 @@ export async function handle(req, res, url, root) {
   if (method === "GET" && pathname === "/api/system/backup-download") {
     const db = await getDb(root);
     const backupDir = os.tmpdir();
-    const tempFileName = `ls-marker-backup-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.sqlite`;
+    const tempFileName = `ls-marker-backup-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.sql`;
     const backupPath = path.join(backupDir, tempFileName);
 
     try {
@@ -4562,11 +4435,11 @@ export async function handle(req, res, url, root) {
       const pad = (n) => String(n).padStart(2, "0");
       const now = new Date();
       const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-      const filename = `ls-marker-backup-${timestamp}.sqlite`;
+      const filename = `ls-marker-backup-${timestamp}.sql`;
       const stat = fs.statSync(backupPath);
 
       res.statusCode = 200;
-      res.setHeader("content-type", "application/vnd.sqlite3");
+      res.setHeader("content-type", "application/sql");
       res.setHeader("content-disposition", `attachment; filename="${filename}"`);
       res.setHeader("content-length", stat.size);
       res.setHeader("cache-control", "no-store");
@@ -4606,13 +4479,13 @@ export async function handle(req, res, url, root) {
 
   if (method === "POST" && pathname === "/api/system/git-pull") {
     const db = await getDb(root);
-    const user = currentUser(db, req);
-    const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
+    const user = await currentUser(db, req);
+    const admin = (await adminOpen(db, req)) || user?.admin === true || user?.username === "admin";
     if (!admin) {
       throw new HttpError(403, "Forbidden: Admin access required");
     }
 
-    if (!isMaintenanceMode(db)) {
+    if (!(await isMaintenanceMode(db))) {
       throw new HttpError(400, "Maintenance mode must be active before running git pull.");
     }
 
@@ -4685,13 +4558,13 @@ export async function handle(req, res, url, root) {
 
   if (method === "POST" && pathname === "/api/system/restart-server") {
     const db = await getDb(root);
-    const user = currentUser(db, req);
-    const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
+    const user = await currentUser(db, req);
+    const admin = (await adminOpen(db, req)) || user?.admin === true || user?.username === "admin";
     if (!admin) {
       throw new HttpError(403, "Forbidden: Admin access required");
     }
 
-    if (!isMaintenanceMode(db)) {
+    if (!(await isMaintenanceMode(db))) {
       throw new HttpError(400, "Maintenance mode must be active before restarting server.");
     }
 
@@ -4725,8 +4598,8 @@ export async function handle(req, res, url, root) {
     (pathname === "/api/images/delete" && method === "POST")
   ) {
     const db = await getDb(root);
-    const user = currentUser(db, req);
-    const admin = adminOpen(db, req) || user?.admin === true || user?.username === "admin";
+    const user = await currentUser(db, req);
+    const admin = (await adminOpen(db, req)) || user?.admin === true || user?.username === "admin";
     if (!admin) {
       throw new HttpError(403, "Forbidden: Admin access required");
     }
@@ -4743,7 +4616,7 @@ export async function handle(req, res, url, root) {
     }
 
     if (!Number.isInteger(imageId)) throw new HttpError(400, "Bad image id");
-    const result = deleteProjectImage(db, root, imageId);
+    const result = await deleteProjectImage(db, root, imageId);
     send(res, 200, result);
     return;
   }
@@ -4755,10 +4628,10 @@ export async function handle(req, res, url, root) {
       ? Number(projectPhotosMatch[1])
       : Number(url.searchParams.get("project_id"));
     if (!Number.isInteger(projectId) || projectId <= 0) {
-      const project = requireProject(db, req);
+      const project = await requireProject(db, req);
       projectId = project.id;
     }
-    const dbImages = db
+    const dbImages = await db
       .prepare(
         "SELECT id, project_id, file_path, name, status, owner, locked_by, locked_at, completed_at, reviewed_by, reviewed_at FROM images WHERE project_id = ? ORDER BY id ASC",
       )
@@ -4790,60 +4663,62 @@ export async function handle(req, res, url, root) {
 
   if (method === "GET" && pathname === "/api/catalogue") {
     const db = await getDb(root);
-    send(res, 200, await catalogue(root, requireProject(db, req)));
+    send(res, 200, await catalogue(root, await requireProject(db, req)));
     return;
   }
 
   if (method === "POST" && pathname === "/api/classes/import") {
     const db = await getDb(root);
-    const project = requireProject(db, req);
+    const project = await requireProject(db, req);
     const body = await readBody(req);
     if (typeof body.csv !== "string" || !body.csv.trim()) throw new HttpError(400, "CSV is empty");
     const rows = parseClassCsv(body.csv);
     if (rows.length === 0) throw new HttpError(400, "CSV has no rows");
     if (rows.length > 20000) throw new HttpError(400, "CSV is limited to 20000 rows");
-    const result = importClasses(db, project.id, rows);
-    writeClassesFile(db, project.id, path.resolve(root, project.folder));
+    const result = await importClasses(db, project.id, rows);
+    await writeClassesFile(db, project.id, path.resolve(root, project.folder));
     send(res, 200, result);
     return;
   }
 
   if (method === "POST" && pathname === "/api/classes") {
     const db = await getDb(root);
-    const project = requireProject(db, req);
+    const project = await requireProject(db, req);
     const body = await readBody(req);
     const ic = cleanText(body.ic, "Item code", 40);
     const des = cleanText(body.des, "Description", 120);
     const dims = cleanClassDimensions(body);
-    const next = db
+    const next = await db
       .prepare("SELECT COALESCE(MAX(id), -1) + 1 AS id FROM classes WHERE project_id = ?")
       .get(project.id);
-    const color = pickColor(db, project.id);
+    const color = await pickColor(db, project.id);
     try {
-      db.prepare(
-        `INSERT INTO classes (
+      await db
+        .prepare(
+          `INSERT INTO classes (
           project_id, id, ic, des, color,
           part_type, dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(
-        project.id,
-        next.id,
-        ic,
-        des,
-        color,
-        dims.part_type,
-        dims.dim1_name,
-        dims.dim1_mm,
-        dims.dim2_name,
-        dims.dim2_mm,
-        dims.dim3_name,
-        dims.dim3_mm,
-      );
+        )
+        .run(
+          project.id,
+          next.id,
+          ic,
+          des,
+          color,
+          dims.part_type,
+          dims.dim1_name,
+          dims.dim1_mm,
+          dims.dim2_name,
+          dims.dim2_mm,
+          dims.dim3_name,
+          dims.dim3_mm,
+        );
     } catch (err) {
       if (String(err).includes("UNIQUE")) throw new HttpError(409, "That item code already exists");
       throw err;
     }
-    writeClassesFile(db, project.id, path.resolve(root, project.folder));
+    await writeClassesFile(db, project.id, path.resolve(root, project.folder));
     send(res, 200, {
       id: next.id,
       ic,
@@ -4856,13 +4731,13 @@ export async function handle(req, res, url, root) {
 
   if (method === "PATCH" && pathname === "/api/classes") {
     const db = await getDb(root);
-    const project = requireProject(db, req);
+    const project = await requireProject(db, req);
     const body = await readBody(req);
     const id = Number(body.id);
     if (!Number.isInteger(id)) throw new HttpError(400, "Bad id");
     const ic = cleanText(body.ic, "Item code", 40);
     const des = cleanText(body.des, "Description", 120);
-    const existing = db
+    const existing = await db
       .prepare("SELECT id FROM classes WHERE project_id = ? AND id = ?")
       .get(project.id, id);
     if (!existing) throw new HttpError(404, "Class not found");
@@ -4877,40 +4752,39 @@ export async function handle(req, res, url, root) {
     try {
       if (hasDimsPayload) {
         const dims = cleanClassDimensions(body);
-        db.prepare(
-          `UPDATE classes
+        await db
+          .prepare(
+            `UPDATE classes
            SET ic = ?, des = ?,
                part_type = ?, dim1_name = ?, dim1_mm = ?,
                dim2_name = ?, dim2_mm = ?,
                dim3_name = ?, dim3_mm = ?
            WHERE project_id = ? AND id = ?`,
-        ).run(
-          ic,
-          des,
-          dims.part_type,
-          dims.dim1_name,
-          dims.dim1_mm,
-          dims.dim2_name,
-          dims.dim2_mm,
-          dims.dim3_name,
-          dims.dim3_mm,
-          project.id,
-          id,
-        );
+          )
+          .run(
+            ic,
+            des,
+            dims.part_type,
+            dims.dim1_name,
+            dims.dim1_mm,
+            dims.dim2_name,
+            dims.dim2_mm,
+            dims.dim3_name,
+            dims.dim3_mm,
+            project.id,
+            id,
+          );
       } else {
-        db.prepare("UPDATE classes SET ic = ?, des = ? WHERE project_id = ? AND id = ?").run(
-          ic,
-          des,
-          project.id,
-          id,
-        );
+        await db
+          .prepare("UPDATE classes SET ic = ?, des = ? WHERE project_id = ? AND id = ?")
+          .run(ic, des, project.id, id);
       }
     } catch (err) {
       if (String(err).includes("UNIQUE")) throw new HttpError(409, "That item code already exists");
       throw err;
     }
-    writeClassesFile(db, project.id, path.resolve(root, project.folder));
-    const row = db
+    await writeClassesFile(db, project.id, path.resolve(root, project.folder));
+    const row = await db
       .prepare(
         `SELECT id, ic, des, color, part_type, dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
          FROM classes WHERE project_id = ? AND id = ?`,
@@ -4922,14 +4796,14 @@ export async function handle(req, res, url, root) {
 
   if (method === "DELETE" && pathname === "/api/classes") {
     const db = await getDb(root);
-    const project = requireProject(db, req);
+    const project = await requireProject(db, req);
     const id = Number(url.searchParams.get("id"));
     if (!Number.isInteger(id)) throw new HttpError(400, "Bad id");
-    const result = db
+    const result = await db
       .prepare("DELETE FROM classes WHERE project_id = ? AND id = ?")
       .run(project.id, id);
     if (result.changes === 0) throw new HttpError(404, "Class not found");
-    writeClassesFile(db, project.id, path.resolve(root, project.folder));
+    await writeClassesFile(db, project.id, path.resolve(root, project.folder));
     send(res, 200, { ok: true });
     return;
   }
@@ -4941,10 +4815,10 @@ export async function handle(req, res, url, root) {
     if (idParam) {
       const id = Number(idParam);
       if (!Number.isInteger(id)) throw new HttpError(400, "Bad id");
-      project = db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(id);
+      project = await db.prepare("SELECT id, name, folder FROM projects WHERE id = ?").get(id);
       if (!project) throw new HttpError(404, "Project not found");
     } else {
-      project = requireProject(db, req);
+      project = await requireProject(db, req);
     }
     const resolvedFolder = path.resolve(root, project.folder);
     const error = folderError(resolvedFolder);
@@ -5029,7 +4903,7 @@ export async function handle(req, res, url, root) {
       : null;
 
     try {
-      writeClassesFile(db, project.id, resolvedFolder);
+      await writeClassesFile(db, project.id, resolvedFolder);
     } catch (err) {
       console.error("[label-api] classes.txt", err);
     }
@@ -5077,7 +4951,7 @@ export async function handle(req, res, url, root) {
 
   if (pathname === "/api/image/crop-info" && method === "GET") {
     const db = await getDb(root);
-    const project = requireProject(db, req);
+    const project = await requireProject(db, req);
     const resolvedFolder = path.resolve(root, project.folder);
     const error = folderError(resolvedFolder);
     if (error) throw new HttpError(400, error);
@@ -5108,10 +4982,10 @@ export async function handle(req, res, url, root) {
 
   if (pathname === "/api/image/crop" && method === "POST") {
     const db = await getDb(root);
-    const user = currentUser(db, req);
+    const user = await currentUser(db, req);
     if (!user) throw new HttpError(401, "Sign in");
 
-    const project = requireProject(db, req);
+    const project = await requireProject(db, req);
     const resolvedFolder = path.resolve(root, project.folder);
     const error = folderError(resolvedFolder);
     if (error) throw new HttpError(400, error);
@@ -5123,7 +4997,7 @@ export async function handle(req, res, url, root) {
       throw new HttpError(404, "Image not found");
     }
 
-    const imgRow = db
+    const imgRow = await db
       .prepare("SELECT id, status FROM images WHERE project_id = ? AND file_path = ?")
       .get(project.id, name);
     if (imgRow && imgRow.status === "approved") {
@@ -5277,10 +5151,10 @@ export async function handle(req, res, url, root) {
 
   if (pathname === "/api/image/uncrop" && method === "POST") {
     const db = await getDb(root);
-    const user = currentUser(db, req);
+    const user = await currentUser(db, req);
     if (!user) throw new HttpError(401, "Sign in");
 
-    const project = requireProject(db, req);
+    const project = await requireProject(db, req);
     const resolvedFolder = path.resolve(root, project.folder);
     const error = folderError(resolvedFolder);
     if (error) throw new HttpError(400, error);
@@ -5289,7 +5163,7 @@ export async function handle(req, res, url, root) {
     const name = body.name || "";
     const imageFull = resolveInside(resolvedFolder, name);
 
-    const imgRow = db
+    const imgRow = await db
       .prepare("SELECT id, status FROM images WHERE project_id = ? AND file_path = ?")
       .get(project.id, name);
     if (imgRow && imgRow.status === "approved") {
@@ -5329,7 +5203,7 @@ export async function handle(req, res, url, root) {
 
   if (pathname === "/api/label" || pathname === "/api/image") {
     const db = await getDb(root);
-    const project = requireProject(db, req);
+    const project = await requireProject(db, req);
     const resolvedFolder = path.resolve(root, project.folder);
     const error = folderError(resolvedFolder);
     if (error) throw new HttpError(400, error);
@@ -5348,9 +5222,9 @@ export async function handle(req, res, url, root) {
     }
 
     if (method === "PUT" && pathname === "/api/label") {
-      const user = currentUser(db, req);
+      const user = await currentUser(db, req);
       if (!user) throw new HttpError(401, "Sign in");
-      const imgRow = db
+      const imgRow = await db
         .prepare("SELECT id, status FROM images WHERE project_id = ? AND file_path = ?")
         .get(project.id, name);
       if (imgRow && imgRow.status === "approved") {
@@ -5361,10 +5235,11 @@ export async function handle(req, res, url, root) {
       }
       const body = await readBody(req);
       const boxes = cleanBoxes(body.boxes);
-      claimForWrite(db, project.id, name, user.username);
+      await claimForWrite(db, project.id, name, user.username);
       const lines = boxes.map(formatBoxLine);
       fs.writeFileSync(labelFileFor(imageFull), lines.length ? `${lines.join("\n")}\n` : "");
-      db.prepare(`
+      await db
+        .prepare(`
         UPDATE images
         SET 
           status = 'completed',
@@ -5373,15 +5248,18 @@ export async function handle(req, res, url, root) {
           locked_at = NULL,
           completed_at = CURRENT_TIMESTAMP
         WHERE project_id = ? AND file_path = ?
-      `).run(user.username, project.id, name);
-      db.prepare(`
+      `)
+        .run(user.username, project.id, name);
+      await db
+        .prepare(`
         INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
         VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'complete', CURRENT_TIMESTAMP)
         ON CONFLICT(project_id, rel_path) DO UPDATE SET
           claimed_by = excluded.claimed_by,
           status = 'complete',
           completed_at = excluded.completed_at
-      `).run(project.id, name, user.username);
+      `)
+        .run(project.id, name, user.username);
       send(res, 200, { ok: true, boxes });
       return;
     }
