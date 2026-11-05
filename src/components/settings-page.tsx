@@ -5,6 +5,8 @@ import {
   FolderOpen,
   Loader2,
   Lock,
+  Power,
+  PowerOff,
   Sparkles,
   Trash2,
   Users,
@@ -30,12 +32,14 @@ import {
   deleteUser,
   downloadDatasetExport,
   fetchAdmin,
+  fetchAiSettings,
   fetchMaintenanceStatus,
   fetchProjectHealth,
   fetchProjects,
   fetchUsers,
   lockAdmin,
   resetUserPassword,
+  setAiSettings,
   setMaintenanceMode,
   syncProjectImages,
   unlockAdmin,
@@ -109,6 +113,10 @@ export function SettingsPage() {
   const [samCacheMessage, setSamCacheMessage] = useState<string | null>(null);
   const [clearingSamCache, setClearingSamCache] = useState(false);
 
+  const [aiEnabled, setAiEnabled] = useState<boolean>(true);
+  const [togglingAi, setTogglingAi] = useState(false);
+  const [aiMessage, setAiMessage] = useState<string | null>(null);
+
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -133,6 +141,11 @@ export function SettingsPage() {
     areAllSamModelsCached()
       .then((cached) => {
         if (!cancel) setSamCached(cached);
+      })
+      .catch(() => {});
+    fetchAiSettings()
+      .then((res) => {
+        if (!cancel) setAiEnabled(res.enabled);
       })
       .catch(() => {});
     return () => {
@@ -184,6 +197,25 @@ export function SettingsPage() {
   async function handleToggleMaintenance(enabled: boolean) {
     const res = await setMaintenanceMode(enabled);
     setIsMaintenance(res.maintenance);
+  }
+
+  async function handleToggleAi() {
+    setTogglingAi(true);
+    setAiMessage(null);
+    try {
+      const next = !aiEnabled;
+      const res = await setAiSettings(next);
+      setAiEnabled(res.enabled);
+      setAiMessage(
+        res.enabled
+          ? "SAM 2.1 AI Auto-Trace enabled. Tool icon is visible in Label menu."
+          : "SAM 2.1 AI Auto-Trace disabled. Tool icon is hidden from Label menu and access is blocked.",
+      );
+    } catch (err: unknown) {
+      setAiMessage(err instanceof Error ? err.message : "Failed to update AI settings");
+    } finally {
+      setTogglingAi(false);
+    }
   }
 
   async function run(task: () => Promise<void>) {
@@ -292,7 +324,7 @@ export function SettingsPage() {
   }
 
   const tabClass = (tab: SettingsTab) =>
-    `h-7 px-2.5 flex items-center gap-1.5 text-xs font-medium text-left transition-colors border-l-2 ${
+    `h-7 px-2.5 flex items-center gap-1.5 text-xs font-medium text-left transition-colors border-l-2 whitespace-nowrap ${
       activeTab === tab
         ? "border-[#1473e6] bg-[#1473e6]/10 text-[#1473e6] font-semibold"
         : "border-transparent text-[#707070] hover:text-[#282828] hover:bg-[#f0f0f0]"
@@ -394,10 +426,10 @@ export function SettingsPage() {
         ) : unlocked ? (
           /* Multi-Pane Tabbed Workspace */
           <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
-            {/* Left Tabs Strip (180px) */}
+            {/* Left Tabs Strip (210px) */}
             <aside
               aria-label="Settings Categories"
-              className="w-[180px] border-r border-[#c8c8c8] bg-white flex flex-col shrink-0 py-1 select-none"
+              className="w-[210px] border-r border-[#c8c8c8] bg-white flex flex-col shrink-0 py-1 select-none"
             >
               <button
                 type="button"
@@ -821,55 +853,132 @@ export function SettingsPage() {
 
               {/* TAB 4: AI MODELS & CACHE */}
               {activeTab === "ai" && (
-                <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-3 flex flex-col gap-3">
-                  <div>
-                    <h2 className="text-xs font-semibold text-[#282828]">
-                      Local AI Model Cache (SAM 2.1)
-                    </h2>
-                    <p className="text-[11px] text-[#707070]">
-                      SAM 2.1 Hiera Tiny ONNX weights (~120 MB) are permanently stored in browser
-                      Cache Storage (<code className="font-mono text-[#282828]">{CACHE_NAME}</code>)
-                      so offline/LAN annotators experience sub-50ms model boots.
-                    </p>
-                  </div>
-
-                  <div className="flex items-center justify-between p-2 bg-[#f9f9f9] border border-[#c8c8c8] rounded-[2px]">
-                    <div className="flex items-center gap-2">
-                      <Sparkles className="size-4 text-purple-600" />
-                      <span className="font-semibold text-xs text-[#282828]">
-                        SAM 2.1 Hiera Tiny
-                      </span>
-                      <span
-                        className={`font-mono text-[10px] px-1.5 py-0.2 rounded-[2px] font-bold ${
-                          samCached
-                            ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
-                            : "bg-neutral-100 text-neutral-600 border border-[#c8c8c8]"
-                        }`}
-                      >
-                        {samCached ? "Cached on Local Disk" : "Not Cached"}
-                      </span>
+                <div className="flex flex-col gap-2">
+                  {/* Availability / Disable Control */}
+                  <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-3 flex flex-col gap-2.5">
+                    <div>
+                      <h2 className="text-xs font-semibold text-[#282828]">
+                        AI Auto-Trace Tool Availability
+                      </h2>
+                      <p className="text-[11px] text-[#707070]">
+                        Control whether the SAM 2.1 AI Auto-Trace feature is enabled across the
+                        workspace. When disabled, the tool icon is completely hidden from the Label
+                        menu and annotators are blocked from running model inferences.
+                      </p>
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={clearingSamCache}
-                      onClick={() => void handleClearSamCache()}
-                      className="press h-6 px-2.5 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-red-600 text-xs font-medium flex items-center gap-1 disabled:opacity-40"
-                    >
-                      {clearingSamCache ? (
-                        <Loader2 className="size-3 animate-spin" />
-                      ) : (
-                        <Trash2 className="size-3" />
-                      )}
-                      <span>Clear Cache</span>
-                    </button>
+                    <div className="flex items-center justify-between p-2 bg-[#f9f9f9] border border-[#c8c8c8] rounded-[2px]">
+                      <div className="flex items-center gap-2">
+                        <Sparkles className="size-4 text-purple-600 shrink-0" />
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-xs text-[#282828]">
+                              SAM 2.1 Auto-Trace
+                            </span>
+                            <span
+                              className={`font-mono text-[10px] px-1.5 py-0.2 rounded-[2px] font-bold border ${
+                                aiEnabled
+                                  ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                                  : "bg-rose-100 text-rose-800 border-rose-300"
+                              }`}
+                            >
+                              {aiEnabled ? "Enabled" : "Disabled"}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-[#707070]">
+                            {aiEnabled
+                              ? "Icon visible in Label menu • Annotators can trace shapes"
+                              : "Icon hidden from Label menu • Annotators blocked from using AI"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={togglingAi}
+                        onClick={() => void handleToggleAi()}
+                        className={`press h-6 px-3 rounded-[2px] text-xs font-medium flex items-center gap-1 border disabled:opacity-40 ${
+                          aiEnabled
+                            ? "bg-white border-[#c8c8c8] text-rose-600 hover:bg-rose-50 hover:border-rose-300"
+                            : "bg-[#1473e6] border-[#1473e6] text-white hover:bg-[#0d62c7]"
+                        }`}
+                      >
+                        {togglingAi ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : aiEnabled ? (
+                          <PowerOff className="size-3" />
+                        ) : (
+                          <Power className="size-3" />
+                        )}
+                        <span>{aiEnabled ? "Disable AI Tool" : "Enable AI Tool"}</span>
+                      </button>
+                    </div>
+
+                    {aiMessage && (
+                      <p
+                        className={`font-mono text-[11px] p-2 border rounded-[2px] ${
+                          aiEnabled
+                            ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+                            : "text-amber-800 bg-amber-50 border-amber-200"
+                        }`}
+                      >
+                        {aiMessage}
+                      </p>
+                    )}
                   </div>
 
-                  {samCacheMessage && (
-                    <p className="font-mono text-[11px] text-emerald-700 bg-emerald-50 p-2 border border-emerald-200 rounded-[2px]">
-                      {samCacheMessage}
-                    </p>
-                  )}
+                  {/* Local AI Model Cache */}
+                  <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-3 flex flex-col gap-2.5">
+                    <div>
+                      <h2 className="text-xs font-semibold text-[#282828]">
+                        Local AI Model Cache (SAM 2.1)
+                      </h2>
+                      <p className="text-[11px] text-[#707070]">
+                        SAM 2.1 Hiera Tiny ONNX weights (~120 MB) are permanently stored in browser
+                        Cache Storage (
+                        <code className="font-mono text-[#282828]">{CACHE_NAME}</code>) so
+                        offline/LAN annotators experience sub-50ms model boots.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center justify-between p-2 bg-[#f9f9f9] border border-[#c8c8c8] rounded-[2px]">
+                      <div className="flex items-center gap-2">
+                        <Sparkles className="size-4 text-purple-600" />
+                        <span className="font-semibold text-xs text-[#282828]">
+                          SAM 2.1 Hiera Tiny
+                        </span>
+                        <span
+                          className={`font-mono text-[10px] px-1.5 py-0.2 rounded-[2px] font-bold ${
+                            samCached
+                              ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                              : "bg-neutral-100 text-neutral-600 border border-[#c8c8c8]"
+                          }`}
+                        >
+                          {samCached ? "Cached on Local Disk" : "Not Cached"}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={clearingSamCache}
+                        onClick={() => void handleClearSamCache()}
+                        className="press h-6 px-2.5 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-red-600 text-xs font-medium flex items-center gap-1 disabled:opacity-40"
+                      >
+                        {clearingSamCache ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <Trash2 className="size-3" />
+                        )}
+                        <span>Clear Cache</span>
+                      </button>
+                    </div>
+
+                    {samCacheMessage && (
+                      <p className="font-mono text-[11px] text-emerald-700 bg-emerald-50 p-2 border border-emerald-200 rounded-[2px]">
+                        {samCacheMessage}
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
 

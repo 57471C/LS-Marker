@@ -952,6 +952,26 @@ export async function setMaintenanceMode(
   return asJson(res);
 }
 
+export type AiSettings = {
+  enabled: boolean;
+};
+
+export async function fetchAiSettings(): Promise<AiSettings> {
+  const res = await fetch(api("/api/system/ai-settings"));
+  return asJson<AiSettings>(res);
+}
+
+export async function setAiSettings(
+  enabled: boolean,
+): Promise<{ success: boolean; enabled: boolean }> {
+  const res = await fetch(api("/api/system/ai-settings"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  return asJson(res);
+}
+
 export type GitPullResult = {
   ok: boolean;
   success: boolean;

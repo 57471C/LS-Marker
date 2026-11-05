@@ -48,6 +48,7 @@ import {
   fetchAdmin,
   fetchCatalogue,
   fetchCropInfo,
+  fetchAiSettings,
   fetchLabel,
   fetchMaintenanceStatus,
   fetchNextImage,
@@ -326,10 +327,17 @@ export function Labeler() {
         if (!cancel) setIsMaintenance(res.maintenance);
       })
       .catch(() => {});
+    fetchAiSettings()
+      .then((res) => {
+        if (!cancel) setAiEnabled(res.enabled);
+      })
+      .catch(() => {});
     return () => {
       cancel = true;
     };
   }, []);
+
+  const [aiEnabled, setAiEnabled] = useState(true);
 
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -356,6 +364,13 @@ export function Labeler() {
   const [imageVersion, setImageVersion] = useState<number>(0);
   const [sam2Enabled, setSam2Enabled] = useState(false);
   const [sam2Status, setSam2Status] = useState<Sam2Status>({ state: "idle" });
+
+  useEffect(() => {
+    if (!aiEnabled && sam2Enabled) {
+      setSam2Enabled(false);
+      setSam2Status({ state: "idle" });
+    }
+  }, [aiEnabled, sam2Enabled]);
   const [samModelState, setSamModelState] = useState<SamModelStateSnapshot>(() =>
     getSamModelState(),
   );
@@ -1694,45 +1709,48 @@ export function Labeler() {
             <Hand className="size-4" />
           </div>
 
-          {/* SAM2.1 Polygon Trace Toggle */}
-          <button
-            type="button"
-            disabled={locked}
-            className={`press size-7 flex items-center justify-center rounded-[2px] border ${
-              sam2Enabled
-                ? "bg-purple-600 text-white border-purple-600 shadow-none"
-                : "border-transparent text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828]"
-            } disabled:opacity-30`}
-            title={
-              sam2Enabled
-                ? `SAM 2.1 Trace Active (${sam2Status.state}) — Left-click (+) foreground, Right-click (−) background, Enter to commit`
-                : "SAM 2.1 AI Auto-Trace (Click object points to trace precise boundary)"
-            }
-            onClick={() => {
-              if (!sam2Enabled) {
-                const seen =
-                  typeof window !== "undefined" &&
-                  window.localStorage.getItem("ls_marker_sam2_notice_seen") === "1";
-                if (!seen && !samModelsCachedOnDisk && !isSam2Loaded()) {
-                  setShowSam2Modal(true);
-                  return;
-                }
-                setSam2Enabled(true);
-              } else {
-                setSam2Enabled(false);
-                setSam2Status({ state: "idle" });
+          {/* SAM2.1 Polygon Trace Toggle (Hidden if disabled by administrator) */}
+          {aiEnabled && (
+            <button
+              type="button"
+              disabled={locked}
+              className={`press size-7 flex items-center justify-center rounded-[2px] border ${
+                sam2Enabled
+                  ? "bg-purple-600 text-white border-purple-600 shadow-none"
+                  : "border-transparent text-[#505050] hover:bg-[#f0f0f0] hover:text-[#282828]"
+              } disabled:opacity-30`}
+              title={
+                sam2Enabled
+                  ? `SAM 2.1 Trace Active (${sam2Status.state}) — Left-click (+) foreground, Right-click (−) background, Enter to commit`
+                  : "SAM 2.1 AI Auto-Trace (Click object points to trace precise boundary)"
               }
-            }}
-          >
-            {sam2Enabled &&
-            (sam2Status.state === "loading_models" ||
-              sam2Status.state === "encoding" ||
-              sam2Status.state === "decoding") ? (
-              <Loader2 className="size-4 animate-spin text-white" />
-            ) : (
-              <Sparkles className="size-4" />
-            )}
-          </button>
+              onClick={() => {
+                if (!aiEnabled) return;
+                if (!sam2Enabled) {
+                  const seen =
+                    typeof window !== "undefined" &&
+                    window.localStorage.getItem("ls_marker_sam2_notice_seen") === "1";
+                  if (!seen && !samModelsCachedOnDisk && !isSam2Loaded()) {
+                    setShowSam2Modal(true);
+                    return;
+                  }
+                  setSam2Enabled(true);
+                } else {
+                  setSam2Enabled(false);
+                  setSam2Status({ state: "idle" });
+                }
+              }}
+            >
+              {sam2Enabled &&
+              (sam2Status.state === "loading_models" ||
+                sam2Status.state === "encoding" ||
+                sam2Status.state === "decoding") ? (
+                <Loader2 className="size-4 animate-spin text-white" />
+              ) : (
+                <Sparkles className="size-4" />
+              )}
+            </button>
+          )}
 
           {/* Crosshairs & Coordinate readout */}
           <button

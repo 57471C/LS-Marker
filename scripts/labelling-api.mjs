@@ -4417,6 +4417,30 @@ export async function handle(req, res, url, root) {
     return;
   }
 
+  if (method === "GET" && pathname === "/api/system/ai-settings") {
+    const db = await getDb(root);
+    const enabled = (await getSystemSetting(db, "sam2_enabled", "1")) !== "0";
+    send(res, 200, { enabled });
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/system/ai-settings") {
+    const db = await getDb(root);
+    const user = await currentUser(db, req);
+    const admin = (await adminOpen(db, req)) || user?.admin === true || user?.username === "admin";
+    if (!admin) {
+      throw new HttpError(403, "Forbidden: Admin access required");
+    }
+    const body = await readBody(req).catch(() => ({}));
+    const enabled = Boolean(body.enabled);
+    await setSystemSetting(db, "sam2_enabled", enabled ? "1" : "0");
+    send(res, 200, {
+      success: true,
+      enabled,
+    });
+    return;
+  }
+
   if (method === "GET" && pathname === "/api/system/backup-status") {
     const db = await getDb(root);
     const status = await getBackupStatus(db);
@@ -5353,29 +5377,46 @@ function mount(server) {
       }
     }
     if (url.pathname.startsWith("/models/")) {
-      const requestedName = path.basename(url.pathname);
-      const modelsDir = path.resolve(server.config.root, "public", "models");
-      const aliasMap = {
-        "image_encoder.onnx": "sam2_hiera_tiny_encoder.onnx",
-        "mask_decoder.onnx": "sam2_hiera_tiny_decoder.onnx",
-      };
-      let candidatePath = path.join(modelsDir, requestedName);
-      if (!fs.existsSync(candidatePath) && aliasMap[requestedName]) {
-        candidatePath = path.join(modelsDir, aliasMap[requestedName]);
-      }
-      if (
-        candidatePath.startsWith(modelsDir) &&
-        fs.existsSync(candidatePath) &&
-        fs.statSync(candidatePath).isFile()
-      ) {
-        const stat = fs.statSync(candidatePath);
-        res.statusCode = 200;
-        res.setHeader("Content-Type", "application/octet-stream");
-        res.setHeader("Content-Length", String(stat.size));
-        res.setHeader("Cache-Control", "public, max-age=3600");
-        fs.createReadStream(candidatePath).pipe(res);
-        return;
-      }
+      (async () => {
+        try {
+          const db = await getDb(server.config.root);
+          const samEnabled = (await getSystemSetting(db, "sam2_enabled", "1")) !== "0";
+          if (!samEnabled) {
+            res.statusCode = 403;
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ error: "AI Models are currently disabled by administrator" }));
+            return;
+          }
+          const requestedName = path.basename(url.pathname);
+          const modelsDir = path.resolve(server.config.root, "public", "models");
+          const aliasMap = {
+            "image_encoder.onnx": "sam2_hiera_tiny_encoder.onnx",
+            "mask_decoder.onnx": "sam2_hiera_tiny_decoder.onnx",
+          };
+          let candidatePath = path.join(modelsDir, requestedName);
+          if (!fs.existsSync(candidatePath) && aliasMap[requestedName]) {
+            candidatePath = path.join(modelsDir, aliasMap[requestedName]);
+          }
+          if (
+            candidatePath.startsWith(modelsDir) &&
+            fs.existsSync(candidatePath) &&
+            fs.statSync(candidatePath).isFile()
+          ) {
+            const stat = fs.statSync(candidatePath);
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/octet-stream");
+            res.setHeader("Content-Length", String(stat.size));
+            res.setHeader("Cache-Control", "public, max-age=3600");
+            fs.createReadStream(candidatePath).pipe(res);
+            return;
+          }
+          res.statusCode = 404;
+          res.end("Not Found");
+        } catch (err) {
+          next(err);
+        }
+      })();
+      return;
     }
     if (!url.pathname.startsWith("/api/")) {
       next();
