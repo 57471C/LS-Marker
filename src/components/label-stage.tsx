@@ -1229,22 +1229,24 @@ export function LabelStage({
               const isFilled = renderMode === "filled";
               return (
                 <g key={box.key}>
-                  {/* High-contrast dark outline under-stroke */}
-                  <polygon
-                    points={box.points.map(([px, py]) => `${px * 1000},${py * 1000}`).join(" ")}
-                    fill="none"
-                    stroke="#000000"
-                    strokeOpacity={0.75}
-                    strokeWidth={selected ? 3 : 2.5}
-                    vectorEffect="non-scaling-stroke"
-                  />
+                  {/* High-contrast dark outline under-stroke in outline mode only */}
+                  {!isFilled ? (
+                    <polygon
+                      points={box.points.map(([px, py]) => `${px * 1000},${py * 1000}`).join(" ")}
+                      fill="none"
+                      stroke="#000000"
+                      strokeOpacity={0.75}
+                      strokeWidth={selected ? 3 : 2.5}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  ) : null}
                   <polygon
                     data-box={box.key}
                     points={box.points.map(([px, py]) => `${px * 1000},${py * 1000}`).join(" ")}
                     fill={isFilled ? color : "transparent"}
                     fillOpacity={isFilled ? (selected ? 0.35 : 0.22) : 0}
                     stroke={selected ? "#1473e6" : color}
-                    strokeWidth={1.5}
+                    strokeWidth={isFilled ? 1 : 1.5}
                     vectorEffect="non-scaling-stroke"
                     className={`pointer-events-auto ${spaceMode === "off" && !readOnly ? "cursor-move" : ""}`}
                   />
@@ -1595,9 +1597,11 @@ export function LabelStage({
                   borderStyle: "solid",
                   borderColor: selected ? "#1473e6" : color,
                   backgroundColor: isFilled ? `${color}38` : "transparent",
-                  boxShadow: selected
-                    ? "0 0 0 1px #ffffff, 0 0 0 2.5px #1473e6"
-                    : "0 0 0 1px rgba(0, 0, 0, 0.75)",
+                  boxShadow: isFilled
+                    ? "none"
+                    : selected
+                      ? "0 0 0 1px #ffffff, 0 0 0 2.5px #1473e6"
+                      : "0 0 0 1px rgba(0, 0, 0, 0.75)",
                   borderRadius: 0,
                 }}
               >
