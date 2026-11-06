@@ -142,7 +142,7 @@ console.log("--- Starting Part Dimensions Verification ---");
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ls-marker-dims-"));
   const db = await getDb(tmpDir);
   try {
-    const projInfo = db
+    const projInfo = await db
       .prepare("INSERT INTO projects (name, folder, created_at) VALUES (?, ?, ?)")
       .run("Health Test Project", tmpDir, new Date().toISOString());
     const projectId = Number(projInfo.lastInsertRowid);
@@ -154,7 +154,7 @@ console.log("--- Starting Part Dimensions Verification ---");
     );
 
     const b1 = cleanClassDimensions({ part_type: "bolt", dim1_mm: 30, dim2_mm: 10 });
-    insertClass.run(
+    await insertClass.run(
       projectId,
       0,
       "IC-00",
@@ -170,7 +170,7 @@ console.log("--- Starting Part Dimensions Verification ---");
     );
 
     const n1 = cleanClassDimensions({ part_type: "nut", dim1_mm: 13, dim2_mm: null });
-    insertClass.run(
+    await insertClass.run(
       projectId,
       1,
       "IC-01",
@@ -186,7 +186,7 @@ console.log("--- Starting Part Dimensions Verification ---");
     );
 
     const cNone = cleanClassDimensions({ part_type: "none" });
-    insertClass.run(
+    await insertClass.run(
       projectId,
       2,
       "IC-02",
@@ -201,7 +201,7 @@ console.log("--- Starting Part Dimensions Verification ---");
       cNone.dim3_mm,
     );
 
-    const health = computeProjectHealth(
+    const health = await computeProjectHealth(
       tmpDir,
       { id: projectId, name: "Health Test Project", folder: tmpDir },
       db,

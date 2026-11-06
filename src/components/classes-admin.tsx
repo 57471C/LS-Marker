@@ -105,128 +105,258 @@ export function PartMeasurementPopover({
       </div>
 
       {partType === "bolt" && (
-        <svg
-          viewBox="0 0 340 100"
-          className="h-24 w-full rounded-[2px] bg-[#f5f5f5] p-1 text-[#282828]"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        >
-          <rect
-            x="30"
-            y="22"
-            width="28"
-            height="50"
-            rx="1"
-            fill="currentColor"
-            fillOpacity="0.08"
-          />
-          <rect
-            x="58"
-            y="32"
-            width="160"
-            height="30"
-            rx="1"
-            fill="currentColor"
-            fillOpacity="0.04"
-          />
-          <path d="M 58 64 H 218" strokeDasharray="3 3" />
-          <line x1="20" y1="22" x2="20" y2="72" stroke="#1473e6" strokeWidth="1.5" />
-          <text x="12" y="52" fill="#1473e6" fontSize="10" fontFamily="monospace">
-            OD
-          </text>
-          <line x1="58" y1="88" x2="218" y2="88" stroke="#1473e6" strokeWidth="1.5" />
-          <text x="125" y="96" fill="#1473e6" fontSize="10" fontFamily="monospace">
-            Length (L)
-          </text>
-          <text x="140" y="50" fill="#707070" fontSize="9" fontFamily="monospace">
-            Thread / Pitch
-          </text>
-        </svg>
+        <div className="flex flex-col gap-1.5">
+          <svg
+            viewBox="0 0 340 120"
+            className="h-24 w-full rounded-[2px] bg-[#f5f5f5] p-1 text-[#282828]"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            {/* Bolt Head */}
+            <rect
+              x="30"
+              y="28"
+              width="32"
+              height="54"
+              rx="1"
+              fill="currentColor"
+              fillOpacity="0.08"
+            />
+            <line x1="30" y1="42" x2="62" y2="42" strokeOpacity="0.5" />
+            <line x1="30" y1="68" x2="62" y2="68" strokeOpacity="0.5" />
+            {/* Bolt Shank + Threads */}
+            <rect x="62" y="42" width="178" height="26" fill="currentColor" fillOpacity="0.05" />
+            <line x1="150" y1="42" x2="150" y2="68" strokeDasharray="2 2" />
+            <line x1="165" y1="42" x2="165" y2="68" strokeOpacity="0.4" />
+            <line x1="180" y1="42" x2="180" y2="68" strokeOpacity="0.4" />
+            <line x1="195" y1="42" x2="195" y2="68" strokeOpacity="0.4" />
+            <line x1="210" y1="42" x2="210" y2="68" strokeOpacity="0.4" />
+            <line x1="225" y1="42" x2="225" y2="68" strokeOpacity="0.4" />
+
+            {/* Length under head callout */}
+            <line x1="62" y1="82" x2="62" y2="106" stroke="#1473e6" strokeWidth="1.2" />
+            <line x1="240" y1="68" x2="240" y2="106" stroke="#1473e6" strokeWidth="1.2" />
+            <line x1="64" y1="98" x2="238" y2="98" stroke="#1473e6" strokeWidth="1.5" />
+            <polygon points="62,98 70,94 70,102" fill="#1473e6" stroke="none" />
+            <polygon points="240,98 232,94 232,102" fill="#1473e6" stroke="none" />
+            <text
+              x="151"
+              y="113"
+              textAnchor="middle"
+              fill="#1473e6"
+              fontSize="10"
+              fontFamily="monospace"
+              stroke="none"
+            >
+              Length under head (mm)
+            </text>
+
+            {/* Thread diameter callout */}
+            <line x1="240" y1="42" x2="275" y2="42" stroke="#d97706" strokeWidth="1.2" />
+            <line x1="240" y1="68" x2="275" y2="68" stroke="#d97706" strokeWidth="1.2" />
+            <line x1="266" y1="44" x2="266" y2="66" stroke="#d97706" strokeWidth="1.5" />
+            <polygon points="266,42 262,49 270,49" fill="#d97706" stroke="none" />
+            <polygon points="266,68 262,61 270,61" fill="#d97706" stroke="none" />
+            <text x="274" y="58" fill="#d97706" fontSize="10" fontFamily="monospace" stroke="none">
+              Thread Ø
+            </text>
+          </svg>
+          <p className="text-[10px] leading-snug text-[#6e6e6e]">
+            <strong className="text-[#282828]">Length under head</strong> = underside of head to tip
+            (exclude head height). <strong className="text-[#282828]">Thread diameter</strong> =
+            outer diameter across threads (e.g. 8 mm for M8).
+          </p>
+        </div>
       )}
 
       {partType === "nut" && (
-        <svg
-          viewBox="0 0 240 100"
-          className="h-24 w-full rounded-[2px] bg-[#f5f5f5] p-1 text-[#282828]"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        >
-          <polygon
-            points="40,50 65,15 115,15 140,50 115,85 65,85"
-            fill="currentColor"
-            fillOpacity="0.08"
-          />
-          <circle cx="90" cy="50" r="18" fill="white" stroke="currentColor" strokeWidth="1.5" />
-          <line x1="160" y1="15" x2="160" y2="85" stroke="#1473e6" strokeWidth="1.5" />
-          <text x="168" y="54" fill="#1473e6" fontSize="10" fontFamily="monospace">
-            Hex A/F
-          </text>
-          <text x="76" y="54" fill="#1473e6" fontSize="9" fontFamily="monospace">
-            Thread
-          </text>
-        </svg>
+        <div className="flex flex-col gap-1.5">
+          <svg
+            viewBox="0 0 340 120"
+            className="h-24 w-full rounded-[2px] bg-[#f5f5f5] p-1 text-[#282828]"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            <polygon
+              points="75,24 115,24 132,54 115,84 75,84 58,54"
+              fill="currentColor"
+              fillOpacity="0.08"
+            />
+            <circle cx="95" cy="54" r="14" />
+            <line x1="115" y1="24" x2="155" y2="24" stroke="#1473e6" strokeWidth="1.2" />
+            <line x1="115" y1="84" x2="155" y2="84" stroke="#1473e6" strokeWidth="1.2" />
+            <line x1="146" y1="26" x2="146" y2="82" stroke="#1473e6" strokeWidth="1.5" />
+            <polygon points="146,24 142,31 150,31" fill="#1473e6" stroke="none" />
+            <polygon points="146,84 142,77 150,77" fill="#1473e6" stroke="none" />
+            <text
+              x="95"
+              y="106"
+              textAnchor="middle"
+              fill="#1473e6"
+              fontSize="10"
+              fontFamily="monospace"
+              stroke="none"
+            >
+              Across flats A/F (mm)
+            </text>
+            <rect
+              x="215"
+              y="24"
+              width="34"
+              height="60"
+              rx="1"
+              fill="currentColor"
+              fillOpacity="0.08"
+            />
+            <line x1="215" y1="84" x2="215" y2="102" stroke="#d97706" strokeWidth="1.2" />
+            <line x1="249" y1="84" x2="249" y2="102" stroke="#d97706" strokeWidth="1.2" />
+            <line x1="217" y1="95" x2="247" y2="95" stroke="#d97706" strokeWidth="1.5" />
+            <text
+              x="232"
+              y="112"
+              textAnchor="middle"
+              fill="#d97706"
+              fontSize="10"
+              fontFamily="monospace"
+              stroke="none"
+            >
+              Height (mm)
+            </text>
+          </svg>
+          <p className="text-[10px] leading-snug text-[#6e6e6e]">
+            <strong className="text-[#282828]">Across flats (A/F)</strong> = distance between two
+            opposite flat sides. <strong className="text-[#282828]">Height</strong> = total
+            thickness of nut face to face.
+          </p>
+        </div>
       )}
 
       {partType === "washer" && (
-        <svg
-          viewBox="0 0 240 100"
-          className="h-24 w-full rounded-[2px] bg-[#f5f5f5] p-1 text-[#282828]"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        >
-          <circle cx="80" cy="50" r="38" fill="currentColor" fillOpacity="0.08" />
-          <circle cx="80" cy="50" r="16" fill="white" />
-          <line x1="140" y1="12" x2="140" y2="88" stroke="#1473e6" strokeWidth="1.5" />
-          <text x="148" y="54" fill="#1473e6" fontSize="10" fontFamily="monospace">
-            Outer Diam (OD)
-          </text>
-          <text x="68" y="54" fill="#1473e6" fontSize="9" fontFamily="monospace">
-            Inner (ID)
-          </text>
-        </svg>
+        <div className="flex flex-col gap-1.5">
+          <svg
+            viewBox="0 0 340 120"
+            className="h-24 w-full rounded-[2px] bg-[#f5f5f5] p-1 text-[#282828]"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            <circle cx="95" cy="54" r="34" fill="currentColor" fillOpacity="0.08" />
+            <circle cx="95" cy="54" r="14" fill="white" />
+            <line x1="61" y1="54" x2="61" y2="100" stroke="#1473e6" strokeWidth="1.2" />
+            <line x1="129" y1="54" x2="129" y2="100" stroke="#1473e6" strokeWidth="1.2" />
+            <line x1="63" y1="94" x2="127" y2="94" stroke="#1473e6" strokeWidth="1.5" />
+            <text
+              x="95"
+              y="110"
+              textAnchor="middle"
+              fill="#1473e6"
+              fontSize="10"
+              fontFamily="monospace"
+              stroke="none"
+            >
+              Outer Ø (OD)
+            </text>
+            <line x1="81" y1="54" x2="109" y2="54" stroke="#10b981" strokeWidth="1.5" />
+            <text
+              x="95"
+              y="15"
+              textAnchor="middle"
+              fill="#10b981"
+              fontSize="10"
+              fontFamily="monospace"
+              stroke="none"
+            >
+              Inner Ø (ID)
+            </text>
+            <rect x="235" y="20" width="14" height="68" fill="currentColor" fillOpacity="0.1" />
+            <line x1="235" y1="96" x2="249" y2="96" stroke="#d97706" strokeWidth="1.5" />
+            <text
+              x="242"
+              y="110"
+              textAnchor="middle"
+              fill="#d97706"
+              fontSize="10"
+              fontFamily="monospace"
+              stroke="none"
+            >
+              Thickness
+            </text>
+          </svg>
+          <p className="text-[10px] leading-snug text-[#6e6e6e]">
+            <strong className="text-[#282828]">Outer diameter</strong> = outside edge to edge.{" "}
+            <strong className="text-[#282828]">Inner diameter</strong> = central hole diameter.{" "}
+            <strong className="text-[#282828]">Thickness</strong> = flat face to flat face.
+          </p>
+        </div>
       )}
 
       {partType === "cable_tie" && (
-        <svg
-          viewBox="0 0 300 70"
-          className="h-16 w-full rounded-[2px] bg-[#f5f5f5] p-1 text-[#282828]"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        >
-          <rect x="20" y="20" width="18" height="30" rx="1" fill="currentColor" fillOpacity="0.1" />
-          <rect x="38" y="30" width="220" height="10" fill="currentColor" fillOpacity="0.05" />
-          <line x1="38" y1="58" x2="258" y2="58" stroke="#1473e6" strokeWidth="1.5" />
-          <text x="135" y="66" fill="#1473e6" fontSize="10" fontFamily="monospace">
-            Length (L)
-          </text>
-          <text x="265" y="38" fill="#1473e6" fontSize="9" fontFamily="monospace">
-            Width
-          </text>
-        </svg>
+        <div className="flex flex-col gap-1.5">
+          <svg
+            viewBox="0 0 300 70"
+            className="h-16 w-full rounded-[2px] bg-[#f5f5f5] p-1 text-[#282828]"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            <rect
+              x="20"
+              y="20"
+              width="18"
+              height="30"
+              rx="1"
+              fill="currentColor"
+              fillOpacity="0.1"
+            />
+            <rect x="38" y="30" width="220" height="10" fill="currentColor" fillOpacity="0.05" />
+            <line x1="20" y1="58" x2="258" y2="58" stroke="#1473e6" strokeWidth="1.5" />
+            <text x="135" y="66" fill="#1473e6" fontSize="10" fontFamily="monospace" stroke="none">
+              Length (mm)
+            </text>
+            <text x="265" y="38" fill="#d97706" fontSize="9" fontFamily="monospace" stroke="none">
+              Width
+            </text>
+          </svg>
+          <p className="text-[10px] leading-snug text-[#6e6e6e]">
+            <strong className="text-[#282828]">Length</strong> = total end-to-end length.{" "}
+            <strong className="text-[#282828]">Width</strong> = strap width across the flat body.
+          </p>
+        </div>
       )}
 
       {partType === "spring" && (
-        <svg
-          viewBox="0 0 240 90"
-          className="h-20 w-full rounded-[2px] bg-[#f5f5f5] p-1 text-[#282828]"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-        >
-          <path d="M 40 45 C 50 15, 70 15, 80 45 C 90 75, 110 75, 120 45 C 130 15, 150 15, 160 45" />
-          <line x1="25" y1="20" x2="25" y2="70" stroke="#1473e6" strokeWidth="1.5" />
-          <text x="10" y="48" fill="#1473e6" fontSize="9" fontFamily="monospace">
-            OD
-          </text>
-          <line x1="40" y1="80" x2="160" y2="80" stroke="#1473e6" strokeWidth="1.5" />
-          <text x="85" y="88" fill="#1473e6" fontSize="9" fontFamily="monospace">
-            Height (L)
-          </text>
-        </svg>
+        <div className="flex flex-col gap-1.5">
+          <svg
+            viewBox="0 0 240 90"
+            className="h-20 w-full rounded-[2px] bg-[#f5f5f5] p-1 text-[#282828]"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            <path d="M 40 45 C 50 15, 70 15, 80 45 C 90 75, 110 75, 120 45 C 130 15, 150 15, 160 45" />
+            <line x1="25" y1="20" x2="25" y2="70" stroke="#d97706" strokeWidth="1.5" />
+            <text x="4" y="48" fill="#d97706" fontSize="9" fontFamily="monospace" stroke="none">
+              Diam
+            </text>
+            <line x1="40" y1="80" x2="160" y2="80" stroke="#1473e6" strokeWidth="1.5" />
+            <text x="80" y="88" fill="#1473e6" fontSize="9" fontFamily="monospace" stroke="none">
+              Height (mm)
+            </text>
+          </svg>
+          <p className="text-[10px] leading-snug text-[#6e6e6e]">
+            <strong className="text-[#282828]">Height</strong> = total free length end to end.{" "}
+            <strong className="text-[#282828]">Diameter</strong> = outer diameter across the coil.
+          </p>
+        </div>
+      )}
+
+      {partType === "other" && (
+        <p className="text-[10px] leading-snug text-[#6e6e6e]">
+          Enter custom dimension labels (e.g. Overall length, Width, Bore) and their measured values
+          in millimetres (mm).
+        </p>
       )}
     </div>
   );
@@ -759,37 +889,28 @@ export function ClassesAdmin() {
 
                 {/* Specific Fields by Type */}
                 {editPartType === "bolt" && (
-                  <div className="grid grid-cols-3 gap-1">
+                  <div className="grid grid-cols-2 gap-1.5">
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Thread (M)</label>
+                      <label className="text-[9px] text-[#707070] block">
+                        Length under head (mm)
+                      </label>
                       <input
                         type="number"
                         step="any"
-                        placeholder="8"
+                        placeholder="40"
                         value={editDim1Mm}
                         onChange={(e) => setEditDim1Mm(e.target.value)}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Pitch (mm)</label>
+                      <label className="text-[9px] text-[#707070] block">Thread Ø (mm)</label>
                       <input
                         type="number"
                         step="any"
-                        placeholder="1.25"
+                        placeholder="8"
                         value={editDim2Mm}
                         onChange={(e) => setEditDim2Mm(e.target.value)}
-                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[9px] text-[#707070] block">Length (mm)</label>
-                      <input
-                        type="number"
-                        step="any"
-                        placeholder="40"
-                        value={editDim3Mm}
-                        onChange={(e) => setEditDim3Mm(e.target.value)}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -797,37 +918,28 @@ export function ClassesAdmin() {
                 )}
 
                 {editPartType === "nut" && (
-                  <div className="grid grid-cols-3 gap-1">
+                  <div className="grid grid-cols-2 gap-1.5">
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Thread (M)</label>
+                      <label className="text-[9px] text-[#707070] block">
+                        Across flats A/F (mm)
+                      </label>
                       <input
                         type="number"
                         step="any"
-                        placeholder="8"
+                        placeholder="13"
                         value={editDim1Mm}
                         onChange={(e) => setEditDim1Mm(e.target.value)}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Pitch (mm)</label>
+                      <label className="text-[9px] text-[#707070] block">Height (mm)</label>
                       <input
                         type="number"
                         step="any"
-                        placeholder="1.25"
+                        placeholder="6.5"
                         value={editDim2Mm}
                         onChange={(e) => setEditDim2Mm(e.target.value)}
-                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[9px] text-[#707070] block">Hex A/F (mm)</label>
-                      <input
-                        type="number"
-                        step="any"
-                        placeholder="13"
-                        value={editDim3Mm}
-                        onChange={(e) => setEditDim3Mm(e.target.value)}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -837,7 +949,7 @@ export function ClassesAdmin() {
                 {editPartType === "washer" && (
                   <div className="grid grid-cols-3 gap-1">
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Outer D (mm)</label>
+                      <label className="text-[9px] text-[#707070] block">Outer Ø (mm)</label>
                       <input
                         type="number"
                         step="any"
@@ -848,7 +960,7 @@ export function ClassesAdmin() {
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Inner D (mm)</label>
+                      <label className="text-[9px] text-[#707070] block">Inner Ø (mm)</label>
                       <input
                         type="number"
                         step="any"
@@ -873,7 +985,7 @@ export function ClassesAdmin() {
                 )}
 
                 {editPartType === "cable_tie" && (
-                  <div className="grid grid-cols-3 gap-1">
+                  <div className="grid grid-cols-2 gap-1.5">
                     <div>
                       <label className="text-[9px] text-[#707070] block">Length (mm)</label>
                       <input
@@ -896,22 +1008,11 @@ export function ClassesAdmin() {
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
-                    <div>
-                      <label className="text-[9px] text-[#707070] block">Thick (mm)</label>
-                      <input
-                        type="number"
-                        step="any"
-                        placeholder="1.2"
-                        value={editDim3Mm}
-                        onChange={(e) => setEditDim3Mm(e.target.value)}
-                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                      />
-                    </div>
                   </div>
                 )}
 
                 {editPartType === "spring" && (
-                  <div className="grid grid-cols-3 gap-1">
+                  <div className="grid grid-cols-2 gap-1.5">
                     <div>
                       <label className="text-[9px] text-[#707070] block">Height (mm)</label>
                       <input
@@ -924,24 +1025,13 @@ export function ClassesAdmin() {
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Outer D (mm)</label>
+                      <label className="text-[9px] text-[#707070] block">Diameter (mm)</label>
                       <input
                         type="number"
                         step="any"
                         placeholder="12"
                         value={editDim2Mm}
                         onChange={(e) => setEditDim2Mm(e.target.value)}
-                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[9px] text-[#707070] block">Wire D (mm)</label>
-                      <input
-                        type="number"
-                        step="any"
-                        placeholder="1.5"
-                        value={editDim3Mm}
-                        onChange={(e) => setEditDim3Mm(e.target.value)}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
