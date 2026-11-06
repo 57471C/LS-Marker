@@ -264,6 +264,62 @@ export function Labeler() {
     return 220;
   });
   const [isResizingShapes, setIsResizingShapes] = useState(false);
+
+  // Resizable Right Sidebar Width (persisted to localStorage)
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    if (typeof window === "undefined") return 320;
+    try {
+      const saved = localStorage.getItem("ls_marker_right_sidebar_width");
+      if (saved) {
+        const val = Number(saved);
+        if (!Number.isNaN(val) && val >= 240 && val <= 1200) {
+          return val;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 320;
+  });
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+
+  const handleSidebarResizePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    setIsResizingSidebar(true);
+
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const deltaX = startX - ev.clientX;
+      const maxW = Math.max(360, window.innerWidth - 300);
+      const nextW = Math.max(260, Math.min(maxW, Math.round(startW + deltaX)));
+      setSidebarWidth(nextW);
+      try {
+        localStorage.setItem("ls_marker_right_sidebar_width", String(nextW));
+      } catch {
+        // ignore
+      }
+    };
+
+    const onPointerUp = () => {
+      setIsResizingSidebar(false);
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+  };
+
   const [classFilter, setClassFilter] = useState("");
 
   const handleShapesResizePointerDown = (e: React.PointerEvent) => {
@@ -1866,7 +1922,11 @@ export function Labeler() {
         {/* -----------------------------------------------------------------------
             CENTER CANVAS PANEL
         ----------------------------------------------------------------------- */}
-        <main className="flex-1 min-w-0 min-h-0 bg-[#f0f0f0] relative flex flex-col overflow-hidden">
+        <main
+          className={`flex-1 min-w-0 min-h-0 bg-[#f0f0f0] relative flex flex-col overflow-hidden ${
+            isResizingSidebar ? "pointer-events-none" : ""
+          }`}
+        >
           {/* Review QA Banner (if review mode is active) */}
           {isReviewMode && (
             <div className="h-[28px] bg-[#fffbe6] border-b border-[#ffe58f] px-2 flex items-center justify-between text-xs shrink-0 select-none">
@@ -2042,11 +2102,39 @@ export function Labeler() {
         </main>
 
         {/* -----------------------------------------------------------------------
-            RIGHT SIDEBAR (Exact 320px, Collapsible Panes)
+            HORIZONTAL RESIZE SPLITTER (Between Canvas and Right Sidebar)
+        ----------------------------------------------------------------------- */}
+        <div
+          onPointerDown={handleSidebarResizePointerDown}
+          onDoubleClick={() => {
+            setSidebarWidth(320);
+            try {
+              localStorage.setItem("ls_marker_right_sidebar_width", "320");
+            } catch {
+              // ignore
+            }
+          }}
+          title="Drag to resize side panel horizontally (Double-click to reset to 320px)"
+          className={`group/sidebar-resizer w-1.5 h-full cursor-col-resize select-none shrink-0 transition-colors border-l border-[#c8c8c8] flex items-center justify-center z-10 ${
+            isResizingSidebar ? "bg-[#1473e6]" : "bg-[#f5f5f5] hover:bg-[#1473e6]/30"
+          }`}
+        >
+          <div
+            className={`w-0.5 h-8 rounded-full transition-colors ${
+              isResizingSidebar
+                ? "bg-white"
+                : "bg-[#a0a0a0] group-hover/sidebar-resizer:bg-[#1473e6]"
+            }`}
+          />
+        </div>
+
+        {/* -----------------------------------------------------------------------
+            RIGHT SIDEBAR (Resizable, Collapsible Panes)
         ----------------------------------------------------------------------- */}
         <aside
           aria-label="Side Panels"
-          className="w-[320px] border-l border-[#c8c8c8] bg-white flex flex-col shrink-0 select-none overflow-hidden h-full"
+          style={{ width: `${sidebarWidth}px` }}
+          className="border-l border-[#c8c8c8] bg-white flex flex-col shrink-0 select-none overflow-hidden h-full"
         >
           {/* PANE 1: Queue Filters & Photo Claims */}
           <div className="border-b border-[#c8c8c8] flex flex-col shrink-0">
@@ -2281,7 +2369,10 @@ export function Labeler() {
                             </span>
 
                             {/* Description */}
-                            <span className="text-[11px] text-[#707070] truncate flex-1 min-w-0">
+                            <span
+                              className="text-[11px] text-[#707070] truncate flex-1 min-w-0"
+                              title={row.des}
+                            >
                               {row.des}
                             </span>
 
@@ -2863,7 +2954,10 @@ export function Labeler() {
                         />
 
                         {/* Title */}
-                        <span className="text-[11px] font-mono text-[#282828] truncate flex-1 min-w-0">
+                        <span
+                          className="text-[11px] font-mono text-[#282828] truncate flex-1 min-w-0"
+                          title={boxTitle(box.classId)}
+                        >
                           {boxTitle(box.classId)}
                         </span>
 
