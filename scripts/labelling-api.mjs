@@ -1656,12 +1656,11 @@ export async function prepareExportPlan(
     const hasTxt = fs.existsSync(txtFull);
     const claimStatus = claimsMap.get(normRel) ?? claimsMap.get(relName);
     const dbStatus = imagesMap.get(normRel) ?? imagesMap.get(relName);
-    const isApproved = dbStatus === "approved" || claimStatus === "approved";
+    const isIncomplete = dbStatus === "incomplete" || claimStatus === "incomplete";
+    const isApproved = (dbStatus === "approved" || claimStatus === "approved") && !isIncomplete;
     const isCompleted =
       isApproved ||
-      dbStatus === "completed" ||
-      claimStatus === "complete" ||
-      (hasTxt && claimStatus !== "incomplete");
+      (!isIncomplete && (dbStatus === "completed" || claimStatus === "complete" || hasTxt));
     const eligible = exportScope === "approved" ? isApproved : isCompleted;
     candidates.push({ relName: normRel, imageFull, txtFull, completed: eligible });
   }
@@ -2662,25 +2661,27 @@ async function publicProject(root, project, db) {
             await db
               .prepare("SELECT rel_path, status FROM image_claims WHERE project_id = ?")
               .all(project.id)
-          ).map((r) => [r.rel_path, r.status]),
+          ).map((r) => [normalizePath(r.rel_path), r.status]),
         );
         dbImagesMap = new Map(
           (
             await db
               .prepare("SELECT file_path, status FROM images WHERE project_id = ?")
               .all(project.id)
-          ).map((r) => [r.file_path, r.status]),
+          ).map((r) => [normalizePath(r.file_path), r.status]),
         );
       }
       for (const name of images) {
         const full = resolveInside(resolvedFolder, name);
         const hasTxt = fs.existsSync(labelFileFor(full));
-        const status = claimsMap?.get(name);
-        const dbStatus = dbImagesMap?.get(name);
-        if (dbStatus === "approved") {
+        const normName = normalizePath(name);
+        const status = claimsMap?.get(normName) ?? claimsMap?.get(name);
+        const dbStatus = dbImagesMap?.get(normName) ?? dbImagesMap?.get(name);
+        const isIncomplete = dbStatus === "incomplete" || status === "incomplete";
+        if (dbStatus === "approved" && !isIncomplete) {
           approvedPhotos++;
           completePhotos++;
-        } else if (status === "complete" || (!status && hasTxt) || dbStatus === "completed") {
+        } else if (!isIncomplete && (status === "complete" || dbStatus === "completed" || hasTxt)) {
           completePhotos++;
         }
       }
@@ -2763,15 +2764,14 @@ export async function computeProjectHealth(root, project, db) {
     if (!fs.existsSync(imageFull)) continue;
     const txtFull = labelFileFor(imageFull);
     const hasTxt = fs.existsSync(txtFull);
-    const claimStatus = claimsMap.get(relName);
-    const dbStatus = imagesMap.get(relName);
-
-    const isApproved = dbStatus === "approved" || claimStatus === "approved";
+    const normRel = normalizePath(relName);
+    const claimStatus = claimsMap.get(normRel) ?? claimsMap.get(relName);
+    const dbStatus = imagesMap.get(normRel) ?? imagesMap.get(relName);
+    const isIncomplete = dbStatus === "incomplete" || claimStatus === "incomplete";
+    const isApproved = (dbStatus === "approved" || claimStatus === "approved") && !isIncomplete;
     const isCompleted =
       isApproved ||
-      dbStatus === "completed" ||
-      claimStatus === "complete" ||
-      (hasTxt && claimStatus !== "incomplete");
+      (!isIncomplete && (dbStatus === "completed" || claimStatus === "complete" || hasTxt));
 
     if (isCompleted) {
       completedImages++;
@@ -3079,20 +3079,24 @@ export async function catalogue(root, project) {
         `SELECT 
           images.id, images.project_id, images.file_path, images.name, images.status, 
           images.locked_by, images.locked_at, images.completed_at, images.reviewed_by, images.reviewed_at,
-          COALESCE(images.owner, image_claims.claimed_by) AS owner
+          COALESCE(images.owner, image_claims.claimed_by) AS owner,
+          image_claims.status AS claim_status
         FROM images
-        LEFT JOIN image_claims ON image_claims.project_id = images.project_id AND image_claims.rel_path = images.file_path
+        LEFT JOIN image_claims ON image_claims.project_id = images.project_id AND (image_claims.rel_path = images.file_path OR image_claims.rel_path = REPLACE(images.file_path, '\\', '/'))
         WHERE images.project_id = ?
         ORDER BY images.id ASC`,
       )
       .all(project.id);
     const nowTime = Date.now();
     images = dbImages.map((row) => {
-      const isApproved = row.status === "approved";
+      const isIncomplete = row.status === "incomplete" || row.claim_status === "incomplete";
+      const isApproved =
+        !isIncomplete && (row.status === "approved" || row.claim_status === "approved");
+      const hasTxt = fs.existsSync(labelFileFor(resolveInside(resolvedFolder, row.file_path)));
       const isComplete =
         isApproved ||
-        row.status === "completed" ||
-        fs.existsSync(labelFileFor(resolveInside(resolvedFolder, row.file_path)));
+        (!isIncomplete &&
+          (row.status === "completed" || row.claim_status === "complete" || hasTxt));
       const lockedTime = parseUtcTime(row.locked_at);
       const isClaimed = Boolean(row.locked_by) && lockedTime > nowTime - 15 * 60 * 1000;
       const heldMinutes = isClaimed
@@ -3102,10 +3106,10 @@ export async function catalogue(root, project) {
       const activeLockedAt = isClaimed ? row.locked_at : null;
       const status = isApproved
         ? "approved"
-        : isComplete
-          ? "complete"
-          : row.status === "incomplete"
-            ? "incomplete"
+        : isIncomplete
+          ? "incomplete"
+          : isComplete
+            ? "complete"
             : "open";
       const origPath = path.join(resolvedFolder, ".originals", row.file_path);
       const isCropped = fs.existsSync(origPath);
@@ -3119,7 +3123,7 @@ export async function catalogue(root, project) {
         claimedBy: activeHolder,
         claimedAt: activeLockedAt,
         status,
-        completedAt: row.completed_at || null,
+        completedAt: isIncomplete ? null : row.completed_at || null,
         lockedBy: activeHolder,
         lockedAt: activeLockedAt,
         locked_by: row.locked_by || null,
@@ -3843,22 +3847,23 @@ async function guard(req, res, url, root, method, pathname) {
     if (method === "POST") {
       const body = await readBody(req);
       const name = typeof body.name === "string" ? body.name : "";
+      const normName = normalizePath(name);
       const imageFull = resolveInside(resolvedFolder, name);
       if (!fs.existsSync(imageFull) || !fs.statSync(imageFull).isFile()) {
         throw new HttpError(404, "Image not found");
       }
       const row = await db
         .prepare(
-          "SELECT claimed_by, claimed_at, status, completed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
+          "SELECT claimed_by, claimed_at, status, completed_at FROM image_claims WHERE project_id = ? AND (rel_path = ? OR rel_path = ?)",
         )
-        .get(project.id, name);
+        .get(project.id, normName, name);
       const action = typeof body.action === "string" ? body.action : "claim";
 
       const imgRow = await db
         .prepare(
-          "SELECT id, status, locked_by, locked_at FROM images WHERE project_id = ? AND file_path = ?",
+          "SELECT id, status, locked_by, locked_at FROM images WHERE project_id = ? AND (file_path = ? OR file_path = ?)",
         )
-        .get(project.id, name);
+        .get(project.id, normName, name);
       if (imgRow && imgRow.status === "approved" && action !== "release-incomplete") {
         throw new HttpError(
           403,
@@ -3880,6 +3885,11 @@ async function guard(req, res, url, root, method, pathname) {
         ) {
           throw new HttpError(403, `Claimed by ${activeClaimedBy}`);
         }
+        if (body.boxes !== undefined) {
+          const boxes = cleanBoxes(body.boxes);
+          const lines = boxes.map(formatBoxLine);
+          fs.writeFileSync(labelFileFor(imageFull), lines.length ? `${lines.join("\n")}\n` : "");
+        }
         await db
           .prepare(
             `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
@@ -3890,14 +3900,27 @@ async function guard(req, res, url, root, method, pathname) {
              status = 'incomplete',
              completed_at = NULL`,
           )
-          .run(project.id, name);
+          .run(project.id, normName);
+        if (normName !== name) {
+          await db
+            .prepare(
+              `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+             VALUES (?, ?, NULL, NULL, 'incomplete', NULL)
+             ON CONFLICT(project_id, rel_path) DO UPDATE SET
+               claimed_by = NULL,
+               claimed_at = NULL,
+               status = 'incomplete',
+               completed_at = NULL`,
+            )
+            .run(project.id, name);
+        }
         await db
           .prepare(
-            "UPDATE images SET status = 'incomplete', locked_by = NULL, locked_at = NULL WHERE project_id = ? AND file_path = ?",
+            "UPDATE images SET status = 'incomplete', locked_by = NULL, locked_at = NULL, completed_at = NULL WHERE project_id = ? AND (file_path = ? OR file_path = ?)",
           )
-          .run(project.id, name);
+          .run(project.id, normName, name);
         send(res, 200, {
-          name,
+          name: normName,
           claimedBy: null,
           claimedAt: null,
           status: "incomplete",
@@ -3984,17 +4007,18 @@ async function guard(req, res, url, root, method, pathname) {
     }
     if (method === "DELETE") {
       const name = url.searchParams.get("name") || "";
+      const normName = normalizePath(name);
       resolveInside(resolvedFolder, name);
       const row = await db
         .prepare(
-          "SELECT claimed_by, claimed_at FROM image_claims WHERE project_id = ? AND rel_path = ?",
+          "SELECT claimed_by, claimed_at FROM image_claims WHERE project_id = ? AND (rel_path = ? OR rel_path = ?)",
         )
-        .get(project.id, name);
+        .get(project.id, normName, name);
       const imgRow = await db
         .prepare(
-          "SELECT id, status, locked_by, locked_at FROM images WHERE project_id = ? AND file_path = ?",
+          "SELECT id, status, locked_by, locked_at FROM images WHERE project_id = ? AND (file_path = ? OR file_path = ?)",
         )
-        .get(project.id, name);
+        .get(project.id, normName, name);
       const activeClaimedBy = row?.claimed_by || imgRow?.locked_by;
       const activeClaimedAt = row?.claimed_at || imgRow?.locked_at;
       const isExpired =
@@ -4012,12 +4036,25 @@ async function guard(req, res, url, root, method, pathname) {
            status = 'incomplete',
            completed_at = NULL`,
         )
-        .run(project.id, name);
+        .run(project.id, normName);
+      if (normName !== name) {
+        await db
+          .prepare(
+            `INSERT INTO image_claims (project_id, rel_path, claimed_by, claimed_at, status, completed_at)
+           VALUES (?, ?, NULL, NULL, 'incomplete', NULL)
+           ON CONFLICT(project_id, rel_path) DO UPDATE SET
+             claimed_by = NULL,
+             claimed_at = NULL,
+             status = 'incomplete',
+             completed_at = NULL`,
+          )
+          .run(project.id, name);
+      }
       await db
         .prepare(
-          "UPDATE images SET status = 'incomplete', locked_by = NULL, locked_at = NULL WHERE project_id = ? AND file_path = ?",
+          "UPDATE images SET status = 'incomplete', locked_by = NULL, locked_at = NULL, completed_at = NULL WHERE project_id = ? AND (file_path = ? OR file_path = ?)",
         )
-        .run(project.id, name);
+        .run(project.id, normName, name);
       send(res, 200, { ok: true, status: "incomplete" });
       return true;
     }

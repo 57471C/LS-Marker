@@ -368,11 +368,19 @@ export async function saveLabel(name: string, boxes: Box[]): Promise<void> {
   await asJson(res);
 }
 
-export function createClass(ic: string, des: string): Promise<ClassRow> {
+export function createClass(
+  ic: string,
+  des: string,
+  part_type?: PartType | null,
+): Promise<ClassRow> {
   return fetch(api("/api/classes"), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ic, des }),
+    body: JSON.stringify({
+      ic,
+      des,
+      part_type: part_type && part_type !== "none" ? part_type : undefined,
+    }),
   }).then((res) => asJson<ClassRow>(res));
 }
 
@@ -538,7 +546,10 @@ export async function claimImageById(
   return asJson(res);
 }
 
-export async function releaseIncomplete(name: string): Promise<{
+export async function releaseIncomplete(
+  name: string,
+  boxes?: Box[],
+): Promise<{
   name: string;
   claimedBy: null;
   claimedAt: null;
@@ -548,7 +559,7 @@ export async function releaseIncomplete(name: string): Promise<{
   const res = await fetch(api("/api/claim"), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name, action: "release-incomplete" }),
+    body: JSON.stringify({ name, action: "release-incomplete", boxes }),
   });
   return asJson(res);
 }

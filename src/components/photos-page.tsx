@@ -22,11 +22,24 @@ import {
 } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
 import { useSession } from "@/lib/session";
+import { ColumnResizeHandle, useColumnResize } from "@/lib/use-column-resize";
 
 type OwnerFilter = "any" | "mine" | "free" | "taken";
 type StatusFilter = "any" | "open" | "incomplete" | "complete" | "approved";
 type SortField = "file" | "labels" | "owner" | "held";
 type SortDirection = "asc" | "desc";
+
+type PhotoCol = "thumb" | "file" | "status" | "owner" | "claim" | "held" | "delete";
+
+const PHOTO_COLUMNS: Record<PhotoCol, { default: number; min: number; max?: number }> = {
+  thumb: { default: 44, min: 36, max: 120 },
+  file: { default: 280, min: 100, max: 900 },
+  status: { default: 96, min: 65, max: 300 },
+  owner: { default: 110, min: 65, max: 300 },
+  claim: { default: 90, min: 60, max: 300 },
+  held: { default: 70, min: 45, max: 200 },
+  delete: { default: 44, min: 36, max: 100 },
+};
 
 const PAGE_SIZE = 50;
 
@@ -116,6 +129,12 @@ export function PhotosPage() {
   const [photoToDelete, setPhotoToDelete] = useState<ImageRow | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const {
+    widths: colWidths,
+    handleResizeStart,
+    resetWidth,
+  } = useColumnResize<PhotoCol>("ls_marker_photos_col_widths", PHOTO_COLUMNS);
 
   useEffect(() => {
     setIsAdmin(sessionAdmin);
@@ -381,190 +400,274 @@ export function PhotosPage() {
             </div>
           )}
 
-          {/* Table Header */}
-          <div className="h-6 border-b border-[#c8c8c8] bg-[#f5f5f5] flex items-center px-2 text-[11px] font-semibold text-[#707070] shrink-0 select-none">
-            <div className="w-10">Thumb</div>
-            <div className="flex-1 min-w-0 pr-2">
-              <button
-                type="button"
-                onClick={() => toggleSort("file")}
-                className="inline-flex items-center gap-1 hover:text-[#282828]"
-              >
-                <span>File Name</span>
-                {sortField === "file" ? (
-                  sortDir === "asc" ? (
-                    <ChevronUp className="size-3 text-[#1473e6]" />
-                  ) : (
-                    <ChevronDown className="size-3 text-[#1473e6]" />
-                  )
-                ) : (
-                  <ChevronsUpDown className="size-3 opacity-40" />
-                )}
-              </button>
-            </div>
-            <div className="w-24">
-              <button
-                type="button"
-                onClick={() => toggleSort("labels")}
-                className="inline-flex items-center gap-1 hover:text-[#282828]"
-              >
-                <span>Status</span>
-                {sortField === "labels" ? (
-                  sortDir === "asc" ? (
-                    <ChevronUp className="size-3 text-[#1473e6]" />
-                  ) : (
-                    <ChevronDown className="size-3 text-[#1473e6]" />
-                  )
-                ) : (
-                  <ChevronsUpDown className="size-3 opacity-40" />
-                )}
-              </button>
-            </div>
-            <div className="w-28">
-              <button
-                type="button"
-                onClick={() => toggleSort("owner")}
-                className="inline-flex items-center gap-1 hover:text-[#282828]"
-              >
-                <span>Owner</span>
-                {sortField === "owner" ? (
-                  sortDir === "asc" ? (
-                    <ChevronUp className="size-3 text-[#1473e6]" />
-                  ) : (
-                    <ChevronDown className="size-3 text-[#1473e6]" />
-                  )
-                ) : (
-                  <ChevronsUpDown className="size-3 opacity-40" />
-                )}
-              </button>
-            </div>
-            <div className="w-24">Claim</div>
-            <div className="w-16">
-              <button
-                type="button"
-                onClick={() => toggleSort("held")}
-                className="inline-flex items-center gap-1 hover:text-[#282828]"
-              >
-                <span>Held</span>
-                {sortField === "held" ? (
-                  sortDir === "asc" ? (
-                    <ChevronUp className="size-3 text-[#1473e6]" />
-                  ) : (
-                    <ChevronDown className="size-3 text-[#1473e6]" />
-                  )
-                ) : (
-                  <ChevronsUpDown className="size-3 opacity-40" />
-                )}
-              </button>
-            </div>
-            {isAdmin && <div className="w-10 text-right">Delete</div>}
-          </div>
-
-          {/* Table Rows (Scrollable Internally) */}
-          <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#f0f0f0]">
-            {shown.length === 0 ? (
-              <div className="p-4 text-center text-[#707070] text-xs">
-                {images ? "No photos match active filters." : "Loading photos..."}
-              </div>
-            ) : (
-              shown.map((image) => {
-                const isSelected = selectedPhoto?.name === image.name;
-                const activeHolder = getActiveHolder(image);
-                const isMine = Boolean(activeHolder && activeHolder === username);
-                const isTaken = Boolean(activeHolder && activeHolder !== username);
-
-                return (
-                  <div
-                    key={image.name}
-                    onClick={() => setSelectedPhoto(image)}
-                    onDoubleClick={() =>
-                      rememberAndOpen(
-                        image.name,
-                        image.status === "complete" || image.status === "approved",
-                      )
-                    }
-                    className={`flex items-center px-2 py-1 cursor-pointer transition-colors text-xs ${
-                      isSelected
-                        ? "bg-[#1473e6]/10 border-l-2 border-[#1473e6]"
-                        : "hover:bg-[#f9f9f9]"
-                    }`}
+          {/* Scrollable Table Viewport */}
+          <div className="flex-1 min-h-0 flex flex-col overflow-x-auto">
+            <div className="min-w-full w-max flex-1 min-h-0 flex flex-col">
+              {/* Table Header */}
+              <div className="h-6 border-b border-[#c8c8c8] bg-[#f5f5f5] flex items-center px-2 text-[11px] font-semibold text-[#707070] shrink-0 select-none">
+                <div
+                  className="relative shrink-0 flex items-center pr-2"
+                  style={{ width: colWidths.thumb }}
+                >
+                  <span className="truncate">Thumb</span>
+                  <ColumnResizeHandle
+                    column="thumb"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                <div
+                  className="relative shrink-0 flex items-center pr-2 min-w-0"
+                  style={{ width: colWidths.file }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("file")}
+                    className="inline-flex items-center gap-1 hover:text-[#282828] truncate"
                   >
-                    {/* Thumbnail */}
-                    <div className="w-10 shrink-0">
-                      <img
-                        src={imageSrc(image.name)}
-                        alt=""
-                        loading="lazy"
-                        className="size-7 rounded-[1px] object-cover bg-black/10 border border-[#c8c8c8]"
-                      />
-                    </div>
-
-                    {/* File Name */}
-                    <div className="flex-1 min-w-0 pr-2">
-                      <span className="font-mono text-[11px] text-[#282828] truncate block">
-                        {image.name}
-                      </span>
-                    </div>
-
-                    {/* Status Badge */}
-                    <div className="w-24 shrink-0">
-                      <StatusBadge status={image.status} />
-                    </div>
-
-                    {/* Owner */}
-                    <div className="w-28 shrink-0 font-mono text-[11px] text-[#707070] truncate">
-                      {image.owner ?? "—"}
-                    </div>
-
-                    {/* Claim */}
-                    <div className="w-24 shrink-0">
-                      {image.status === "approved" ? (
-                        <span className="text-[#707070] text-[10px]">Locked</span>
-                      ) : isMine ? (
-                        <span className="text-blue-700 bg-blue-50 border border-blue-200 px-1 rounded-[2px] text-[10px] font-bold">
-                          Mine
-                        </span>
-                      ) : isTaken ? (
-                        <span className="text-amber-800 bg-amber-50 border border-amber-200 px-1 rounded-[2px] text-[10px]">
-                          {activeHolder}
-                        </span>
+                    <span>File Name</span>
+                    {sortField === "file" ? (
+                      sortDir === "asc" ? (
+                        <ChevronUp className="size-3 text-[#1473e6] shrink-0" />
                       ) : (
-                        <span className="text-[#707070] bg-neutral-100 px-1 rounded-[2px] text-[10px]">
-                          Free
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Held Minutes */}
-                    <div className="w-16 shrink-0 font-mono text-[11px] text-[#707070]">
-                      {image.status === "approved"
-                        ? "—"
-                        : activeHolder
-                          ? `${getHeldMinutesRemaining(image)}m`
-                          : "—"}
-                    </div>
-
-                    {/* Delete Action (Admin only) */}
-                    {isAdmin && (
-                      <div className="w-10 shrink-0 text-right">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setPhotoToDelete(image);
-                            setDeleteError(null);
-                          }}
-                          className="press size-6 inline-flex items-center justify-center rounded-[2px] text-[#707070] hover:text-red-600 hover:bg-[#f0f0f0]"
-                          title="Delete photo"
-                        >
-                          <Trash2 className="size-3.5" />
-                        </button>
-                      </div>
+                        <ChevronDown className="size-3 text-[#1473e6] shrink-0" />
+                      )
+                    ) : (
+                      <ChevronsUpDown className="size-3 opacity-40 shrink-0" />
                     )}
+                  </button>
+                  <ColumnResizeHandle
+                    column="file"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                <div
+                  className="relative shrink-0 flex items-center pr-2 min-w-0"
+                  style={{ width: colWidths.status }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("labels")}
+                    className="inline-flex items-center gap-1 hover:text-[#282828] truncate"
+                  >
+                    <span>Status</span>
+                    {sortField === "labels" ? (
+                      sortDir === "asc" ? (
+                        <ChevronUp className="size-3 text-[#1473e6] shrink-0" />
+                      ) : (
+                        <ChevronDown className="size-3 text-[#1473e6] shrink-0" />
+                      )
+                    ) : (
+                      <ChevronsUpDown className="size-3 opacity-40 shrink-0" />
+                    )}
+                  </button>
+                  <ColumnResizeHandle
+                    column="status"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                <div
+                  className="relative shrink-0 flex items-center pr-2 min-w-0"
+                  style={{ width: colWidths.owner }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("owner")}
+                    className="inline-flex items-center gap-1 hover:text-[#282828] truncate"
+                  >
+                    <span>Owner</span>
+                    {sortField === "owner" ? (
+                      sortDir === "asc" ? (
+                        <ChevronUp className="size-3 text-[#1473e6] shrink-0" />
+                      ) : (
+                        <ChevronDown className="size-3 text-[#1473e6] shrink-0" />
+                      )
+                    ) : (
+                      <ChevronsUpDown className="size-3 opacity-40 shrink-0" />
+                    )}
+                  </button>
+                  <ColumnResizeHandle
+                    column="owner"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                <div
+                  className="relative shrink-0 flex items-center pr-2 min-w-0"
+                  style={{ width: colWidths.claim }}
+                >
+                  <span className="truncate">Claim</span>
+                  <ColumnResizeHandle
+                    column="claim"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                <div
+                  className="relative shrink-0 flex items-center pr-2 min-w-0"
+                  style={{ width: colWidths.held }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("held")}
+                    className="inline-flex items-center gap-1 hover:text-[#282828] truncate"
+                  >
+                    <span>Held</span>
+                    {sortField === "held" ? (
+                      sortDir === "asc" ? (
+                        <ChevronUp className="size-3 text-[#1473e6] shrink-0" />
+                      ) : (
+                        <ChevronDown className="size-3 text-[#1473e6] shrink-0" />
+                      )
+                    ) : (
+                      <ChevronsUpDown className="size-3 opacity-40 shrink-0" />
+                    )}
+                  </button>
+                  <ColumnResizeHandle
+                    column="held"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                {isAdmin && (
+                  <div
+                    className="relative shrink-0 flex items-center justify-end pr-2 min-w-0"
+                    style={{ width: colWidths.delete }}
+                  >
+                    <span className="truncate">Delete</span>
+                    <ColumnResizeHandle
+                      column="delete"
+                      onResizeStart={handleResizeStart}
+                      onReset={resetWidth}
+                    />
                   </div>
-                );
-              })
-            )}
+                )}
+                <div className="flex-1 min-w-0" />
+              </div>
+
+              {/* Table Rows (Scrollable Internally) */}
+              <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#f0f0f0]">
+                {shown.length === 0 ? (
+                  <div className="p-4 text-center text-[#707070] text-xs">
+                    {images ? "No photos match active filters." : "Loading photos..."}
+                  </div>
+                ) : (
+                  shown.map((image) => {
+                    const isSelected = selectedPhoto?.name === image.name;
+                    const activeHolder = getActiveHolder(image);
+                    const isMine = Boolean(activeHolder && activeHolder === username);
+                    const isTaken = Boolean(activeHolder && activeHolder !== username);
+
+                    return (
+                      <div
+                        key={image.name}
+                        onClick={() => setSelectedPhoto(image)}
+                        onDoubleClick={() =>
+                          rememberAndOpen(
+                            image.name,
+                            image.status === "complete" || image.status === "approved",
+                          )
+                        }
+                        className={`flex items-center px-2 py-1 cursor-pointer transition-colors text-xs border-l-2 ${
+                          isSelected
+                            ? "bg-[#1473e6]/10 border-[#1473e6]"
+                            : "border-transparent hover:bg-[#f9f9f9]"
+                        }`}
+                      >
+                        {/* Thumbnail */}
+                        <div
+                          className="shrink-0 pr-2 flex items-center"
+                          style={{ width: colWidths.thumb }}
+                        >
+                          <img
+                            src={imageSrc(image.name)}
+                            alt=""
+                            loading="lazy"
+                            className="size-7 rounded-[1px] object-cover bg-black/10 border border-[#c8c8c8]"
+                          />
+                        </div>
+
+                        {/* File Name */}
+                        <div className="shrink-0 pr-2 min-w-0" style={{ width: colWidths.file }}>
+                          <span className="font-mono text-[11px] text-[#282828] truncate block">
+                            {image.name}
+                          </span>
+                        </div>
+
+                        {/* Status Badge */}
+                        <div className="shrink-0 pr-2 min-w-0" style={{ width: colWidths.status }}>
+                          <StatusBadge status={image.status} />
+                        </div>
+
+                        {/* Owner */}
+                        <div
+                          className="shrink-0 pr-2 min-w-0 font-mono text-[11px] text-[#707070] truncate"
+                          style={{ width: colWidths.owner }}
+                        >
+                          {image.owner ?? "—"}
+                        </div>
+
+                        {/* Claim */}
+                        <div className="shrink-0 pr-2 min-w-0" style={{ width: colWidths.claim }}>
+                          {image.status === "approved" ? (
+                            <span className="text-[#707070] text-[10px]">Locked</span>
+                          ) : isMine ? (
+                            <span className="text-blue-700 bg-blue-50 border border-blue-200 px-1 rounded-[2px] text-[10px] font-bold">
+                              Mine
+                            </span>
+                          ) : isTaken ? (
+                            <span className="text-amber-800 bg-amber-50 border border-amber-200 px-1 rounded-[2px] text-[10px]">
+                              {activeHolder}
+                            </span>
+                          ) : (
+                            <span className="text-[#707070] bg-neutral-100 px-1 rounded-[2px] text-[10px]">
+                              Free
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Held Minutes */}
+                        <div
+                          className="shrink-0 pr-2 min-w-0 font-mono text-[11px] text-[#707070]"
+                          style={{ width: colWidths.held }}
+                        >
+                          {image.status === "approved"
+                            ? "—"
+                            : activeHolder
+                              ? `${getHeldMinutesRemaining(image)}m`
+                              : "—"}
+                        </div>
+
+                        {/* Delete Action (Admin only) */}
+                        {isAdmin && (
+                          <div
+                            className="shrink-0 pr-2 text-right"
+                            style={{ width: colWidths.delete }}
+                          >
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPhotoToDelete(image);
+                                setDeleteError(null);
+                              }}
+                              className="press size-6 inline-flex items-center justify-center rounded-[2px] text-[#707070] hover:text-red-600 hover:bg-[#f0f0f0]"
+                              title="Delete photo"
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="flex-1 min-w-0" />
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Bottom Pagination Bar */}

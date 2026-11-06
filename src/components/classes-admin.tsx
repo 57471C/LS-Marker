@@ -4,6 +4,7 @@ import { AppHeader } from "@/components/app-header";
 import { DatasetHealthModal } from "@/components/dataset-health-modal";
 import { DuplicateCleanupModal } from "@/components/duplicate-cleanup-modal";
 import { classFill } from "@/lib/class-color";
+import { ColumnResizeHandle, useColumnResize } from "@/lib/use-column-resize";
 import {
   createClass,
   deleteClass,
@@ -26,6 +27,17 @@ export const PART_TYPE_OPTIONS: { value: PartType; label: string }[] = [
   { value: "spring", label: "Spring" },
   { value: "other", label: "Other (custom)" },
 ];
+
+type ClassCol = "id" | "color" | "code" | "des" | "dims" | "status";
+
+const CLASS_COLUMNS: Record<ClassCol, { default: number; min: number; max?: number }> = {
+  id: { default: 52, min: 36, max: 120 },
+  color: { default: 42, min: 30, max: 100 },
+  code: { default: 130, min: 70, max: 400 },
+  des: { default: 280, min: 100, max: 900 },
+  dims: { default: 180, min: 90, max: 500 },
+  status: { default: 80, min: 60, max: 200 },
+};
 
 export function formatPartSummary(row: ClassRow): string | null {
   const pt = row.part_type;
@@ -384,6 +396,7 @@ export function ClassesAdmin() {
   const [showAddClass, setShowAddClass] = useState(false);
   const [newIc, setNewIc] = useState("");
   const [newDes, setNewDes] = useState("");
+  const [newPartType, setNewPartType] = useState<PartType>("none");
 
   const [busy, setBusy] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
@@ -394,6 +407,18 @@ export function ClassesAdmin() {
   const [duplicatesResult, setDuplicatesResult] = useState<DuplicateDetectionResult | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const newIcInputRef = useRef<HTMLInputElement>(null);
+  const activeRowRef = useRef<HTMLDivElement>(null);
+  const partTypeSelectRef = useRef<HTMLSelectElement>(null);
+  const dim1InputRef = useRef<HTMLInputElement>(null);
+  const dim1NameInputRef = useRef<HTMLInputElement>(null);
+  const focusDimensionsPendingRef = useRef(false);
+
+  const {
+    widths: colWidths,
+    handleResizeStart,
+    resetWidth,
+  } = useColumnResize<ClassCol>("ls_marker_classes_col_widths", CLASS_COLUMNS);
 
   async function load() {
     const data = await fetchCatalogue();
@@ -453,6 +478,43 @@ export function ClassesAdmin() {
     }
   }, [filtered, selectedClassId]);
 
+  // Scroll active row into view
+  useEffect(() => {
+    if (selectedClassId != null && activeRowRef.current) {
+      activeRowRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [selectedClassId]);
+
+  // Focus IC input when quick add drawer opens
+  useEffect(() => {
+    if (showAddClass) {
+      const timer = setTimeout(() => {
+        newIcInputRef.current?.focus();
+        newIcInputRef.current?.select();
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [showAddClass]);
+
+  // Focus right panel dimensions after saving a newly added class
+  useEffect(() => {
+    if (focusDimensionsPendingRef.current && selectedClass) {
+      focusDimensionsPendingRef.current = false;
+      const timer = setTimeout(() => {
+        if (dim1InputRef.current) {
+          dim1InputRef.current.focus();
+          dim1InputRef.current.select();
+        } else if (dim1NameInputRef.current) {
+          dim1NameInputRef.current.focus();
+          dim1NameInputRef.current.select();
+        } else if (partTypeSelectRef.current) {
+          partTypeSelectRef.current.focus();
+        }
+      }, 60);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedClass]);
+
   function parseOptionalMm(val: string): number | null {
     const trimmed = val.trim();
     if (!trimmed) return null;
@@ -466,11 +528,14 @@ export function ClassesAdmin() {
     setBusy(true);
     setError(null);
     try {
-      const created = await createClass(newIc.trim(), newDes.trim());
+      const created = await createClass(newIc.trim(), newDes.trim(), newPartType);
+      focusDimensionsPendingRef.current = true;
       await load();
+      setQuery("");
       setSelectedClassId(created.id);
       setNewIc("");
       setNewDes("");
+      setNewPartType("none");
       setShowAddClass(false);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to create class");
@@ -478,6 +543,13 @@ export function ClassesAdmin() {
       setBusy(false);
     }
   }
+
+  const handleDimensionKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void handleSaveSelectedClass();
+    }
+  };
 
   async function handleSaveSelectedClass() {
     if (!selectedClass) return;
@@ -586,15 +658,20 @@ export function ClassesAdmin() {
           {/* Add Class Toggle */}
           <button
             type="button"
-            onClick={() => setShowAddClass((v) => !v)}
-            className={`press h-5 px-2 rounded-[2px] border text-[11px] font-medium flex items-center gap-1 ${
-              showAddClass
-                ? "bg-[#1473e6] text-white border-[#1473e6]"
-                : "bg-white text-[#282828] border-[#c8c8c8] hover:bg-[#f0f0f0]"
-            }`}
+            onClick={() => {
+              setShowAddClass((v) => {
+                const next = !v;
+                if (next) {
+                  setTimeout(() => newIcInputRef.current?.focus(), 50);
+                }
+                return next;
+              });
+            }}
+            className="press h-5 px-2 rounded-[2px] bg-[#1473e6] hover:bg-[#0d62c7] text-white border border-[#1473e6] text-[11px] font-semibold flex items-center gap-1 shadow-sm"
+            title="Add a new class"
           >
-            <Plus className="size-3" />
-            <span>Add Class</span>
+            <Plus className="size-3 stroke-[2.5]" />
+            <span>+ Add Class</span>
           </button>
 
           {/* Import CSV Trigger */}
@@ -656,6 +733,7 @@ export function ClassesAdmin() {
         >
           <span className="font-semibold text-[11px] text-[#282828]">New Class:</span>
           <input
+            ref={newIcInputRef}
             type="text"
             placeholder="Item code (e.g. HX-M8)"
             value={newIc}
@@ -671,10 +749,22 @@ export function ClassesAdmin() {
             required
             className="h-5 flex-1 max-w-sm px-1.5 rounded-[2px] border border-[#c8c8c8] bg-white text-[11px] outline-none focus:border-[#1473e6]"
           />
+          <select
+            value={newPartType}
+            onChange={(e) => setNewPartType(e.target.value as PartType)}
+            className="h-5 rounded-[2px] border border-[#c8c8c8] bg-white text-[11px] px-1 outline-none focus:border-[#1473e6] text-[#282828]"
+            title="Part Type"
+          >
+            {PART_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
           <button
             type="submit"
             disabled={busy}
-            className="press h-5 px-2 rounded-[2px] bg-[#1473e6] text-white text-[11px] font-medium hover:bg-[#0d62c7]"
+            className="press h-5 px-2 rounded-[2px] bg-[#1473e6] text-white text-[11px] font-medium hover:bg-[#0d62c7] disabled:opacity-50"
           >
             Save Class
           </button>
@@ -702,87 +792,171 @@ export function ClassesAdmin() {
       <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
         {/* Left: Dense Tabular List */}
         <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-white overflow-hidden">
-          {/* Table Header */}
-          <div className="h-6 border-b border-[#c8c8c8] bg-[#f5f5f5] flex items-center px-2 text-[11px] font-semibold text-[#707070] shrink-0 select-none">
-            <div className="w-12">ID</div>
-            <div className="w-8">Color</div>
-            <div className="w-32">Code</div>
-            <div className="flex-1 min-w-0 pr-2">Description</div>
-            <div className="w-44">Dimensions</div>
-            <div className="w-20">Status</div>
-          </div>
-
-          {/* Table Body (Scrollable Internally) */}
-          <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#f0f0f0]">
-            {filtered.length === 0 ? (
-              <div className="p-4 text-center text-[#707070] text-xs">
-                {classes ? "No classes match active search." : "Loading classes..."}
+          {/* Scrollable Table Viewport */}
+          <div className="flex-1 min-h-0 flex flex-col overflow-x-auto">
+            <div className="min-w-full w-max flex-1 min-h-0 flex flex-col">
+              {/* Table Header */}
+              <div className="h-6 border-b border-[#c8c8c8] bg-[#f5f5f5] flex items-center px-2 text-[11px] font-semibold text-[#707070] shrink-0 select-none">
+                <div
+                  className="relative shrink-0 flex items-center pr-2"
+                  style={{ width: colWidths.id }}
+                >
+                  <span className="truncate">ID</span>
+                  <ColumnResizeHandle
+                    column="id"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                <div
+                  className="relative shrink-0 flex items-center pr-2"
+                  style={{ width: colWidths.color }}
+                >
+                  <span className="truncate">Color</span>
+                  <ColumnResizeHandle
+                    column="color"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                <div
+                  className="relative shrink-0 flex items-center pr-2 min-w-0"
+                  style={{ width: colWidths.code }}
+                >
+                  <span className="truncate">Code</span>
+                  <ColumnResizeHandle
+                    column="code"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                <div
+                  className="relative shrink-0 flex items-center pr-2 min-w-0"
+                  style={{ width: colWidths.des }}
+                >
+                  <span className="truncate">Description</span>
+                  <ColumnResizeHandle
+                    column="des"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                <div
+                  className="relative shrink-0 flex items-center pr-2 min-w-0"
+                  style={{ width: colWidths.dims }}
+                >
+                  <span className="truncate">Dimensions</span>
+                  <ColumnResizeHandle
+                    column="dims"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                <div
+                  className="relative shrink-0 flex items-center pr-2 min-w-0"
+                  style={{ width: colWidths.status }}
+                >
+                  <span className="truncate">Status</span>
+                  <ColumnResizeHandle
+                    column="status"
+                    onResizeStart={handleResizeStart}
+                    onReset={resetWidth}
+                  />
+                </div>
+                <div className="flex-1 min-w-0" />
               </div>
-            ) : (
-              filtered.map((row) => {
-                const isSelected = selectedClassId === row.id;
-                const complete = hasCompleteMeasurements(row);
-                const hasPartType = row.part_type && row.part_type !== "none";
-                const summary = formatPartSummary(row);
 
-                return (
-                  <div
-                    key={row.id}
-                    onClick={() => setSelectedClassId(row.id)}
-                    className={`flex items-center px-2 py-1 cursor-pointer transition-colors text-xs ${
-                      isSelected
-                        ? "bg-[#1473e6]/10 border-l-2 border-[#1473e6]"
-                        : "hover:bg-[#f9f9f9]"
-                    }`}
-                  >
-                    {/* Numeric ID */}
-                    <div className="w-12 shrink-0 font-mono text-[10px] text-[#707070]">
-                      #{row.id}
-                    </div>
-
-                    {/* Color Swatch */}
-                    <div className="w-8 shrink-0">
-                      <span
-                        className="size-2.5 rounded-[1px] inline-block border border-black/15"
-                        style={{ backgroundColor: classFill(row.id, row.color) }}
-                      />
-                    </div>
-
-                    {/* Code */}
-                    <div className="w-32 shrink-0 font-bold font-mono text-[11px] text-[#282828] truncate pr-1">
-                      {row.ic}
-                    </div>
-
-                    {/* Description */}
-                    <div className="flex-1 min-w-0 pr-2 text-[#707070] truncate text-[11px]">
-                      {row.des}
-                    </div>
-
-                    {/* Dimensions Summary */}
-                    <div className="w-44 shrink-0 font-mono text-[10px] text-[#707070] truncate">
-                      {summary ?? "—"}
-                    </div>
-
-                    {/* Status Badge */}
-                    <div className="w-20 shrink-0">
-                      {complete ? (
-                        <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-emerald-100 text-emerald-800">
-                          complete
-                        </span>
-                      ) : hasPartType ? (
-                        <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-rose-100 text-rose-800">
-                          unset
-                        </span>
-                      ) : (
-                        <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-neutral-100 text-neutral-500">
-                          none
-                        </span>
-                      )}
-                    </div>
+              {/* Table Body (Scrollable Internally) */}
+              <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#f0f0f0]">
+                {filtered.length === 0 ? (
+                  <div className="p-4 text-center text-[#707070] text-xs">
+                    {classes ? "No classes match active search." : "Loading classes..."}
                   </div>
-                );
-              })
-            )}
+                ) : (
+                  filtered.map((row) => {
+                    const isSelected = selectedClassId === row.id;
+                    const complete = hasCompleteMeasurements(row);
+                    const hasPartType = row.part_type && row.part_type !== "none";
+                    const summary = formatPartSummary(row);
+
+                    return (
+                      <div
+                        key={row.id}
+                        ref={isSelected ? activeRowRef : undefined}
+                        onClick={() => setSelectedClassId(row.id)}
+                        className={`flex items-center px-2 py-1 cursor-pointer transition-colors text-xs border-l-2 ${
+                          isSelected
+                            ? "bg-[#1473e6]/10 border-[#1473e6]"
+                            : "border-transparent hover:bg-[#f9f9f9]"
+                        }`}
+                      >
+                        {/* Numeric ID */}
+                        <div
+                          className="shrink-0 pr-2 font-mono text-[10px] text-[#707070]"
+                          style={{ width: colWidths.id }}
+                        >
+                          #{row.id}
+                        </div>
+
+                        {/* Color Swatch */}
+                        <div
+                          className="shrink-0 pr-2 flex items-center"
+                          style={{ width: colWidths.color }}
+                        >
+                          <span
+                            className="size-2.5 rounded-[1px] inline-block border border-black/15"
+                            style={{ backgroundColor: classFill(row.id, row.color) }}
+                          />
+                        </div>
+
+                        {/* Code */}
+                        <div
+                          className="shrink-0 pr-2 font-bold font-mono text-[11px] text-[#282828] truncate min-w-0"
+                          style={{ width: colWidths.code }}
+                        >
+                          {row.ic}
+                        </div>
+
+                        {/* Description */}
+                        <div
+                          className="shrink-0 pr-2 text-[#707070] truncate text-[11px] min-w-0"
+                          style={{ width: colWidths.des }}
+                        >
+                          {row.des}
+                        </div>
+
+                        {/* Dimensions Summary */}
+                        <div
+                          className="shrink-0 pr-2 font-mono text-[10px] text-[#707070] truncate min-w-0"
+                          style={{ width: colWidths.dims }}
+                        >
+                          {summary ?? "—"}
+                        </div>
+
+                        {/* Status Badge */}
+                        <div className="shrink-0 pr-2 min-w-0" style={{ width: colWidths.status }}>
+                          {complete ? (
+                            <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-emerald-100 text-emerald-800">
+                              complete
+                            </span>
+                          ) : hasPartType ? (
+                            <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-rose-100 text-rose-800">
+                              unset
+                            </span>
+                          ) : (
+                            <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-neutral-100 text-neutral-500">
+                              none
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0" />
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -826,6 +1000,7 @@ export function ClassesAdmin() {
                     type="text"
                     value={editIc}
                     onChange={(e) => setEditIc(e.target.value)}
+                    onKeyDown={handleDimensionKeyDown}
                     className="w-full h-6 px-1.5 rounded-[2px] border border-[#c8c8c8] bg-white text-[11px] font-mono"
                   />
                 </div>
@@ -838,6 +1013,7 @@ export function ClassesAdmin() {
                     type="text"
                     value={editDes}
                     onChange={(e) => setEditDes(e.target.value)}
+                    onKeyDown={handleDimensionKeyDown}
                     className="w-full h-6 px-1.5 rounded-[2px] border border-[#c8c8c8] bg-white text-[11px]"
                   />
                 </div>
@@ -865,12 +1041,14 @@ export function ClassesAdmin() {
                 </div>
 
                 <select
+                  ref={partTypeSelectRef}
                   value={editPartType}
                   onChange={(e) => {
                     const pt = e.target.value as PartType;
                     setEditPartType(pt);
                     if (pt === "none") setShowDiagramHelp(false);
                   }}
+                  onKeyDown={handleDimensionKeyDown}
                   className="w-full h-6 rounded-[2px] border border-[#c8c8c8] bg-white text-[11px] px-1"
                 >
                   {PART_TYPE_OPTIONS.map((opt) => (
@@ -895,11 +1073,13 @@ export function ClassesAdmin() {
                         Length under head (mm)
                       </label>
                       <input
+                        ref={dim1InputRef}
                         type="number"
                         step="any"
                         placeholder="40"
                         value={editDim1Mm}
                         onChange={(e) => setEditDim1Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -911,6 +1091,7 @@ export function ClassesAdmin() {
                         placeholder="8"
                         value={editDim2Mm}
                         onChange={(e) => setEditDim2Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -924,11 +1105,13 @@ export function ClassesAdmin() {
                         Across flats A/F (mm)
                       </label>
                       <input
+                        ref={dim1InputRef}
                         type="number"
                         step="any"
                         placeholder="13"
                         value={editDim1Mm}
                         onChange={(e) => setEditDim1Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -940,6 +1123,7 @@ export function ClassesAdmin() {
                         placeholder="6.5"
                         value={editDim2Mm}
                         onChange={(e) => setEditDim2Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -951,11 +1135,13 @@ export function ClassesAdmin() {
                     <div>
                       <label className="text-[9px] text-[#707070] block">Outer Ø (mm)</label>
                       <input
+                        ref={dim1InputRef}
                         type="number"
                         step="any"
                         placeholder="16"
                         value={editDim1Mm}
                         onChange={(e) => setEditDim1Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -967,6 +1153,7 @@ export function ClassesAdmin() {
                         placeholder="8.4"
                         value={editDim2Mm}
                         onChange={(e) => setEditDim2Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -978,6 +1165,7 @@ export function ClassesAdmin() {
                         placeholder="1.6"
                         value={editDim3Mm}
                         onChange={(e) => setEditDim3Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -989,11 +1177,13 @@ export function ClassesAdmin() {
                     <div>
                       <label className="text-[9px] text-[#707070] block">Length (mm)</label>
                       <input
+                        ref={dim1InputRef}
                         type="number"
                         step="any"
                         placeholder="200"
                         value={editDim1Mm}
                         onChange={(e) => setEditDim1Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -1005,6 +1195,7 @@ export function ClassesAdmin() {
                         placeholder="4.8"
                         value={editDim2Mm}
                         onChange={(e) => setEditDim2Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -1016,11 +1207,13 @@ export function ClassesAdmin() {
                     <div>
                       <label className="text-[9px] text-[#707070] block">Height (mm)</label>
                       <input
+                        ref={dim1InputRef}
                         type="number"
                         step="any"
                         placeholder="35"
                         value={editDim1Mm}
                         onChange={(e) => setEditDim1Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -1032,6 +1225,7 @@ export function ClassesAdmin() {
                         placeholder="12"
                         value={editDim2Mm}
                         onChange={(e) => setEditDim2Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -1042,18 +1236,22 @@ export function ClassesAdmin() {
                   <div className="flex flex-col gap-1.5">
                     <div className="flex gap-1">
                       <input
+                        ref={dim1NameInputRef}
                         type="text"
                         placeholder="Dim 1 name"
                         value={editDim1Name}
                         onChange={(e) => setEditDim1Name(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
                       />
                       <input
+                        ref={dim1InputRef}
                         type="number"
                         step="any"
                         placeholder="mm"
                         value={editDim1Mm}
                         onChange={(e) => setEditDim1Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -1063,6 +1261,7 @@ export function ClassesAdmin() {
                         placeholder="Dim 2 name"
                         value={editDim2Name}
                         onChange={(e) => setEditDim2Name(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
                       />
                       <input
@@ -1071,6 +1270,7 @@ export function ClassesAdmin() {
                         placeholder="mm"
                         value={editDim2Mm}
                         onChange={(e) => setEditDim2Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
@@ -1080,6 +1280,7 @@ export function ClassesAdmin() {
                         placeholder="Dim 3 name"
                         value={editDim3Name}
                         onChange={(e) => setEditDim3Name(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
                       />
                       <input
@@ -1088,6 +1289,7 @@ export function ClassesAdmin() {
                         placeholder="mm"
                         value={editDim3Mm}
                         onChange={(e) => setEditDim3Mm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
                         className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>

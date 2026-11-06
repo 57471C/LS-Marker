@@ -1457,7 +1457,8 @@ export function Labeler() {
     if (!current) return;
     setBusy(true);
     try {
-      const res = await releaseIncomplete(current.name);
+      const res = await releaseIncomplete(current.name, toApiBoxes(boxes));
+      setSaved(serialize(boxes));
       await refreshClaims((image) => ({
         ...image,
         claimedBy: null,
@@ -1468,8 +1469,10 @@ export function Labeler() {
         held_by: null,
         held_minutes_remaining: 0,
         status: res.status,
+        labelled: false,
         completedAt: null,
       }));
+      setConfirmTakeover(false);
       setStatus("Released as incomplete");
       setError(null);
     } catch (err: unknown) {
