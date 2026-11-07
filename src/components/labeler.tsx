@@ -639,16 +639,20 @@ export function Labeler() {
   }, [isReviewMode, projectId]);
 
   const tokens = useMemo(() => parseCodes(codeList), [codeList]);
-  const picks = useMemo(() => {
+  // ⚡ Bolt Optimization:
+  // Combined unknownCodes and picks into a single O(n) pass inside a useMemo.
+  // Expected Impact: Eliminates O(n * m) nested iteration on every render cycle when codeList changes.
+  const { picks, unknownCodes } = useMemo(() => {
     const byIc = new Map(classes.map((row) => [row.ic.trim().toLowerCase(), row]));
-    return tokens.flatMap((token) => {
+    const p: typeof classes = [];
+    const u: string[] = [];
+    for (const token of tokens) {
       const row = byIc.get(token.toLowerCase());
-      return row ? [row] : [];
-    });
+      if (row) p.push(row);
+      else u.push(token);
+    }
+    return { picks: p, unknownCodes: u };
   }, [classes, tokens]);
-  const unknownCodes = tokens.filter(
-    (token) => !picks.some((row) => row.ic.trim().toLowerCase() === token.toLowerCase()),
-  );
   const drawnClassKey = useMemo(() => {
     const ids = new Set<number>();
     for (const box of boxes) ids.add(box.classId);
