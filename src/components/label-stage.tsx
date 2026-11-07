@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { Check, Loader2, RotateCcw, Scissors, X } from "lucide-react";
 import { inkOn } from "@/lib/class-color";
 import {
@@ -211,6 +211,389 @@ function clampView(view: View, fit: Fit, frame: FrameSize): View {
   };
 }
 
+export interface StaticAnnotationsLayerProps {
+  boxes: StageBox[];
+  selectedKey: string | null;
+  activeKey: string | null;
+  colorFor: (classId: number) => string;
+  labelFor: (classId: number) => string;
+  renderMode: "outline" | "filled";
+  readOnly?: boolean;
+  hiddenKeys?: ReadonlySet<string>;
+  spaceMode: "off" | "ready" | "dragging";
+  zoom: number;
+}
+
+export const StaticAnnotationsLayer = memo(
+  function StaticAnnotationsLayer({
+    boxes,
+    selectedKey,
+    activeKey,
+    colorFor,
+    labelFor,
+    renderMode,
+    readOnly,
+    hiddenKeys,
+    spaceMode,
+    zoom,
+  }: StaticAnnotationsLayerProps) {
+    return (
+      <>
+        {/* SVG layer for static polygons */}
+        <svg
+          className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+          viewBox="0 0 1000 1000"
+          preserveAspectRatio="none"
+        >
+          {boxes.map((box) => {
+            if (box.key === activeKey) return null;
+            if (hiddenKeys?.has(box.key) || !box.points || box.points.length < 3) return null;
+            const selected = box.key === selectedKey;
+            const color = colorFor(box.classId);
+            const isFilled = renderMode === "filled";
+            return (
+              <g key={box.key}>
+                {!isFilled ? (
+                  <polygon
+                    points={box.points.map(([px, py]) => `${px * 1000},${py * 1000}`).join(" ")}
+                    fill="none"
+                    stroke="#000000"
+                    strokeOpacity={0.75}
+                    strokeWidth={selected ? 3 : 2.5}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ) : null}
+                <polygon
+                  data-box={box.key}
+                  points={box.points.map(([px, py]) => `${px * 1000},${py * 1000}`).join(" ")}
+                  fill={isFilled ? color : "transparent"}
+                  fillOpacity={isFilled ? (selected ? 0.35 : 0.22) : 0}
+                  stroke={selected ? "#1473e6" : color}
+                  strokeWidth={isFilled ? 1 : 1.5}
+                  vectorEffect="non-scaling-stroke"
+                  className={`pointer-events-auto ${spaceMode === "off" && !readOnly ? "cursor-move" : ""}`}
+                />
+                {selected && !readOnly
+                  ? box.points.map(([px, py], vIdx) => (
+                      <circle
+                        key={`${box.key}-v-${px}-${py}`}
+                        data-box={box.key}
+                        data-vertex={vIdx}
+                        cx={px * 1000}
+                        cy={py * 1000}
+                        r={(isFilled ? 5 : 2.7) / zoom}
+                        className="pointer-events-auto cursor-crosshair"
+                        fill={isFilled ? "transparent" : "#ffffff"}
+                        fillOpacity={isFilled ? 0 : 0.75}
+                        stroke={isFilled ? "transparent" : "#1473e6"}
+                        strokeWidth={1.2}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    ))
+                  : null}
+              </g>
+            );
+          })}
+        </svg>
+
+        {/* HTML marks for static boxes and labels */}
+        {boxes.map((box) => {
+          if (box.key === activeKey) return null;
+          if (hiddenKeys?.has(box.key)) return null;
+          const selected = box.key === selectedKey;
+          const color = colorFor(box.classId);
+          const isPolygon = Boolean(box.points && box.points.length >= 3);
+          const isFilled = renderMode === "filled";
+          const isTop = box.y - box.h / 2 < 0.04;
+
+          if (isPolygon) {
+            return (
+              <div
+                key={`label-${box.key}`}
+                data-box={box.key}
+                className="pointer-events-none absolute z-20"
+                style={{
+                  left: `${(box.x - box.w / 2) * 100}%`,
+                  top: `${(box.y - box.h / 2) * 100}%`,
+                }}
+              >
+                <span
+                  className={`absolute whitespace-nowrap rounded-xs px-1.5 py-0.5 font-mono text-xs shadow-xs ${
+                    isTop ? "top-0 left-0" : "bottom-full left-0 mb-1"
+                  }`}
+                  style={{ background: color, color: inkOn(color) }}
+                >
+                  {labelFor(box.classId)}
+                </span>
+              </div>
+            );
+          }
+
+          return (
+            <div
+              key={box.key}
+              data-box={box.key}
+              className={`box-mark absolute rounded-none ${spaceMode === "off" && !readOnly ? "cursor-move" : ""} ${selected ? "is-selected z-10" : "z-0"}`}
+              style={{
+                ...styleOf(box),
+                borderWidth: isFilled ? 1 : 1.5,
+                borderStyle: "solid",
+                borderColor: selected ? "#1473e6" : color,
+                backgroundColor: isFilled ? `${color}38` : "transparent",
+                boxShadow: isFilled
+                  ? "none"
+                  : selected
+                    ? "0 0 0 1px #ffffff, 0 0 0 2.5px #1473e6"
+                    : "0 0 0 1px rgba(0, 0, 0, 0.75)",
+                borderRadius: 0,
+              }}
+            >
+              <span
+                className={`pointer-events-none absolute whitespace-nowrap rounded-[2px] px-1 py-0.2 font-mono text-[10px] leading-tight font-medium ${
+                  isTop ? "top-0 left-0" : "bottom-full left-0 mb-0.5"
+                }`}
+                style={{
+                  background: selected ? "#1473e6" : color,
+                  color: inkOn(selected ? "#1473e6" : color),
+                }}
+              >
+                {labelFor(box.classId)}
+              </span>
+              {selected && !readOnly
+                ? HANDLES.map((corner) => (
+                    <span
+                      key={corner}
+                      data-corner={corner}
+                      className={`absolute z-20 ${
+                        isFilled
+                          ? `h-5 w-5 opacity-0 ${
+                              corner === "nw"
+                                ? "-top-2.5 -left-2.5"
+                                : corner === "ne"
+                                  ? "-top-2.5 -right-2.5"
+                                  : corner === "sw"
+                                    ? "-bottom-2.5 -left-2.5"
+                                    : "-right-2.5 -bottom-2.5"
+                            }`
+                          : `h-3 w-3 rounded-[1px] border border-[#1473e6] bg-white shadow-xs ${
+                              corner === "nw"
+                                ? "-top-1.5 -left-1.5"
+                                : corner === "ne"
+                                  ? "-top-1.5 -right-1.5"
+                                  : corner === "sw"
+                                    ? "-bottom-1.5 -left-1.5"
+                                    : "-right-1.5 -bottom-1.5"
+                            }`
+                      } ${
+                        spaceMode !== "off"
+                          ? ""
+                          : corner === "nw" || corner === "se"
+                            ? "cursor-nwse-resize"
+                            : "cursor-nesw-resize"
+                      }`}
+                    />
+                  ))
+                : null}
+            </div>
+          );
+        })}
+      </>
+    );
+  },
+  (prev, next) => {
+    if (prev.activeKey !== next.activeKey) return false;
+    if (prev.selectedKey !== next.selectedKey) return false;
+    if (prev.renderMode !== next.renderMode) return false;
+    if (prev.readOnly !== next.readOnly) return false;
+    if (prev.spaceMode !== next.spaceMode) return false;
+    if (prev.zoom !== next.zoom) return false;
+    if (prev.hiddenKeys !== next.hiddenKeys) return false;
+    if (prev.colorFor !== next.colorFor) return false;
+    if (prev.labelFor !== next.labelFor) return false;
+    if (next.activeKey !== null) return true;
+    return prev.boxes === next.boxes;
+  },
+);
+
+export interface ActiveAnnotationLayerProps {
+  activeBox: StageBox | null;
+  draftBox: StageBox | null;
+  colorFor: (classId: number) => string;
+  labelFor: (classId: number) => string;
+  renderMode: "outline" | "filled";
+  readOnly?: boolean;
+  spaceMode: "off" | "ready" | "dragging";
+  zoom: number;
+}
+
+export function ActiveAnnotationLayer({
+  activeBox,
+  draftBox,
+  colorFor,
+  labelFor,
+  renderMode,
+  readOnly,
+  spaceMode,
+  zoom,
+}: ActiveAnnotationLayerProps) {
+  if (!activeBox && !draftBox) return null;
+
+  const isFilled = renderMode === "filled";
+
+  return (
+    <>
+      {activeBox && (
+        <>
+          {/* Active SVG polygon & vertex handles */}
+          {activeBox.points && activeBox.points.length >= 3 ? (
+            <>
+              <svg
+                className="pointer-events-none absolute inset-0 h-full w-full overflow-visible z-20"
+                viewBox="0 0 1000 1000"
+                preserveAspectRatio="none"
+              >
+                <g>
+                  {!isFilled ? (
+                    <polygon
+                      points={activeBox.points
+                        .map(([px, py]) => `${px * 1000},${py * 1000}`)
+                        .join(" ")}
+                      fill="none"
+                      stroke="#000000"
+                      strokeOpacity={0.75}
+                      strokeWidth={3}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  ) : null}
+                  <polygon
+                    data-box={activeBox.key}
+                    points={activeBox.points
+                      .map(([px, py]) => `${px * 1000},${py * 1000}`)
+                      .join(" ")}
+                    fill={isFilled ? colorFor(activeBox.classId) : "transparent"}
+                    fillOpacity={isFilled ? 0.35 : 0}
+                    stroke="#1473e6"
+                    strokeWidth={isFilled ? 1.5 : 2}
+                    vectorEffect="non-scaling-stroke"
+                    className="pointer-events-auto cursor-move"
+                  />
+                  {!readOnly &&
+                    activeBox.points.map(([px, py], vIdx) => (
+                      <circle
+                        key={`active-${activeBox.key}-v-${px}-${py}`}
+                        data-box={activeBox.key}
+                        data-vertex={vIdx}
+                        cx={px * 1000}
+                        cy={py * 1000}
+                        r={(isFilled ? 5 : 3.2) / zoom}
+                        className="pointer-events-auto cursor-crosshair"
+                        fill={isFilled ? "transparent" : "#ffffff"}
+                        fillOpacity={isFilled ? 0 : 0.9}
+                        stroke="#1473e6"
+                        strokeWidth={1.5}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    ))}
+                </g>
+              </svg>
+              {/* Dynamic polygon label and dimension badge */}
+              <div
+                data-box={activeBox.key}
+                className="pointer-events-none absolute z-30"
+                style={{
+                  left: `${(activeBox.x - activeBox.w / 2) * 100}%`,
+                  top: `${(activeBox.y - activeBox.h / 2) * 100}%`,
+                }}
+              >
+                <span
+                  className="absolute whitespace-nowrap rounded-xs px-1.5 py-0.5 font-mono text-xs shadow-xs bottom-full left-0 mb-1"
+                  style={{
+                    background: colorFor(activeBox.classId),
+                    color: inkOn(colorFor(activeBox.classId)),
+                  }}
+                >
+                  {labelFor(activeBox.classId)}
+                </span>
+              </div>
+            </>
+          ) : (
+            /* Active HTML bounding box & corner resize handles */
+            <div
+              data-box={activeBox.key}
+              className={`box-mark is-selected absolute rounded-none ${spaceMode === "off" && !readOnly ? "cursor-move" : ""} z-20`}
+              style={{
+                ...styleOf(activeBox),
+                borderWidth: isFilled ? 1.5 : 2,
+                borderStyle: "solid",
+                borderColor: "#1473e6",
+                backgroundColor: isFilled ? `${colorFor(activeBox.classId)}40` : "transparent",
+                boxShadow: "0 0 0 1px #ffffff, 0 0 0 2.5px #1473e6",
+                borderRadius: 0,
+              }}
+            >
+              <span
+                className="pointer-events-none absolute whitespace-nowrap rounded-[2px] px-1 py-0.2 font-mono text-[10px] leading-tight font-medium bottom-full left-0 mb-0.5"
+                style={{
+                  background: "#1473e6",
+                  color: inkOn("#1473e6"),
+                }}
+              >
+                {labelFor(activeBox.classId)}
+              </span>
+              {!readOnly &&
+                HANDLES.map((corner) => (
+                  <span
+                    key={corner}
+                    data-corner={corner}
+                    className={`absolute z-30 ${
+                      isFilled
+                        ? `h-5 w-5 opacity-0 ${
+                            corner === "nw"
+                              ? "-top-2.5 -left-2.5"
+                              : corner === "ne"
+                                ? "-top-2.5 -right-2.5"
+                                : corner === "sw"
+                                  ? "-bottom-2.5 -left-2.5"
+                                  : "-right-2.5 -bottom-2.5"
+                          }`
+                        : `h-3.5 w-3.5 rounded-[1px] border border-[#1473e6] bg-white shadow-xs ${
+                            corner === "nw"
+                              ? "-top-1.5 -left-1.5"
+                              : corner === "ne"
+                                ? "-top-1.5 -right-1.5"
+                                : corner === "sw"
+                                  ? "-bottom-1.5 -left-1.5"
+                                  : "-right-1.5 -bottom-1.5"
+                          }`
+                    } ${
+                      spaceMode !== "off"
+                        ? ""
+                        : corner === "nw" || corner === "se"
+                          ? "cursor-nwse-resize"
+                          : "cursor-nesw-resize"
+                    }`}
+                  />
+                ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Draft Box for active drawing */}
+      {draftBox && (
+        <div
+          className="box-mark pointer-events-none absolute z-20 border-dashed"
+          style={{
+            ...styleOf(draftBox),
+            borderWidth: isFilled ? 1.5 : 2,
+            borderColor: colorFor(draftBox.classId),
+          }}
+        />
+      )}
+    </>
+  );
+}
+
 export function LabelStage({
   src,
   alt,
@@ -270,6 +653,22 @@ export function LabelStage({
   const boxesRef = useRef(boxes);
   const dragRef = useRef<Drag | null>(null);
   boxesRef.current = boxes;
+
+  const [activeBox, setActiveBox] = useState<StageBox | null>(null);
+  const activeBoxRef = useRef<StageBox | null>(null);
+  activeBoxRef.current = activeBox;
+  const pointerCoordsRef = useRef<{ x: number; y: number } | null>(null);
+  const rafPendingRef = useRef(false);
+  const rafIdRef = useRef<number | null>(null);
+  const hasMovedRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+    };
+  }, []);
 
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [frame, setFrame] = useState({ w: 0, h: 0 });
@@ -630,8 +1029,15 @@ export function LabelStage({
       }
 
       if (event.key === "Escape") {
+        if (rafIdRef.current) {
+          cancelAnimationFrame(rafIdRef.current);
+          rafPendingRef.current = false;
+        }
         dragRef.current = null;
         setDraft(null);
+        hasMovedRef.current = false;
+        activeBoxRef.current = null;
+        setActiveBox(null);
         if (samPromptPointsRef.current.length > 0 || samDraftPolygonRef.current) {
           event.preventDefault();
           event.stopPropagation();
@@ -748,9 +1154,21 @@ export function LabelStage({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    if (rafIdRef.current) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafPendingRef.current = false;
+    }
     const drag = dragRef.current;
     dragRef.current = null;
     setDraft(null);
+
+    const wasMoved = hasMovedRef.current;
+    hasMovedRef.current = false;
+
+    const currentActive = activeBoxRef.current;
+    activeBoxRef.current = null;
+    setActiveBox(null);
+
     if (!drag) return;
     if (drag.kind === "crop") {
       setCropDraft(null);
@@ -784,15 +1202,24 @@ export function LabelStage({
       onSelect(box.key);
       return;
     }
+
+    // Only commit if the box was actively manipulated and moved
+    if (!wasMoved || !currentActive) return;
+
     onChange(
-      boxesRef.current.map((box) => ({
-        ...box,
-        x: round6(box.x),
-        y: round6(box.y),
-        w: round6(box.w),
-        h: round6(box.h),
-        points: box.points ? box.points.map(([px, py]) => [round6(px), round6(py)]) : undefined,
-      })),
+      boxesRef.current.map((box) => {
+        if (box.key !== currentActive.key) return box;
+        return {
+          ...currentActive,
+          x: round6(currentActive.x),
+          y: round6(currentActive.y),
+          w: round6(currentActive.w),
+          h: round6(currentActive.h),
+          points: currentActive.points
+            ? currentActive.points.map(([px, py]) => [round6(px), round6(py)])
+            : undefined,
+        };
+      }),
     );
   }
 
@@ -915,9 +1342,14 @@ export function LabelStage({
     ) {
       event.currentTarget.setPointerCapture(event.pointerId);
       const vIdx = Number(vertexHandle.getAttribute("data-vertex"));
+      const box = boxesRef.current.find((item) => item.key === key);
       onSelect(key);
-      onStartMarkup?.();
+      hasMovedRef.current = false;
       dragRef.current = { kind: "vertex", key, index: vIdx };
+      if (box) {
+        setActiveBox(box);
+        activeBoxRef.current = box;
+      }
       return;
     }
 
@@ -934,6 +1366,7 @@ export function LabelStage({
       const box = boxesRef.current.find((item) => item.key === key);
       if (!box) return;
       onSelect(key);
+      hasMovedRef.current = false;
       const corner = cornerHandle.getAttribute("data-corner") as Corner;
       const left = box.x - box.w / 2;
       const top = box.y - box.h / 2;
@@ -945,8 +1378,9 @@ export function LabelStage({
         sw: { x: right, y: top },
         se: { x: left, y: top },
       }[corner];
-      onStartMarkup?.();
       dragRef.current = { kind: "resize", key, anchorX: anchor.x, anchorY: anchor.y };
+      setActiveBox(box);
+      activeBoxRef.current = box;
       return;
     }
 
@@ -998,7 +1432,10 @@ export function LabelStage({
       const box = boxesRef.current.find((item) => item.key === key);
       if (!box) return;
       onSelect(key);
+      hasMovedRef.current = false;
       dragRef.current = { kind: "move", key, dx: here.x - box.x, dy: here.y - box.y };
+      setActiveBox(box);
+      activeBoxRef.current = box;
       return;
     }
 
@@ -1017,7 +1454,9 @@ export function LabelStage({
 
     // Standard box draw
     onSelect(null);
-    onStartMarkup?.();
+    hasMovedRef.current = false;
+    activeBoxRef.current = null;
+    setActiveBox(null);
     dragRef.current = {
       kind: "draw",
       classId: activeClassId,
@@ -1032,80 +1471,108 @@ export function LabelStage({
   function onPointerMove(event: PointerEvent<HTMLDivElement>) {
     const here = point(event);
     if (!here) return;
-    setCursorPos(here);
+    pointerCoordsRef.current = here;
 
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag) {
+      setCursorPos(here);
+      return;
+    }
 
-    if (drag.kind === "crop") {
-      drag.x1 = here.x;
-      drag.y1 = here.y;
-      setCropDraft({ x0: drag.x0, y0: drag.y0, x1: here.x, y1: here.y });
-      return;
-    }
-    if (drag.kind === "draw") {
-      drag.x1 = here.x;
-      drag.y1 = here.y;
-      setDraft({ x0: drag.x0, y0: drag.y0, x1: here.x, y1: here.y });
-      return;
-    }
-    if (drag.kind === "move") {
-      onStartMarkup?.();
-      onChange(
-        boxesRef.current.map((box) => {
-          if (box.key !== drag.key) return box;
-          const newX = clamp(here.x - drag.dx, box.w / 2, 1 - box.w / 2);
-          const newY = clamp(here.y - drag.dy, box.h / 2, 1 - box.h / 2);
-          const shiftX = newX - box.x;
-          const shiftY = newY - box.y;
-          return {
-            ...box,
+    if (!rafPendingRef.current) {
+      rafPendingRef.current = true;
+      rafIdRef.current = requestAnimationFrame(() => {
+        rafPendingRef.current = false;
+        const coords = pointerCoordsRef.current;
+        const currentDrag = dragRef.current;
+        if (!coords || !currentDrag) return;
+
+        setCursorPos(coords);
+
+        if (!hasMovedRef.current) {
+          hasMovedRef.current = true;
+          onStartMarkup?.();
+        }
+
+        if (currentDrag.kind === "crop") {
+          currentDrag.x1 = coords.x;
+          currentDrag.y1 = coords.y;
+          setCropDraft({ x0: currentDrag.x0, y0: currentDrag.y0, x1: coords.x, y1: coords.y });
+          return;
+        }
+
+        if (currentDrag.kind === "draw") {
+          currentDrag.x1 = coords.x;
+          currentDrag.y1 = coords.y;
+          setDraft({ x0: currentDrag.x0, y0: currentDrag.y0, x1: coords.x, y1: coords.y });
+          return;
+        }
+
+        const origBox = boxesRef.current.find((b) => b.key === currentDrag.key);
+        if (!origBox) return;
+
+        if (currentDrag.kind === "move") {
+          const newX = clamp(coords.x - currentDrag.dx, origBox.w / 2, 1 - origBox.w / 2);
+          const newY = clamp(coords.y - currentDrag.dy, origBox.h / 2, 1 - origBox.h / 2);
+          const shiftX = newX - origBox.x;
+          const shiftY = newY - origBox.y;
+          const updated: StageBox = {
+            ...origBox,
             x: newX,
             y: newY,
-            points: box.points
-              ? box.points.map(([px, py]) => [clamp(px + shiftX, 0, 1), clamp(py + shiftY, 0, 1)])
+            points: origBox.points
+              ? origBox.points.map(([px, py]) => [
+                  clamp(px + shiftX, 0, 1),
+                  clamp(py + shiftY, 0, 1),
+                ])
               : undefined,
-            samPrompts: box.samPrompts
-              ? box.samPrompts.map((p) => ({
+            samPrompts: origBox.samPrompts
+              ? origBox.samPrompts.map((p) => ({
                   ...p,
                   x: clamp(p.x + shiftX, 0, 1),
                   y: clamp(p.y + shiftY, 0, 1),
                 }))
               : undefined,
           };
-        }),
-        { transient: true },
-      );
-      return;
-    }
-    if (drag.kind === "vertex") {
-      onChange(
-        boxesRef.current.map((box) => {
-          if (box.key !== drag.key || !box.points) return box;
-          const nextPoints = box.points.map((pt, i) =>
-            i === drag.index
-              ? ([round6(clamp(here.x, 0, 1)), round6(clamp(here.y, 0, 1))] as [number, number])
+          activeBoxRef.current = updated;
+          setActiveBox(updated);
+          return;
+        }
+
+        if (currentDrag.kind === "vertex") {
+          if (!origBox.points) return;
+          const nextPoints = origBox.points.map((pt, i) =>
+            i === currentDrag.index
+              ? ([round6(clamp(coords.x, 0, 1)), round6(clamp(coords.y, 0, 1))] as [number, number])
               : pt,
           );
           const bbox = polygonBBox(nextPoints);
-          return {
-            ...box,
+          const updated: StageBox = {
+            ...origBox,
             ...bbox,
             points: nextPoints,
           };
-        }),
-        { transient: true },
-      );
-      return;
+          activeBoxRef.current = updated;
+          setActiveBox(updated);
+          return;
+        }
+
+        if (currentDrag.kind === "resize") {
+          const { minW, minH } = getMinDimension(natural);
+          const updated = fromCorners(
+            origBox,
+            currentDrag.anchorX,
+            currentDrag.anchorY,
+            coords.x,
+            coords.y,
+            minW,
+            minH,
+          );
+          activeBoxRef.current = updated;
+          setActiveBox(updated);
+        }
+      });
     }
-    onChange(
-      boxesRef.current.map((box) => {
-        if (box.key !== drag.key) return box;
-        const { minW, minH } = getMinDimension(natural);
-        return fromCorners(box, drag.anchorX, drag.anchorY, here.x, here.y, minW, minH);
-      }),
-      { transient: true },
-    );
   }
 
   function onDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
@@ -1216,63 +1683,26 @@ export function LabelStage({
           role="application"
           aria-label="Draw bounding boxes and polygons"
         >
-          {/* SVG layer for polygons and precision lines */}
+          {/* Static annotations (memoized - zero fiber reconciliations during active manipulation) */}
+          <StaticAnnotationsLayer
+            boxes={boxes}
+            selectedKey={selectedKey}
+            activeKey={activeBox ? activeBox.key : null}
+            colorFor={colorFor}
+            labelFor={labelFor}
+            renderMode={renderMode}
+            readOnly={readOnly}
+            hiddenKeys={hiddenKeys}
+            spaceMode={spaceMode}
+            zoom={view.zoom}
+          />
+
+          {/* SVG Overlay layer for SAM2, polygon drafting, crosshair, and crop previews */}
           <svg
             className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
             viewBox="0 0 1000 1000"
             preserveAspectRatio="none"
           >
-            {boxes.map((box) => {
-              if (hiddenKeys?.has(box.key) || !box.points || box.points.length < 3) return null;
-              const selected = box.key === selectedKey;
-              const color = colorFor(box.classId);
-              const isFilled = renderMode === "filled";
-              return (
-                <g key={box.key}>
-                  {/* High-contrast dark outline under-stroke in outline mode only */}
-                  {!isFilled ? (
-                    <polygon
-                      points={box.points.map(([px, py]) => `${px * 1000},${py * 1000}`).join(" ")}
-                      fill="none"
-                      stroke="#000000"
-                      strokeOpacity={0.75}
-                      strokeWidth={selected ? 3 : 2.5}
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  ) : null}
-                  <polygon
-                    data-box={box.key}
-                    points={box.points.map(([px, py]) => `${px * 1000},${py * 1000}`).join(" ")}
-                    fill={isFilled ? color : "transparent"}
-                    fillOpacity={isFilled ? (selected ? 0.35 : 0.22) : 0}
-                    stroke={selected ? "#1473e6" : color}
-                    strokeWidth={isFilled ? 1 : 1.5}
-                    vectorEffect="non-scaling-stroke"
-                    className={`pointer-events-auto ${spaceMode === "off" && !readOnly ? "cursor-move" : ""}`}
-                  />
-                  {/* Vertex grab handles: invisible in filled mode, semi-transparent in outline mode */}
-                  {selected && !readOnly
-                    ? box.points.map(([px, py], vIdx) => (
-                        <circle
-                          key={`${box.key}-v-${px}-${py}`}
-                          data-box={box.key}
-                          data-vertex={vIdx}
-                          cx={px * 1000}
-                          cy={py * 1000}
-                          r={(isFilled ? 5 : 2.7) / view.zoom}
-                          className="pointer-events-auto cursor-crosshair"
-                          fill={isFilled ? "transparent" : "#ffffff"}
-                          fillOpacity={isFilled ? 0 : 0.75}
-                          stroke={isFilled ? "transparent" : "#1473e6"}
-                          strokeWidth={1.2}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      ))
-                    : null}
-                </g>
-              );
-            })}
-
             {/* SAM2 live interactive multi-point preview polygon & foreground/background crosshair indicators */}
             {sam2Enabled && (samDraftPolygon || samPromptPoints.length > 0) ? (
               <g className="pointer-events-none">
@@ -1554,117 +1984,17 @@ export function LabelStage({
             ) : null}
           </svg>
 
-          {/* HTML marks for boxes and labels */}
-          {boxes.map((box) => {
-            if (hiddenKeys?.has(box.key)) return null;
-            const selected = box.key === selectedKey;
-            const color = colorFor(box.classId);
-            const isPolygon = Boolean(box.points && box.points.length >= 3);
-            const isFilled = renderMode === "filled";
-            const isTop = box.y - box.h / 2 < 0.04;
-
-            if (isPolygon) {
-              return (
-                <div
-                  key={`label-${box.key}`}
-                  data-box={box.key}
-                  className="pointer-events-none absolute z-20"
-                  style={{
-                    left: `${(box.x - box.w / 2) * 100}%`,
-                    top: `${(box.y - box.h / 2) * 100}%`,
-                  }}
-                >
-                  <span
-                    className={`absolute whitespace-nowrap rounded-xs px-1.5 py-0.5 font-mono text-xs shadow-xs ${
-                      isTop ? "top-0 left-0" : "bottom-full left-0 mb-1"
-                    }`}
-                    style={{ background: color, color: inkOn(color) }}
-                  >
-                    {labelFor(box.classId)}
-                  </span>
-                </div>
-              );
-            }
-
-            return (
-              <div
-                key={box.key}
-                data-box={box.key}
-                className={`box-mark absolute rounded-none ${spaceMode === "off" && !readOnly ? "cursor-move" : ""} ${selected ? "is-selected z-10" : "z-0"}`}
-                style={{
-                  ...styleOf(box),
-                  borderWidth: isFilled ? 1 : 1.5,
-                  borderStyle: "solid",
-                  borderColor: selected ? "#1473e6" : color,
-                  backgroundColor: isFilled ? `${color}38` : "transparent",
-                  boxShadow: isFilled
-                    ? "none"
-                    : selected
-                      ? "0 0 0 1px #ffffff, 0 0 0 2.5px #1473e6"
-                      : "0 0 0 1px rgba(0, 0, 0, 0.75)",
-                  borderRadius: 0,
-                }}
-              >
-                <span
-                  className={`pointer-events-none absolute whitespace-nowrap rounded-[2px] px-1 py-0.2 font-mono text-[10px] leading-tight font-medium ${
-                    isTop ? "top-0 left-0" : "bottom-full left-0 mb-0.5"
-                  }`}
-                  style={{
-                    background: selected ? "#1473e6" : color,
-                    color: inkOn(selected ? "#1473e6" : color),
-                  }}
-                >
-                  {labelFor(box.classId)}
-                </span>
-                {selected && !readOnly
-                  ? HANDLES.map((corner) => (
-                      <span
-                        key={corner}
-                        data-corner={corner}
-                        className={`absolute z-20 ${
-                          isFilled
-                            ? `h-5 w-5 opacity-0 ${
-                                corner === "nw"
-                                  ? "-top-2.5 -left-2.5"
-                                  : corner === "ne"
-                                    ? "-top-2.5 -right-2.5"
-                                    : corner === "sw"
-                                      ? "-bottom-2.5 -left-2.5"
-                                      : "-right-2.5 -bottom-2.5"
-                              }`
-                            : `h-3 w-3 rounded-[1px] border border-[#1473e6] bg-white shadow-xs ${
-                                corner === "nw"
-                                  ? "-top-1.5 -left-1.5"
-                                  : corner === "ne"
-                                    ? "-top-1.5 -right-1.5"
-                                    : corner === "sw"
-                                      ? "-bottom-1.5 -left-1.5"
-                                      : "-right-1.5 -bottom-1.5"
-                              }`
-                        } ${
-                          spaceMode !== "off"
-                            ? ""
-                            : corner === "nw" || corner === "se"
-                              ? "cursor-nwse-resize"
-                              : "cursor-nesw-resize"
-                        }`}
-                      />
-                    ))
-                  : null}
-              </div>
-            );
-          })}
-
-          {draftBox ? (
-            <div
-              className="box-mark pointer-events-none absolute z-20 border-dashed"
-              style={{
-                ...styleOf(draftBox),
-                borderWidth: renderMode === "filled" ? 1 : 2,
-                borderColor: colorFor(draftBox.classId),
-              }}
-            />
-          ) : null}
+          {/* Active annotation layer (isolated active state, screen-rate rAF updates) */}
+          <ActiveAnnotationLayer
+            activeBox={activeBox}
+            draftBox={draftBox}
+            colorFor={colorFor}
+            labelFor={labelFor}
+            renderMode={renderMode}
+            readOnly={readOnly}
+            spaceMode={spaceMode}
+            zoom={view.zoom}
+          />
 
           {/* Polygon drawing helper pill */}
           {polyDraft && polyDraft.length > 0 ? (

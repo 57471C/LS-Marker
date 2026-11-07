@@ -94,8 +94,32 @@ function toApiBoxes(boxes: StageBox[]): Box[] {
   }));
 }
 
-function serialize(boxes: StageBox[]): string {
-  return JSON.stringify(toApiBoxes(boxes));
+export function areBoxesEqual(a: StageBox[], b: StageBox[]): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const boxA = a[i];
+    const boxB = b[i];
+    if (
+      boxA.key !== boxB.key ||
+      boxA.classId !== boxB.classId ||
+      boxA.x !== boxB.x ||
+      boxA.y !== boxB.y ||
+      boxA.w !== boxB.w ||
+      boxA.h !== boxB.h
+    ) {
+      return false;
+    }
+    const ptsA = boxA.points;
+    const ptsB = boxB.points;
+    if (ptsA !== ptsB) {
+      if (!ptsA || !ptsB || ptsA.length !== ptsB.length) return false;
+      for (let j = 0; j < ptsA.length; j++) {
+        if (ptsA[j][0] !== ptsB[j][0] || ptsA[j][1] !== ptsB[j][1]) return false;
+      }
+    }
+  }
+  return true;
 }
 
 function withKeys(boxes: Box[]): StageBox[] {
@@ -399,7 +423,7 @@ export function Labeler() {
   const [error, setError] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
   const [boxes, setBoxes] = useState<StageBox[]>([]);
-  const [saved, setSaved] = useState("[]");
+  const [saved, setSaved] = useState<StageBox[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [activeClassId, setActiveClassId] = useState<number | null>(null);
   const [status, setStatus] = useState("Loading");
@@ -467,7 +491,7 @@ export function Labeler() {
 
   function pushUndoSnapshot(nextBoxes: StageBox[], nextSelectedKey: string | null) {
     const prev = committedSnapshotRef.current;
-    if (JSON.stringify(prev.boxes) === JSON.stringify(nextBoxes)) {
+    if (areBoxesEqual(prev.boxes, nextBoxes)) {
       committedSnapshotRef.current = { boxes: nextBoxes, selectedKey: nextSelectedKey };
       return;
     }
@@ -503,7 +527,7 @@ export function Labeler() {
   const imageName = current?.name ?? null;
   const folderKey = catalogue?.resolvedFolder ?? "";
 
-  const dirty = serialize(boxes) !== saved;
+  const dirty = !areBoxesEqual(boxes, saved);
   const holder = current?.claimedBy ?? null;
   const isApproved = current?.status === "approved";
   const locked = isApproved || (!isReviewMode && Boolean(holder && holder !== username));
@@ -687,14 +711,14 @@ export function Labeler() {
     setHiddenKeys(new Set());
     if (!ready || !folderOk || !imageName || !folderKey) {
       setBoxes([]);
-      setSaved("[]");
+      setSaved([]);
       setSelectedKey(null);
       setStatus(!ready ? "Loading" : "No images");
       return;
     }
     let cancel = false;
     setBoxes([]);
-    setSaved("[]");
+    setSaved([]);
     setSelectedKey(null);
     setStatus("Loading");
 
@@ -705,7 +729,7 @@ export function Labeler() {
         undoStackRef.current = [];
         committedSnapshotRef.current = { boxes: next, selectedKey: null };
         setBoxes(next);
-        setSaved(serialize(next));
+        setSaved(next);
         setSelectedKey(null);
         setStatus("Saved");
         setError(null);
@@ -761,7 +785,7 @@ export function Labeler() {
     setBusy(true);
     try {
       await saveLabel(current.name, toApiBoxes(boxes));
-      setSaved(serialize(boxes));
+      setSaved(boxes);
       setStatus("Saved");
       setCatalogue((prev) =>
         prev
@@ -863,7 +887,7 @@ export function Labeler() {
       undoStackRef.current = [];
       committedSnapshotRef.current = { boxes: nextBoxes, selectedKey: null };
       setBoxes(nextBoxes);
-      setSaved(serialize(nextBoxes));
+      setSaved(nextBoxes);
       const info = await fetchCropInfo(current.name);
       setCropInfo(info);
       setStatus(`Cropped to ${result.width} × ${result.height} px`);
@@ -889,7 +913,7 @@ export function Labeler() {
       undoStackRef.current = [];
       committedSnapshotRef.current = { boxes: nextBoxes, selectedKey: null };
       setBoxes(nextBoxes);
-      setSaved(serialize(nextBoxes));
+      setSaved(nextBoxes);
       const info = await fetchCropInfo(current.name);
       setCropInfo(info);
       setStatus("Image restored to original");
@@ -1189,7 +1213,7 @@ export function Labeler() {
         action: "approve",
         boxes: cleaned,
       });
-      setSaved(serialize(boxes));
+      setSaved(boxes);
       setPendingReviewCount(res.pendingCount);
       setCatalogue((prev) =>
         prev
@@ -1238,7 +1262,7 @@ export function Labeler() {
         action: "reject",
       });
       setBoxes([]);
-      setSaved("[]");
+      setSaved([]);
       setPendingReviewCount(res.pendingCount);
       setCatalogue((prev) =>
         prev
@@ -1464,7 +1488,7 @@ export function Labeler() {
     setBusy(true);
     try {
       const res = await releaseIncomplete(current.name, toApiBoxes(boxes));
-      setSaved(serialize(boxes));
+      setSaved(boxes);
       await refreshClaims((image) => ({
         ...image,
         claimedBy: null,
@@ -1494,7 +1518,7 @@ export function Labeler() {
     try {
       const cleaned = toApiBoxes(boxes);
       const res = await completeImage(current.name, cleaned);
-      setSaved(serialize(boxes));
+      setSaved(boxes);
       await refreshClaims((image) => ({
         ...image,
         labelled: cleaned.length > 0,
