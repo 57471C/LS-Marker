@@ -43,16 +43,32 @@ const PHOTO_COLUMNS: Record<PhotoCol, { default: number; min: number; max?: numb
 
 const PAGE_SIZE = 50;
 
+const parseUtcTimeCache = new Map<string, number>();
+
 function parseUtcTime(dateStr: string | null | undefined): number {
   if (!dateStr) return 0;
   const str = String(dateStr).trim();
   if (!str) return 0;
+
+  const cached = parseUtcTimeCache.get(str);
+  if (cached !== undefined) return cached;
+
+  let t = 0;
   if (str.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(str)) {
-    return new Date(str).getTime();
+    t = new Date(str).getTime();
+  } else {
+    const iso = str.includes("T") ? `${str}Z` : `${str.replace(" ", "T")}Z`;
+    t = new Date(iso).getTime();
+    if (Number.isNaN(t)) t = new Date(str).getTime();
   }
-  const iso = str.includes("T") ? `${str}Z` : `${str.replace(" ", "T")}Z`;
-  const t = new Date(iso).getTime();
-  return Number.isNaN(t) ? new Date(str).getTime() : t;
+
+  // ⚡ Bolt Optimization:
+  // Memoizing parsed timestamps for O(1) lookup to eliminate repetitive Date initialization.
+  // Expected Impact: Eliminates massive overhead during O(N log N) sorting and O(N) filtering of lease times.
+  if (parseUtcTimeCache.size > 10000) parseUtcTimeCache.clear();
+  parseUtcTimeCache.set(str, t);
+
+  return t;
 }
 
 function isLeaseActive(image: ImageRow): boolean {
@@ -177,14 +193,19 @@ export function PhotosPage() {
       if (status === "incomplete" && image.status !== "incomplete") return false;
       if (status === "complete" && image.status !== "complete") return false;
       if (status === "approved" && image.status !== "approved") return false;
-      const holder = getActiveHolder(image);
-      if (owner === "mine" && (!holder || holder !== username)) return false;
-      if (
-        owner === "free" &&
-        (holder || (image.status !== "open" && image.status !== "incomplete"))
-      )
-        return false;
-      if (owner === "taken" && (!holder || holder === username)) return false;
+
+      // ⚡ Bolt Optimization: Short-circuiting getActiveHolder() checks to save O(N) date parsing
+      if (owner !== "any") {
+        const holder = getActiveHolder(image);
+        if (owner === "mine" && (!holder || holder !== username)) return false;
+        if (
+          owner === "free" &&
+          (holder || (image.status !== "open" && image.status !== "incomplete"))
+        )
+          return false;
+        if (owner === "taken" && (!holder || holder === username)) return false;
+      }
+
       return true;
     });
   }, [images, query, owner, status, username]);
