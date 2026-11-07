@@ -489,6 +489,8 @@ export function Labeler() {
   const allImages = catalogue?.images ?? [];
   const images = allImages.filter((image) => matchesQueue(image, queue, username));
   const classes = catalogue?.classes ?? [];
+  // Optimization: Pre-compute a Map for O(1) class lookups instead of O(n) array scans per box render.
+  const classMap = useMemo(() => new Map(classes.map((c) => [c.id, c])), [classes]);
   const projectId = catalogue?.project?.id ?? null;
   const safeIndex = images.length === 0 ? 0 : Math.min(index, images.length - 1);
   const current = images[safeIndex] ?? null;
@@ -740,17 +742,17 @@ export function Labeler() {
   }, [imageName, imageVersion]);
 
   function labelFor(classId: number): string {
-    const row = classes.find((item) => item.id === classId);
+    const row = classMap.get(classId);
     return row ? row.ic : `#${classId}`;
   }
 
   function boxTitle(classId: number): string {
-    const row = classes.find((item) => item.id === classId);
+    const row = classMap.get(classId);
     return row ? `${row.ic}  ${row.des}` : `#${classId}`;
   }
 
   function colorFor(classId: number): string {
-    const row = classes.find((item) => item.id === classId);
+    const row = classMap.get(classId);
     return classFill(classId, row?.color);
   }
 
