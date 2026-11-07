@@ -86,7 +86,7 @@ function getActiveHolder(image: ImageRow): string | null {
   return image.held_by || image.lockedBy || image.claimedBy || image.locked_by || null;
 }
 
-function getHeldMinutesRemaining(image: ImageRow): number {
+function getHeldMinutesRemaining(image: ImageRow, now = Date.now()): number {
   if (!isLeaseActive(image)) return 0;
   if (typeof image.held_minutes_remaining === "number") {
     return image.held_minutes_remaining;
@@ -95,7 +95,7 @@ function getHeldMinutesRemaining(image: ImageRow): number {
   if (!lockedAt) return 0;
   const time = parseUtcTime(lockedAt);
   if (!time) return 0;
-  return Math.max(0, Math.ceil((time + 15 * 60 * 1000 - Date.now()) / 60000));
+  return Math.max(0, Math.ceil((time + 15 * 60 * 1000 - now) / 60000));
 }
 
 function StatusBadge({ status }: { status: PhotoStatus }) {
@@ -211,28 +211,36 @@ export function PhotosPage() {
   }, [images, query, owner, status, username]);
 
   const sorted = useMemo(() => {
-    const list = [...filtered];
-    list.sort((a, b) => {
+    const now = Date.now();
+    const mapped = filtered.map((image) => ({
+      image,
+      held: sortField === "held" ? getHeldMinutesRemaining(image, now) : 0,
+    }));
+
+    mapped.sort((a, b) => {
       let cmp = 0;
       if (sortField === "file") {
-        cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+        cmp = a.image.name.localeCompare(b.image.name, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
       } else if (sortField === "labels") {
         const rank = (s: PhotoStatus) =>
           s === "approved" ? 3 : s === "complete" ? 2 : s === "incomplete" ? 1 : 0;
-        cmp = rank(a.status) - rank(b.status);
+        cmp = rank(a.image.status) - rank(b.image.status);
       } else if (sortField === "owner") {
-        const aOwner = a.owner ?? "";
-        const bOwner = b.owner ?? "";
+        const aOwner = a.image.owner ?? "";
+        const bOwner = b.image.owner ?? "";
         cmp = aOwner.localeCompare(bOwner, undefined, { sensitivity: "base" });
       } else if (sortField === "held") {
-        cmp = getHeldMinutesRemaining(a) - getHeldMinutesRemaining(b);
+        cmp = a.held - b.held;
       }
       if (cmp === 0) {
-        cmp = a.name.localeCompare(b.name, undefined, { numeric: true });
+        cmp = a.image.name.localeCompare(b.image.name, undefined, { numeric: true });
       }
       return sortDir === "asc" ? cmp : -cmp;
     });
-    return list;
+    return mapped.map((m) => m.image);
   }, [filtered, sortField, sortDir]);
 
   const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
