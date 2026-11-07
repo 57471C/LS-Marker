@@ -226,11 +226,31 @@ export function PhotosPage() {
     }
   }, [shown, selectedPhoto, sorted]);
 
-  const openCount = (images ?? []).filter((image) => image.status === "open").length;
-  const incompleteCount = (images ?? []).filter((image) => image.status === "incomplete").length;
-  const completeCount = (images ?? []).filter((image) => image.status === "complete").length;
-  const approvedCount = (images ?? []).filter((image) => image.status === "approved").length;
-  const mineCount = (images ?? []).filter((image) => getActiveHolder(image) === username).length;
+  // ⚡ Bolt Optimization:
+  // Combined 5 separate .filter() passes over potentially thousands of images into a single O(n) loop.
+  // Memoized to prevent recalculation on every UI re-render unless the dataset or active user changes.
+  // Expected Impact: Eliminates O(5n) array iterations on every keypress in the search bar, significantly improving UI responsiveness for large projects.
+  const { openCount, incompleteCount, completeCount, approvedCount, mineCount } = useMemo(() => {
+    let open = 0;
+    let incomplete = 0;
+    let complete = 0;
+    let approved = 0;
+    let mine = 0;
+    for (const image of images ?? []) {
+      if (image.status === "open") open++;
+      else if (image.status === "incomplete") incomplete++;
+      else if (image.status === "complete") complete++;
+      else if (image.status === "approved") approved++;
+      if (getActiveHolder(image) === username) mine++;
+    }
+    return {
+      openCount: open,
+      incompleteCount: incomplete,
+      completeCount: complete,
+      approvedCount: approved,
+      mineCount: mine,
+    };
+  }, [images, username]);
 
   async function handleDeletePhoto(item: ImageRow) {
     if (!item.id) return;
