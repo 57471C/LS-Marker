@@ -66,6 +66,17 @@ CREATE TABLE IF NOT EXISTS classes (
     CONSTRAINT uq_classes_project_ic UNIQUE (project_id, ic)
 );
 
+-- 5b. Part Type / Class Definitions Table
+CREATE TABLE IF NOT EXISTS part_types (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    fields TEXT NOT NULL,
+    required_fields TEXT NOT NULL,
+    display_format TEXT DEFAULT NULL,
+    archived BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 6. Image Claims table
 CREATE TABLE IF NOT EXISTS image_claims (
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

@@ -6,7 +6,105 @@ export type PartType =
   | "label"
   | "cable_tie"
   | "spring"
-  | "other";
+  | "other"
+  | (string & {});
+
+export type MetrologyField =
+  | "thread"
+  | "length_mm"
+  | "head_type"
+  | "af_mm"
+  | "height_mm"
+  | "od_mm"
+  | "id_mm"
+  | "thickness_mm"
+  | "width_mm"
+  | "note";
+
+export type MetrologyFieldInfo = {
+  key: MetrologyField;
+  label: string;
+  unit?: string;
+  type: "string" | "number";
+  description: string;
+};
+
+export const ALL_METROLOGY_FIELDS: MetrologyFieldInfo[] = [
+  {
+    key: "thread",
+    label: "Thread",
+    unit: "text",
+    type: "string",
+    description: "e.g. M6, M8, 1/4-20",
+  },
+  {
+    key: "length_mm",
+    label: "Length",
+    unit: "mm",
+    type: "number",
+    description: "Nominal or shank length",
+  },
+  {
+    key: "head_type",
+    label: "Head Type",
+    unit: "text",
+    type: "string",
+    description: "e.g. Hex, Socket, Pan",
+  },
+  {
+    key: "af_mm",
+    label: "Across Flats (AF)",
+    unit: "mm",
+    type: "number",
+    description: "Wrench or socket size",
+  },
+  {
+    key: "height_mm",
+    label: "Height",
+    unit: "mm",
+    type: "number",
+    description: "Overall component height",
+  },
+  {
+    key: "od_mm",
+    label: "Outer Diameter (OD)",
+    unit: "mm",
+    type: "number",
+    description: "Outer or cylinder diameter",
+  },
+  {
+    key: "id_mm",
+    label: "Inner Diameter (ID)",
+    unit: "mm",
+    type: "number",
+    description: "Hole or bore diameter",
+  },
+  {
+    key: "thickness_mm",
+    label: "Thickness",
+    unit: "mm",
+    type: "number",
+    description: "Material thickness",
+  },
+  { key: "width_mm", label: "Width", unit: "mm", type: "number", description: "Component width" },
+  {
+    key: "note",
+    label: "Note",
+    unit: "text",
+    type: "string",
+    description: "Material, color or custom note",
+  },
+];
+
+export type PartTypeDefinition = {
+  id: string;
+  name: string;
+  fields: MetrologyField[];
+  required_fields: MetrologyField[];
+  display_format: string | null;
+  archived: boolean;
+  created_at?: string;
+};
 export type ClassRow = {
   id: number;
   ic: string;
@@ -451,6 +549,47 @@ export function updateClass(row: UpdateClassInput): Promise<ClassRow> {
 export async function deleteClass(id: number): Promise<void> {
   const res = await fetch(api(`/api/classes?id=${id}`), { method: "DELETE" });
   await asJson(res);
+}
+
+export function fetchPartTypes(includeArchived = false): Promise<PartTypeDefinition[]> {
+  const query = includeArchived ? "?includeArchived=true" : "";
+  return fetch(api(`/api/part-types${query}`)).then((res) => asJson<PartTypeDefinition[]>(res));
+}
+
+export function createPartType(data: {
+  id?: string;
+  name: string;
+  fields: MetrologyField[];
+  required_fields?: MetrologyField[];
+  display_format?: string | null;
+}): Promise<PartTypeDefinition> {
+  return fetch(api("/api/part-types"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(data),
+  }).then((res) => asJson<PartTypeDefinition>(res));
+}
+
+export function updatePartType(data: {
+  id: string;
+  name?: string;
+  fields?: MetrologyField[];
+  required_fields?: MetrologyField[];
+  display_format?: string | null;
+  archived?: boolean;
+}): Promise<PartTypeDefinition> {
+  return fetch(api("/api/part-types"), {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(data),
+  }).then((res) => asJson<PartTypeDefinition>(res));
+}
+
+export async function deletePartType(id: string): Promise<{ ok: boolean }> {
+  const res = await fetch(api(`/api/part-types?id=${encodeURIComponent(id)}`), {
+    method: "DELETE",
+  });
+  return asJson<{ ok: boolean }>(res);
 }
 
 export type LabUser = { id: number; username: string; createdAt: string };

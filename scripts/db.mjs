@@ -367,7 +367,35 @@ export async function getDb(root = process.cwd()) {
       ALTER TABLE classes ADD COLUMN IF NOT EXISTS width_mm DOUBLE PRECISION;
       ALTER TABLE classes ADD COLUMN IF NOT EXISTS note TEXT;
       ALTER TABLE classes ADD COLUMN IF NOT EXISTS dimensions TEXT;
+
+      CREATE TABLE IF NOT EXISTS part_types (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        fields TEXT NOT NULL,
+        required_fields TEXT NOT NULL,
+        display_format TEXT,
+        archived BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
     `);
+
+    const ptCountRes = await client.query("SELECT COUNT(*) as count FROM part_types");
+    if (parseInt(ptCountRes.rows[0].count, 10) === 0) {
+      for (const pt of DEFAULT_PART_TYPES) {
+        await client.query(
+          `INSERT INTO part_types (id, name, fields, required_fields, display_format, archived)
+           VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
+          [
+            pt.id,
+            pt.name,
+            JSON.stringify(pt.fields),
+            JSON.stringify(pt.required_fields),
+            pt.display_format,
+            false,
+          ],
+        );
+      }
+    }
   } finally {
     client.release();
   }
@@ -483,12 +511,110 @@ export async function updateDbConnectionString(root = process.cwd(), newUrl) {
   };
 }
 
+export const DEFAULT_PART_TYPES = [
+  {
+    id: "bolt",
+    name: "Bolt",
+    fields: ["thread", "length_mm", "head_type", "af_mm"],
+    required_fields: ["thread", "length_mm"],
+    display_format: "{thread}x{length_mm} {head_type}",
+    archived: false,
+  },
+  {
+    id: "nut",
+    name: "Nut",
+    fields: ["thread", "af_mm", "height_mm"],
+    required_fields: ["thread", "af_mm"],
+    display_format: "{thread}, AF: {af_mm}mm",
+    archived: false,
+  },
+  {
+    id: "washer",
+    name: "Washer / Spacer / Crush tube",
+    fields: ["od_mm", "id_mm", "thickness_mm"],
+    required_fields: ["od_mm", "thickness_mm"],
+    display_format: "{od_mm} × {id_mm} × {thickness_mm} mm",
+    archived: false,
+  },
+  {
+    id: "label",
+    name: "Label / Sticker",
+    fields: ["width_mm", "height_mm"],
+    required_fields: ["width_mm", "height_mm"],
+    display_format: "{width_mm}x{height_mm}mm",
+    archived: false,
+  },
+  {
+    id: "cable_tie",
+    name: "Cable tie",
+    fields: ["length_mm", "width_mm"],
+    required_fields: ["length_mm", "width_mm"],
+    display_format: "{length_mm}x{width_mm}mm",
+    archived: false,
+  },
+  {
+    id: "spring",
+    name: "Spring",
+    fields: ["od_mm", "length_mm", "note"],
+    required_fields: ["od_mm", "length_mm"],
+    display_format: "OD: {od_mm}mm, L: {length_mm}mm",
+    archived: false,
+  },
+  {
+    id: "other",
+    name: "Other",
+    fields: ["width_mm", "height_mm", "od_mm", "length_mm", "note"],
+    required_fields: [],
+    display_format: "{width_mm}x{height_mm}mm",
+    archived: false,
+  },
+];
+
+/**
+ * Ensure SQLite part_types table exists and has default part classes seeded.
+ * @param {any} db
+ */
+export function ensureSqlitePartTypesSchema(db) {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS part_types (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        fields TEXT NOT NULL,
+        required_fields TEXT NOT NULL,
+        display_format TEXT DEFAULT NULL,
+        archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    const count = db.prepare("SELECT COUNT(*) as count FROM part_types").get()?.count || 0;
+    if (count === 0) {
+      const insert = db.prepare(
+        `INSERT OR IGNORE INTO part_types (id, name, fields, required_fields, display_format, archived)
+         VALUES (?, ?, ?, ?, ?, 0)`,
+      );
+      for (const pt of DEFAULT_PART_TYPES) {
+        insert.run(
+          pt.id,
+          pt.name,
+          JSON.stringify(pt.fields),
+          JSON.stringify(pt.required_fields),
+          pt.display_format,
+        );
+      }
+    }
+  } catch {
+    /* ignore if sqlite not ready */
+  }
+}
+
 /**
  * Add missing structured dimensions columns to SQLite classes table additively.
  * @param {any} db
  */
 export function ensureSqliteClassesSchema(db) {
   try {
+    ensureSqlitePartTypesSchema(db);
     const currentCols = db.prepare("PRAGMA table_info(classes)").all();
     if (!Array.isArray(currentCols) || currentCols.length === 0) return;
     const colNames = new Set(currentCols.map((c) => c.name));

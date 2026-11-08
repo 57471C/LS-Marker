@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import sharp from "sharp";
 import tar from "tar-stream";
 import {
+  DEFAULT_PART_TYPES,
   getDb as getPgDb,
   getDbConnectionInfo,
   testDbConnection,
@@ -2536,6 +2537,66 @@ async function listClasses(db, projectId) {
     .all(projectId);
 }
 
+/** @type {Map<string, { id: string, name: string, fields: string[], required_fields: string[], display_format: string | null, archived: boolean }> | null} */
+let partTypesCache = null;
+let partTypesCacheTime = 0;
+
+/**
+ * Fetch all registered part type definitions from database (with fallback to defaults).
+ * @param {any} db
+ * @param {boolean} [forceRefresh=false]
+ * @returns {Promise<Map<string, { id: string, name: string, fields: string[], required_fields: string[], display_format: string | null, archived: boolean }>>}
+ */
+export async function getPartTypesMap(db, forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && partTypesCache && now - partTypesCacheTime < 10000) {
+    return partTypesCache;
+  }
+  const map = new Map();
+  for (const pt of DEFAULT_PART_TYPES) {
+    map.set(pt.id, { ...pt });
+  }
+  if (db) {
+    try {
+      const rows = await db
+        .prepare(
+          "SELECT id, name, fields, required_fields, display_format, archived FROM part_types ORDER BY created_at ASC",
+        )
+        .all();
+      if (Array.isArray(rows) && rows.length > 0) {
+        for (const r of rows) {
+          const parseArr = (v) => {
+            if (Array.isArray(v)) return v;
+            try {
+              return JSON.parse(v) || [];
+            } catch {
+              return [];
+            }
+          };
+          map.set(r.id, {
+            id: r.id,
+            name: r.name,
+            fields: parseArr(r.fields),
+            required_fields: parseArr(r.required_fields),
+            display_format: r.display_format || null,
+            archived: Boolean(r.archived === 1 || r.archived === true || r.archived === "t"),
+          });
+        }
+      }
+    } catch {
+      /* fallback to defaults */
+    }
+  }
+  partTypesCache = map;
+  partTypesCacheTime = now;
+  return map;
+}
+
+export function clearPartTypesCache() {
+  partTypesCache = null;
+  partTypesCacheTime = 0;
+}
+
 const VALID_PART_TYPES = new Set([
   "none",
   "bolt",
@@ -2589,9 +2650,10 @@ function cleanOptionalDimMm(val, label = "Dimension value") {
  * - Cable tie: length x width, e.g. 200x4.8mm
  * - Spring / Other: OD: od_mm, L: length_mm OR width x height (plus note)
  * @param {Record<string, any>} cls
+ * @param {{ display_format?: string | null } | null} [partTypeConfig=null]
  * @returns {string | null}
  */
-export function formatCanonicalDimensions(cls) {
+export function formatCanonicalDimensions(cls, partTypeConfig = null) {
   if (!cls) return null;
   const pt = cls.part_type ? String(cls.part_type).trim().toLowerCase() : "none";
   if (!pt || pt === "none") return null;
@@ -2600,6 +2662,28 @@ export function formatCanonicalDimensions(cls) {
     v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v)) && Number(v) > 0;
   const hasStr = (v) => typeof v === "string" && v.trim().length > 0;
 
+  // 1. If partTypeConfig provides a display_format template, interpolate it
+  if (partTypeConfig?.display_format) {
+    const template = partTypeConfig.display_format.trim();
+    if (template.includes("{")) {
+      let formatted = template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key) => {
+        const val = cls[key];
+        if (val === null || val === undefined || val === "") return "";
+        return String(val);
+      });
+      formatted = formatted
+        .replace(/\(\s*\)/g, "")
+        .replace(/,\s*,/g, ",")
+        .replace(/,\s*\)/g, ")")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (formatted && /\d/.test(formatted)) {
+        return formatted;
+      }
+    }
+  }
+
+  // 2. Standard canonical formatting by part type
   if (pt === "bolt") {
     if (hasStr(cls.thread) && hasNum(cls.length_mm)) {
       let s = `${cls.thread.trim()}x${cls.length_mm}`;
@@ -2647,20 +2731,23 @@ export function formatCanonicalDimensions(cls) {
     }
   }
 
-  if (pt === "spring" || pt === "other") {
-    let s = "";
-    if (hasNum(cls.od_mm) && hasNum(cls.length_mm)) {
-      s = `OD: ${cls.od_mm}mm, L: ${cls.length_mm}mm`;
-    } else if (hasNum(cls.width_mm) && hasNum(cls.height_mm)) {
-      s = `${cls.width_mm}x${cls.height_mm}mm`;
-    } else if (hasNum(cls.width_mm) && hasNum(cls.length_mm)) {
-      s = `${cls.width_mm}x${cls.length_mm}mm`;
-    }
-    if (hasStr(cls.note)) {
-      s = s ? `${s} (${cls.note.trim()})` : cls.note.trim();
-    }
-    if (s) return s;
+  // Generic fallback for custom types (e.g. Resin, Spring, Other)
+  let s = "";
+  if (hasNum(cls.od_mm) && hasNum(cls.length_mm)) {
+    s = `OD: ${cls.od_mm}mm, L: ${cls.length_mm}mm`;
+  } else if (hasNum(cls.width_mm) && hasNum(cls.height_mm)) {
+    s = `${cls.width_mm}x${cls.height_mm}mm`;
+  } else if (hasNum(cls.width_mm) && hasNum(cls.length_mm)) {
+    s = `${cls.width_mm}x${cls.length_mm}mm`;
+  } else if (hasNum(cls.od_mm) && hasNum(cls.thickness_mm)) {
+    s = `OD: ${cls.od_mm}mm, Thk: ${cls.thickness_mm}mm`;
+  } else if (hasStr(cls.thread) && hasNum(cls.length_mm)) {
+    s = `${cls.thread.trim()}x${cls.length_mm}`;
   }
+  if (hasStr(cls.note)) {
+    s = s ? `${s} (${cls.note.trim()})` : cls.note.trim();
+  }
+  if (s) return s;
 
   // Fallback to existing dimensions display string if set (e.g. preserved ambiguous row)
   if (hasStr(cls.dimensions)) return cls.dimensions.trim();
@@ -2670,8 +2757,9 @@ export function formatCanonicalDimensions(cls) {
 
 /**
  * @param {Record<string, unknown>} body
+ * @param {{ fields?: string[], required_fields?: string[], display_format?: string | null, archived?: boolean } | null} [partTypeConfig=null]
  */
-export function cleanClassDimensions(body) {
+export function cleanClassDimensions(body, partTypeConfig = null) {
   let rawType =
     body.part_type === undefined || body.part_type === null
       ? "none"
@@ -2679,7 +2767,7 @@ export function cleanClassDimensions(body) {
   if (rawType === "spacer" || rawType === "crush_tube") rawType = "washer";
   if (rawType === "sticker") rawType = "label";
 
-  if (!VALID_PART_TYPES.has(rawType)) {
+  if (!VALID_PART_TYPES.has(rawType) && !partTypeConfig) {
     throw new HttpError(400, "Invalid part_type");
   }
   if (rawType === "none") {
@@ -2847,20 +2935,23 @@ export function cleanClassDimensions(body) {
   }
 
   // Populate canonical dimensions string
-  const canonicalDims = formatCanonicalDimensions({
-    part_type: rawType,
-    thread: finalThread,
-    length_mm: finalLengthMm,
-    head_type: finalHeadType,
-    af_mm: finalAfMm,
-    height_mm: finalHeightMm,
-    od_mm: finalOdMm,
-    id_mm: finalIdMm,
-    thickness_mm: finalThicknessMm,
-    width_mm: finalWidthMm,
-    note,
-    dimensions: cleanOptionalText(body.dimensions, 200),
-  });
+  const canonicalDims = formatCanonicalDimensions(
+    {
+      part_type: rawType,
+      thread: finalThread,
+      length_mm: finalLengthMm,
+      head_type: finalHeadType,
+      af_mm: finalAfMm,
+      height_mm: finalHeightMm,
+      od_mm: finalOdMm,
+      id_mm: finalIdMm,
+      thickness_mm: finalThicknessMm,
+      width_mm: finalWidthMm,
+      note,
+      dimensions: cleanOptionalText(body.dimensions, 200),
+    },
+    partTypeConfig,
+  );
 
   // Keep legacy dim1_name, dim1_mm, etc. in sync for DINO export and existing verification tests
   let dim1_name = null;
@@ -2966,15 +3057,36 @@ export function cleanClassDimensions(body) {
  *   dim3_name?: string | null,
  *   dim3_mm?: number | null,
  * }} cls
+ * @param {{ required_fields?: string[], fields?: string[] } | null} [partTypeConfig=null]
  * @returns {"complete" | "missing" | "none"}
  */
-export function computeClassDimensionsStatus(cls) {
+export function computeClassDimensionsStatus(cls, partTypeConfig = null) {
   const pt = cls?.part_type ? String(cls.part_type).trim().toLowerCase() : "none";
   if (!pt || pt === "none") return "none";
 
   const hasNum = (v) =>
     v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v)) && Number(v) > 0;
   const hasStr = (v) => typeof v === "string" && v.trim().length > 0;
+
+  // 1. If partTypeConfig specifies required_fields
+  if (partTypeConfig && Array.isArray(partTypeConfig.required_fields)) {
+    if (partTypeConfig.required_fields.length > 0) {
+      for (const field of partTypeConfig.required_fields) {
+        const val = cls[field];
+        if (field.endsWith("_mm")) {
+          if (!hasNum(val)) return "missing";
+        } else {
+          if (!hasStr(val)) return "missing";
+        }
+      }
+      return "complete";
+    }
+    const fields = partTypeConfig.fields || [];
+    const anyFilled = fields.some((f) => (f.endsWith("_mm") ? hasNum(cls[f]) : hasStr(cls[f])));
+    return anyFilled ? "complete" : "none";
+  }
+
+  // 2. Standard built-in fallbacks
 
   if (pt === "bolt") {
     if (hasStr(cls.thread) && hasNum(cls.length_mm) && hasStr(cls.head_type)) return "complete";

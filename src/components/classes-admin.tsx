@@ -9,12 +9,14 @@ import {
   createClass,
   deleteClass,
   fetchCatalogue,
+  fetchPartTypes,
   fetchProjectHealth,
   importClasses,
   updateClass,
   type ClassRow,
   type DuplicateDetectionResult,
   type PartType,
+  type PartTypeDefinition,
   type ProjectHealthResult,
 } from "@/lib/label-client";
 
@@ -110,12 +112,35 @@ export function formatPartSummary(row: ClassRow): string | null {
   return `${label} (no dims)`;
 }
 
-export function hasCompleteMeasurements(row: ClassRow): boolean {
+export function hasCompleteMeasurements(
+  row: ClassRow,
+  partTypeDef?: PartTypeDefinition | null,
+): boolean {
   const pt = row.part_type;
   if (!pt || pt === "none") return false;
   const hasNum = (v: number | null | undefined) =>
     v !== null && v !== undefined && Number.isFinite(Number(v)) && Number(v) > 0;
   const hasStr = (v: string | null | undefined) => typeof v === "string" && v.trim().length > 0;
+
+  if (partTypeDef && Array.isArray(partTypeDef.required_fields)) {
+    if (partTypeDef.required_fields.length > 0) {
+      for (const field of partTypeDef.required_fields) {
+        const val = (row as Record<string, unknown>)[field];
+        if (field.endsWith("_mm")) {
+          if (!hasNum(val as number)) return false;
+        } else {
+          if (!hasStr(val as string)) return false;
+        }
+      }
+      return true;
+    }
+    const fields = partTypeDef.fields || [];
+    const anyFilled = fields.some((f) => {
+      const val = (row as Record<string, unknown>)[f];
+      return f.endsWith("_mm") ? hasNum(val as number) : hasStr(val as string);
+    });
+    return anyFilled;
+  }
 
   if (pt === "bolt") {
     if (hasStr(row.thread) && hasNum(row.length_mm) && hasStr(row.head_type)) return true;
@@ -552,16 +577,50 @@ export function ClassesAdmin() {
     resetWidth,
   } = useColumnResize<ClassCol>("ls_marker_classes_col_widths", CLASS_COLUMNS);
 
+  const [partTypes, setPartTypes] = useState<PartTypeDefinition[]>([]);
+  const partTypesMap = useMemo(() => {
+    const map = new Map<string, PartTypeDefinition>();
+    for (const pt of partTypes) {
+      map.set(pt.id, pt);
+    }
+    return map;
+  }, [partTypes]);
+
+  const partTypeOptions = useMemo(() => {
+    const opts: { value: string; label: string }[] = [{ value: "none", label: "None (unset)" }];
+    const seen = new Set<string>(["none"]);
+    for (const pt of partTypes) {
+      if (!pt.archived || pt.id === editPartType || pt.id === newPartType) {
+        opts.push({
+          value: pt.id,
+          label: pt.archived ? `${pt.name} (Archived)` : pt.name,
+        });
+        seen.add(pt.id);
+      }
+    }
+    for (const d of PART_TYPE_OPTIONS) {
+      if (!seen.has(d.value)) {
+        opts.push(d);
+        seen.add(d.value);
+      }
+    }
+    return opts;
+  }, [partTypes, editPartType, newPartType]);
+
   async function load() {
-    const data = await fetchCatalogue();
+    const [data, pts] = await Promise.all([fetchCatalogue(), fetchPartTypes(true)]);
     setClasses(data.classes);
+    setPartTypes(pts);
   }
 
   useEffect(() => {
     let cancel = false;
-    fetchCatalogue()
-      .then((data) => {
-        if (!cancel) setClasses(data.classes);
+    Promise.all([fetchCatalogue(), fetchPartTypes(true)])
+      .then(([data, pts]) => {
+        if (!cancel) {
+          setClasses(data.classes);
+          setPartTypes(pts);
+        }
       })
       .catch((err: unknown) => {
         if (!cancel) setError(err instanceof Error ? err.message : "Could not load classes");
@@ -746,6 +805,41 @@ export function ClassesAdmin() {
   };
 
   const previewDimensions = useMemo(() => {
+    const isCustom = ![
+      "none",
+      "bolt",
+      "nut",
+      "washer",
+      "label",
+      "cable_tie",
+      "spring",
+      "other",
+    ].includes(editPartType);
+    const def = partTypesMap.get(editPartType);
+    if (def?.display_format?.includes("{")) {
+      const vals: Record<string, string> = {
+        thread: editThread.trim(),
+        length_mm: editLengthMm.trim(),
+        head_type: editHeadType.trim(),
+        af_mm: editAfMm.trim(),
+        height_mm: editHeightMm.trim(),
+        od_mm: editOdMm.trim(),
+        id_mm: editIdMm.trim(),
+        thickness_mm: editThicknessMm.trim(),
+        width_mm: editWidthMm.trim(),
+        note: editNote.trim(),
+      };
+      let formatted = def.display_format.replace(/\{([a-zA-Z0-9_]+)\}/g, (_, k) => vals[k] || "");
+      formatted = formatted
+        .replace(/\(\s*\)/g, "")
+        .replace(/,\s*,/g, ",")
+        .replace(/,\s*\)/g, ")")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (formatted && /\d/.test(formatted)) {
+        return formatted;
+      }
+    }
     return formatPartSummary({
       id: selectedClass?.id ?? 0,
       ic: editIc,
@@ -754,6 +848,7 @@ export function ClassesAdmin() {
       part_type: editPartType,
       thread: editThread.trim() || null,
       length_mm:
+        isCustom ||
         editPartType === "bolt" ||
         editPartType === "cable_tie" ||
         ((editPartType === "spring" || editPartType === "other") && springOtherMode === "od_length")
@@ -762,6 +857,7 @@ export function ClassesAdmin() {
       head_type: editHeadType.trim() || null,
       af_mm: parseOptionalMm(editAfMm),
       height_mm:
+        isCustom ||
         editPartType === "nut" ||
         editPartType === "label" ||
         ((editPartType === "spring" || editPartType === "other") &&
@@ -769,20 +865,25 @@ export function ClassesAdmin() {
           ? parseOptionalMm(editHeightMm)
           : null,
       od_mm:
+        isCustom ||
         editPartType === "washer" ||
         ((editPartType === "spring" || editPartType === "other") && springOtherMode === "od_length")
           ? parseOptionalMm(editOdMm)
           : null,
-      id_mm: parseOptionalMm(editIdMm),
-      thickness_mm: parseOptionalMm(editThicknessMm),
+      id_mm: isCustom || editPartType === "washer" ? parseOptionalMm(editIdMm) : null,
+      thickness_mm: isCustom || editPartType === "washer" ? parseOptionalMm(editThicknessMm) : null,
       width_mm:
+        isCustom ||
         editPartType === "label" ||
         editPartType === "cable_tie" ||
         ((editPartType === "spring" || editPartType === "other") &&
           springOtherMode === "width_height")
           ? parseOptionalMm(editWidthMm)
           : null,
-      note: editNote.trim() || null,
+      note:
+        isCustom || editPartType === "spring" || editPartType === "other"
+          ? editNote.trim() || null
+          : null,
     });
   }, [
     selectedClass,
@@ -800,6 +901,7 @@ export function ClassesAdmin() {
     editWidthMm,
     editNote,
     springOtherMode,
+    partTypesMap,
   ]);
 
   async function handleSaveSelectedClass() {
@@ -807,23 +909,40 @@ export function ClassesAdmin() {
     setBusy(true);
     setError(null);
     try {
+      const isCustom = ![
+        "none",
+        "bolt",
+        "nut",
+        "washer",
+        "label",
+        "cable_tie",
+        "spring",
+        "other",
+      ].includes(editPartType);
       await updateClass({
         id: selectedClass.id,
         ic: editIc.trim(),
         des: editDes.trim(),
         part_type: editPartType,
         thread:
-          editPartType === "bolt" || editPartType === "nut" ? editThread.trim() || null : null,
+          isCustom || editPartType === "bolt" || editPartType === "nut"
+            ? editThread.trim() || null
+            : null,
         length_mm:
+          isCustom ||
           editPartType === "bolt" ||
           editPartType === "cable_tie" ||
           ((editPartType === "spring" || editPartType === "other") &&
             springOtherMode === "od_length")
             ? parseOptionalMm(editLengthMm)
             : null,
-        head_type: editPartType === "bolt" ? editHeadType.trim() || null : null,
-        af_mm: editPartType === "bolt" || editPartType === "nut" ? parseOptionalMm(editAfMm) : null,
+        head_type: isCustom || editPartType === "bolt" ? editHeadType.trim() || null : null,
+        af_mm:
+          isCustom || editPartType === "bolt" || editPartType === "nut"
+            ? parseOptionalMm(editAfMm)
+            : null,
         height_mm:
+          isCustom ||
           editPartType === "nut" ||
           editPartType === "label" ||
           ((editPartType === "spring" || editPartType === "other") &&
@@ -831,14 +950,17 @@ export function ClassesAdmin() {
             ? parseOptionalMm(editHeightMm)
             : null,
         od_mm:
+          isCustom ||
           editPartType === "washer" ||
           ((editPartType === "spring" || editPartType === "other") &&
             springOtherMode === "od_length")
             ? parseOptionalMm(editOdMm)
             : null,
-        id_mm: editPartType === "washer" ? parseOptionalMm(editIdMm) : null,
-        thickness_mm: editPartType === "washer" ? parseOptionalMm(editThicknessMm) : null,
+        id_mm: isCustom || editPartType === "washer" ? parseOptionalMm(editIdMm) : null,
+        thickness_mm:
+          isCustom || editPartType === "washer" ? parseOptionalMm(editThicknessMm) : null,
         width_mm:
+          isCustom ||
           editPartType === "label" ||
           editPartType === "cable_tie" ||
           ((editPartType === "spring" || editPartType === "other") &&
@@ -846,7 +968,9 @@ export function ClassesAdmin() {
             ? parseOptionalMm(editWidthMm)
             : null,
         note:
-          editPartType === "spring" || editPartType === "other" ? editNote.trim() || null : null,
+          isCustom || editPartType === "spring" || editPartType === "other"
+            ? editNote.trim() || null
+            : null,
         dim1_name: editPartType === "other" ? editDim1Name.trim() || null : null,
         dim1_mm: editPartType === "none" ? null : parseOptionalMm(editDim1Mm),
         dim2_name: editPartType === "other" ? editDim2Name.trim() || null : null,
@@ -1041,7 +1165,7 @@ export function ClassesAdmin() {
             className="h-5 rounded-[2px] border border-[#c8c8c8] bg-white text-[11px] px-1 outline-none focus:border-[#1473e6] text-[#282828]"
             title="Part Type"
           >
-            {PART_TYPE_OPTIONS.map((opt) => (
+            {partTypeOptions.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
@@ -1161,7 +1285,10 @@ export function ClassesAdmin() {
                 ) : (
                   filtered.map((row) => {
                     const isSelected = selectedClassId === row.id;
-                    const complete = hasCompleteMeasurements(row);
+                    const complete = hasCompleteMeasurements(
+                      row,
+                      partTypesMap.get(row.part_type || ""),
+                    );
                     const hasPartType = row.part_type && row.part_type !== "none";
                     const summary = formatPartSummary(row);
 
@@ -1337,7 +1464,7 @@ export function ClassesAdmin() {
                   onKeyDown={handleDimensionKeyDown}
                   className="w-full h-6 rounded-[2px] border border-[#c8c8c8] bg-white text-[11px] px-1"
                 >
-                  {PART_TYPE_OPTIONS.map((opt) => (
+                  {partTypeOptions.map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}
                     </option>
@@ -1700,6 +1827,188 @@ export function ClassesAdmin() {
                     </div>
                   </div>
                 )}
+
+                {/* Dynamic custom part class fields */}
+                {editPartType !== "none" &&
+                  !["bolt", "nut", "washer", "label", "cable_tie", "spring", "other"].includes(
+                    editPartType,
+                  ) && (
+                    <div className="flex flex-col gap-2">
+                      {(() => {
+                        const def = partTypesMap.get(editPartType);
+                        const fields = def?.fields ?? [];
+                        const reqs = new Set(def?.required_fields ?? []);
+                        if (fields.length === 0) {
+                          return (
+                            <p className="text-[10px] text-[#707070] italic">
+                              No structured metrology fields defined for this class.
+                            </p>
+                          );
+                        }
+                        return (
+                          <div className="grid grid-cols-2 gap-2">
+                            {fields.includes("thread") && (
+                              <div>
+                                <label className="text-[9px] font-semibold text-[#505050] block">
+                                  Thread {reqs.has("thread") && "*"}
+                                </label>
+                                <input
+                                  type="text"
+                                  placeholder="e.g. M8"
+                                  value={editThread}
+                                  onChange={(e) => setEditThread(e.target.value)}
+                                  onKeyDown={handleDimensionKeyDown}
+                                  className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                />
+                              </div>
+                            )}
+                            {fields.includes("length_mm") && (
+                              <div>
+                                <label className="text-[9px] font-semibold text-[#505050] block">
+                                  Length (mm) {reqs.has("length_mm") && "*"}
+                                </label>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  placeholder="mm"
+                                  value={editLengthMm}
+                                  onChange={(e) => setEditLengthMm(e.target.value)}
+                                  onKeyDown={handleDimensionKeyDown}
+                                  className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                />
+                              </div>
+                            )}
+                            {fields.includes("head_type") && (
+                              <div>
+                                <label className="text-[9px] font-semibold text-[#505050] block">
+                                  Head Type {reqs.has("head_type") && "*"}
+                                </label>
+                                <input
+                                  type="text"
+                                  placeholder="e.g. Hex, Socket"
+                                  value={editHeadType}
+                                  onChange={(e) => setEditHeadType(e.target.value)}
+                                  onKeyDown={handleDimensionKeyDown}
+                                  className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                />
+                              </div>
+                            )}
+                            {fields.includes("af_mm") && (
+                              <div>
+                                <label className="text-[9px] font-semibold text-[#505050] block">
+                                  Across Flats AF (mm) {reqs.has("af_mm") && "*"}
+                                </label>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  placeholder="mm"
+                                  value={editAfMm}
+                                  onChange={(e) => setEditAfMm(e.target.value)}
+                                  onKeyDown={handleDimensionKeyDown}
+                                  className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                />
+                              </div>
+                            )}
+                            {fields.includes("height_mm") && (
+                              <div>
+                                <label className="text-[9px] font-semibold text-[#505050] block">
+                                  Height (mm) {reqs.has("height_mm") && "*"}
+                                </label>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  placeholder="mm"
+                                  value={editHeightMm}
+                                  onChange={(e) => setEditHeightMm(e.target.value)}
+                                  onKeyDown={handleDimensionKeyDown}
+                                  className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                />
+                              </div>
+                            )}
+                            {fields.includes("od_mm") && (
+                              <div>
+                                <label className="text-[9px] font-semibold text-[#505050] block">
+                                  Outer Ø OD (mm) {reqs.has("od_mm") && "*"}
+                                </label>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  placeholder="mm"
+                                  value={editOdMm}
+                                  onChange={(e) => setEditOdMm(e.target.value)}
+                                  onKeyDown={handleDimensionKeyDown}
+                                  className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                />
+                              </div>
+                            )}
+                            {fields.includes("id_mm") && (
+                              <div>
+                                <label className="text-[9px] font-semibold text-[#505050] block">
+                                  Inner Ø ID (mm) {reqs.has("id_mm") && "*"}
+                                </label>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  placeholder="mm"
+                                  value={editIdMm}
+                                  onChange={(e) => setEditIdMm(e.target.value)}
+                                  onKeyDown={handleDimensionKeyDown}
+                                  className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                />
+                              </div>
+                            )}
+                            {fields.includes("thickness_mm") && (
+                              <div>
+                                <label className="text-[9px] font-semibold text-[#505050] block">
+                                  Thickness (mm) {reqs.has("thickness_mm") && "*"}
+                                </label>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  placeholder="mm"
+                                  value={editThicknessMm}
+                                  onChange={(e) => setEditThicknessMm(e.target.value)}
+                                  onKeyDown={handleDimensionKeyDown}
+                                  className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                />
+                              </div>
+                            )}
+                            {fields.includes("width_mm") && (
+                              <div>
+                                <label className="text-[9px] font-semibold text-[#505050] block">
+                                  Width (mm) {reqs.has("width_mm") && "*"}
+                                </label>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  placeholder="mm"
+                                  value={editWidthMm}
+                                  onChange={(e) => setEditWidthMm(e.target.value)}
+                                  onKeyDown={handleDimensionKeyDown}
+                                  className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                />
+                              </div>
+                            )}
+                            {fields.includes("note") && (
+                              <div className="col-span-2">
+                                <label className="text-[9px] font-semibold text-[#505050] block">
+                                  Note / Detail {reqs.has("note") && "*"}
+                                </label>
+                                <input
+                                  type="text"
+                                  placeholder="Material, color or custom note"
+                                  value={editNote}
+                                  onChange={(e) => setEditNote(e.target.value)}
+                                  onKeyDown={handleDimensionKeyDown}
+                                  className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
 
                 {editPartType === "none" && (
                   <p className="text-[10px] text-[#707070] italic">

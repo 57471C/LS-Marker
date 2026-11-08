@@ -1,13 +1,18 @@
 import {
+  Archive,
   Check,
   Database,
   Download,
+  Edit2,
   FolderOpen,
+  Layers,
   Loader2,
   Lock,
+  Plus,
   Power,
   PowerOff,
   RefreshCw,
+  RotateCcw,
   Server,
   Sparkles,
   Trash2,
@@ -28,7 +33,9 @@ import {
   clearSamModelCacheAndReset,
 } from "@/services/samService";
 import {
+  ALL_METROLOGY_FIELDS,
   checkProjectExif,
+  createPartType,
   createUser,
   deleteProject,
   deleteUser,
@@ -37,6 +44,7 @@ import {
   fetchAiSettings,
   fetchDbConfig,
   fetchMaintenanceStatus,
+  fetchPartTypes,
   fetchProjectHealth,
   fetchProjects,
   fetchUsers,
@@ -48,6 +56,7 @@ import {
   testDbConnection,
   unlockAdmin,
   updateDbConfig,
+  updatePartType,
   type DatasetExportType,
   type DbConnectionInfo,
   type DuplicateDetectionResult,
@@ -55,13 +64,15 @@ import {
   type ExportFormat,
   type ExportScope,
   type LabUser,
+  type MetrologyField,
+  type PartTypeDefinition,
   type Project,
   type ProjectHealthResult,
   type SyncImagesResult,
 } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
 
-type SettingsTab = "projects" | "export" | "database" | "ai" | "users";
+type SettingsTab = "projects" | "classes" | "export" | "database" | "ai" | "users";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -145,6 +156,21 @@ export function SettingsPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // Part Classes State
+  const [partTypes, setPartTypes] = useState<PartTypeDefinition[] | null>(null);
+  const [loadingPartTypes, setLoadingPartTypes] = useState(false);
+  const [showArchivedClasses, setShowArchivedClasses] = useState(false);
+  const [isAddingClass, setIsAddingClass] = useState(false);
+  const [editingPartTypeId, setEditingPartTypeId] = useState<string | null>(null);
+
+  const [classFormName, setClassFormName] = useState("");
+  const [classFormId, setClassFormId] = useState("");
+  const [classFormFields, setClassFormFields] = useState<MetrologyField[]>([]);
+  const [classFormRequired, setClassFormRequired] = useState<MetrologyField[]>([]);
+  const [classFormFormat, setClassFormFormat] = useState("");
+  const [classFormError, setClassFormError] = useState<string | null>(null);
+  const [classFormSaving, setClassFormSaving] = useState(false);
+
   const { current: project } = useProject();
 
   useEffect(() => {
@@ -187,11 +213,12 @@ export function SettingsPage() {
   useEffect(() => {
     if (!unlocked) return;
     let cancel = false;
-    Promise.all([fetchUsers(), fetchProjects()])
-      .then(([userRows, projectRows]) => {
+    Promise.all([fetchUsers(), fetchProjects(), fetchPartTypes(true)])
+      .then(([userRows, projectRows, ptRows]) => {
         if (cancel) return;
         setUsers(userRows);
         setProjects(projectRows);
+        setPartTypes(ptRows);
         if (projectRows.length > 0 && !projectToExport) {
           setProjectToExport(projectRows.find((p) => p.id === project?.id) ?? projectRows[0]);
         }
@@ -203,6 +230,118 @@ export function SettingsPage() {
       cancel = true;
     };
   }, [unlocked, project, projectToExport]);
+
+  async function reloadPartTypes() {
+    setLoadingPartTypes(true);
+    try {
+      const list = await fetchPartTypes(true);
+      setPartTypes(list);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load part classes");
+    } finally {
+      setLoadingPartTypes(false);
+    }
+  }
+
+  function handleStartAddClass() {
+    setIsAddingClass(true);
+    setEditingPartTypeId(null);
+    setClassFormName("");
+    setClassFormId("");
+    setClassFormFields(["width_mm", "height_mm"]);
+    setClassFormRequired(["width_mm", "height_mm"]);
+    setClassFormFormat("{width_mm}x{height_mm}mm");
+    setClassFormError(null);
+  }
+
+  function handleStartEditClass(pt: PartTypeDefinition) {
+    setIsAddingClass(false);
+    setEditingPartTypeId(pt.id);
+    setClassFormName(pt.name);
+    setClassFormId(pt.id);
+    setClassFormFields([...pt.fields]);
+    setClassFormRequired([...pt.required_fields]);
+    setClassFormFormat(pt.display_format || "");
+    setClassFormError(null);
+  }
+
+  function handleCancelClassForm() {
+    setIsAddingClass(false);
+    setEditingPartTypeId(null);
+    setClassFormError(null);
+  }
+
+  function handleToggleField(fieldKey: MetrologyField) {
+    if (classFormFields.includes(fieldKey)) {
+      setClassFormFields((prev) => prev.filter((f) => f !== fieldKey));
+      setClassFormRequired((prev) => prev.filter((f) => f !== fieldKey));
+    } else {
+      setClassFormFields((prev) => [...prev, fieldKey]);
+    }
+  }
+
+  function handleToggleRequired(fieldKey: MetrologyField) {
+    if (classFormRequired.includes(fieldKey)) {
+      setClassFormRequired((prev) => prev.filter((f) => f !== fieldKey));
+    } else {
+      setClassFormRequired((prev) => [...prev, fieldKey]);
+      if (!classFormFields.includes(fieldKey)) {
+        setClassFormFields((prev) => [...prev, fieldKey]);
+      }
+    }
+  }
+
+  async function handleSaveClass() {
+    if (!classFormName.trim()) {
+      setClassFormError("Class name is required");
+      return;
+    }
+    setClassFormSaving(true);
+    setClassFormError(null);
+    try {
+      if (isAddingClass) {
+        const id =
+          classFormId
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, "_") || undefined;
+        await createPartType({
+          id,
+          name: classFormName.trim(),
+          fields: classFormFields,
+          required_fields: classFormRequired,
+          display_format: classFormFormat.trim() || null,
+        });
+      } else if (editingPartTypeId) {
+        await updatePartType({
+          id: editingPartTypeId,
+          name: classFormName.trim(),
+          fields: classFormFields,
+          required_fields: classFormRequired,
+          display_format: classFormFormat.trim() || null,
+        });
+      }
+      setIsAddingClass(false);
+      setEditingPartTypeId(null);
+      await reloadPartTypes();
+    } catch (err: unknown) {
+      setClassFormError(err instanceof Error ? err.message : "Failed to save part class");
+    } finally {
+      setClassFormSaving(false);
+    }
+  }
+
+  async function handleToggleArchive(pt: PartTypeDefinition) {
+    try {
+      await updatePartType({
+        id: pt.id,
+        archived: !pt.archived,
+      });
+      await reloadPartTypes();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to update archive status");
+    }
+  }
 
   async function handleClearSamCache() {
     setClearingSamCache(true);
@@ -513,6 +652,14 @@ export function SettingsPage() {
               </button>
               <button
                 type="button"
+                onClick={() => setActiveTab("classes")}
+                className={tabClass("classes")}
+              >
+                <Layers className="size-3.5" />
+                <span>Part Classes</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setActiveTab("export")}
                 className={tabClass("export")}
               >
@@ -679,6 +826,348 @@ export function SettingsPage() {
                       )}
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* TAB: PART CLASSES */}
+              {activeTab === "classes" && (
+                <div className="flex flex-col gap-2">
+                  <div className="bg-white border border-[#c8c8c8] rounded-[2px] p-2.5">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-1.5">
+                        <h2 className="text-xs font-semibold text-[#282828]">
+                          Part Classes &amp; Metrology Definitions
+                        </h2>
+                        {loadingPartTypes && (
+                          <Loader2 className="size-3 animate-spin text-[#1473e6]" />
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="flex items-center gap-1.5 text-[11px] text-[#707070] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={showArchivedClasses}
+                            onChange={(e) => setShowArchivedClasses(e.target.checked)}
+                            className="size-3 rounded-[2px]"
+                          />
+                          <span>Show archived</span>
+                        </label>
+                        {!isAddingClass && !editingPartTypeId && (
+                          <button
+                            type="button"
+                            onClick={handleStartAddClass}
+                            className="press inline-flex items-center gap-1 px-2 py-1 rounded-[2px] bg-[#1473e6] text-white text-[11px] font-medium hover:bg-[#0d62c7]"
+                          >
+                            <Plus className="size-3" />
+                            <span>Add Class</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-[#707070] mb-3">
+                      Define the component classes (Bolt, Nut, Resin, etc.) available during
+                      labelling. Control which structured measurement fields (thread, length, AF,
+                      diameter, etc.) are shown and required for each class.
+                    </p>
+
+                    {/* ADD / EDIT CLASS FORM */}
+                    {(isAddingClass || editingPartTypeId) && (
+                      <div className="mb-3 p-3 bg-[#f9f9f9] border border-[#c8c8c8] rounded-[2px] flex flex-col gap-3">
+                        <div className="flex items-center justify-between border-b border-[#e5e5e5] pb-2">
+                          <span className="text-xs font-bold text-[#282828]">
+                            {isAddingClass
+                              ? "Create New Part Class"
+                              : `Edit Part Class: ${classFormName}`}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleCancelClassForm}
+                            className="size-5 inline-flex items-center justify-center text-[#707070] hover:text-[#282828]"
+                          >
+                            <X className="size-3.5" />
+                          </button>
+                        </div>
+
+                        {classFormError && (
+                          <div className="p-2 bg-red-50 border border-red-200 text-red-700 text-[11px] rounded-[2px]">
+                            {classFormError}
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          <div>
+                            <label className="text-[11px] font-semibold text-[#505050] block mb-1">
+                              Class Name *
+                            </label>
+                            <input
+                              type="text"
+                              value={classFormName}
+                              onChange={(e) => {
+                                const nextName = e.target.value;
+                                setClassFormName(nextName);
+                                if (isAddingClass) {
+                                  setClassFormId(
+                                    nextName
+                                      .toLowerCase()
+                                      .replace(/[^a-z0-9_]/g, "_")
+                                      .replace(/_+/g, "_")
+                                      .replace(/^_+|_+$/g, ""),
+                                  );
+                                }
+                              }}
+                              placeholder="e.g. Resin, Circlip, Dowel pin"
+                              className="w-full h-7 px-2 rounded-[2px] border border-[#c8c8c8] bg-white text-xs outline-none focus:border-[#1473e6]"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-semibold text-[#505050] block mb-1">
+                              Slug Identifier *
+                            </label>
+                            <input
+                              type="text"
+                              value={classFormId}
+                              disabled={!isAddingClass}
+                              onChange={(e) =>
+                                setClassFormId(
+                                  e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"),
+                                )
+                              }
+                              placeholder="e.g. resin, circlip"
+                              className="w-full h-7 px-2 font-mono rounded-[2px] border border-[#c8c8c8] bg-white text-xs outline-none focus:border-[#1473e6] disabled:bg-[#f0f0f0] disabled:text-[#707070]"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="text-[11px] font-semibold text-[#505050] block mb-1">
+                            Display Format Template (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={classFormFormat}
+                            onChange={(e) => setClassFormFormat(e.target.value)}
+                            placeholder="e.g. {width_mm}x{height_mm}mm or {thread}x{length_mm} ({head_type})"
+                            className="w-full h-7 px-2 font-mono rounded-[2px] border border-[#c8c8c8] bg-white text-xs outline-none focus:border-[#1473e6]"
+                          />
+                          <p className="text-[10px] text-[#707070] mt-1">
+                            Used to generate canonical Dimensions string. Enclose field keys in
+                            braces, e.g.{" "}
+                            <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">
+                              {"{width_mm}x{height_mm}mm"}
+                            </code>
+                            . Leave blank to use standard order.
+                          </p>
+                        </div>
+
+                        <div>
+                          <label className="text-[11px] font-semibold text-[#505050] block mb-1.5">
+                            Applicable Metrology Fields &amp; Requirements
+                          </label>
+                          <div className="border border-[#c8c8c8] rounded-[2px] bg-white overflow-hidden">
+                            <table className="w-full border-collapse text-left text-xs">
+                              <thead>
+                                <tr className="border-b border-[#c8c8c8] bg-[#f5f5f5] text-[10px] font-semibold text-[#707070]">
+                                  <th className="px-2 py-1.5 w-16 text-center">Enable</th>
+                                  <th className="px-2 py-1.5">Field</th>
+                                  <th className="px-2 py-1.5 w-24 text-center">Required *</th>
+                                  <th className="px-2 py-1.5">Description / Examples</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-[#f0f0f0]">
+                                {ALL_METROLOGY_FIELDS.map((mf) => {
+                                  const isEnabled = classFormFields.includes(mf.key);
+                                  const isReq = classFormRequired.includes(mf.key);
+                                  return (
+                                    <tr
+                                      key={mf.key}
+                                      className={`hover:bg-[#fafafa] ${isEnabled ? "bg-blue-50/20" : ""}`}
+                                    >
+                                      <td className="px-2 py-1.5 text-center">
+                                        <input
+                                          type="checkbox"
+                                          checked={isEnabled}
+                                          onChange={() => handleToggleField(mf.key)}
+                                          className="size-3.5 rounded-[2px] cursor-pointer"
+                                        />
+                                      </td>
+                                      <td className="px-2 py-1.5">
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="font-medium text-[#282828] text-[11px]">
+                                            {mf.label}
+                                          </span>
+                                          <span className="font-mono text-[9px] bg-gray-100 text-gray-700 px-1 rounded-[2px]">
+                                            {mf.key}
+                                          </span>
+                                        </div>
+                                      </td>
+                                      <td className="px-2 py-1.5 text-center">
+                                        <input
+                                          type="checkbox"
+                                          checked={isReq}
+                                          disabled={!isEnabled}
+                                          onChange={() => handleToggleRequired(mf.key)}
+                                          className="size-3.5 rounded-[2px] cursor-pointer disabled:opacity-30"
+                                        />
+                                      </td>
+                                      <td className="px-2 py-1.5 text-[11px] text-[#707070]">
+                                        {mf.description}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#e5e5e5]">
+                          <button
+                            type="button"
+                            onClick={handleCancelClassForm}
+                            className="press h-6 px-3 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] text-[11px]"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            disabled={classFormSaving}
+                            onClick={() => void handleSaveClass()}
+                            className="press inline-flex items-center gap-1 h-6 px-3 rounded-[2px] bg-[#1473e6] text-white hover:bg-[#0d62c7] text-[11px] font-medium disabled:opacity-40"
+                          >
+                            {classFormSaving ? (
+                              <>
+                                <Loader2 className="size-3 animate-spin" />
+                                <span>Saving...</span>
+                              </>
+                            ) : (
+                              <span>{isAddingClass ? "Create Class" : "Save Changes"}</span>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* CLASSES LIST TABLE */}
+                    <div className="overflow-x-auto border border-[#c8c8c8] rounded-[2px]">
+                      <table className="w-full border-collapse text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-[#c8c8c8] bg-[#f5f5f5] text-[11px] font-semibold text-[#707070]">
+                            <th className="px-2.5 py-1.5">Class Name</th>
+                            <th className="px-2.5 py-1.5">Slug ID</th>
+                            <th className="px-2.5 py-1.5">Applicable Metrology Fields</th>
+                            <th className="px-2.5 py-1.5">Display Format</th>
+                            <th className="px-2.5 py-1.5">Status</th>
+                            <th className="px-2.5 py-1.5 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#f0f0f0]">
+                          {(partTypes ?? [])
+                            .filter((pt) => showArchivedClasses || !pt.archived)
+                            .map((pt) => (
+                              <tr
+                                key={pt.id}
+                                className={`hover:bg-[#f9f9f9] ${pt.archived ? "opacity-60 bg-[#fbfbfb]" : ""}`}
+                              >
+                                <td className="px-2.5 py-2 font-bold text-[#282828] text-[11px]">
+                                  {pt.name}
+                                </td>
+                                <td className="px-2.5 py-2 font-mono text-[11px] text-[#707070]">
+                                  {pt.id}
+                                </td>
+                                <td className="px-2.5 py-2">
+                                  <div className="flex flex-wrap gap-1 max-w-md">
+                                    {(pt.fields ?? []).map((f) => {
+                                      const isReq = (pt.required_fields ?? []).includes(f);
+                                      return (
+                                        <span
+                                          key={f}
+                                          className={`font-mono text-[9px] px-1 py-0.5 rounded-[2px] border ${
+                                            isReq
+                                              ? "bg-amber-50 text-amber-800 border-amber-200 font-semibold"
+                                              : "bg-gray-100 text-gray-700 border-gray-200"
+                                          }`}
+                                          title={isReq ? "Required field" : "Optional field"}
+                                        >
+                                          {f}
+                                          {isReq && " *"}
+                                        </span>
+                                      );
+                                    })}
+                                    {(!pt.fields || pt.fields.length === 0) && (
+                                      <span className="text-[10px] text-[#a0a0a0] italic">
+                                        No structured fields
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="px-2.5 py-2 font-mono text-[10px] text-[#505050]">
+                                  {pt.display_format ? (
+                                    <code className="bg-gray-100 px-1 py-0.5 rounded text-[10px]">
+                                      {pt.display_format}
+                                    </code>
+                                  ) : (
+                                    <span className="text-[#a0a0a0] italic font-sans text-[10px]">
+                                      Default order
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-2.5 py-2">
+                                  {pt.archived ? (
+                                    <span className="font-mono text-[9px] bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded-[2px]">
+                                      Archived
+                                    </span>
+                                  ) : (
+                                    <span className="font-mono text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-[2px]">
+                                      Active
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-2.5 py-2 text-right">
+                                  <div className="inline-flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartEditClass(pt)}
+                                      className="press h-5 px-1.5 rounded-[2px] border border-[#c8c8c8] bg-white hover:bg-[#f0f0f0] text-[#282828] text-[10px] inline-flex items-center gap-1"
+                                      title="Edit class fields and format"
+                                    >
+                                      <Edit2 className="size-2.5" />
+                                      <span>Edit</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleToggleArchive(pt)}
+                                      className={`press h-5 px-1.5 rounded-[2px] border text-[10px] inline-flex items-center gap-1 ${
+                                        pt.archived
+                                          ? "border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                                          : "border-amber-200 text-amber-700 hover:bg-amber-50"
+                                      }`}
+                                      title={
+                                        pt.archived
+                                          ? "Restore to entry UI"
+                                          : "Archive class (hide from entry UI)"
+                                      }
+                                    >
+                                      {pt.archived ? (
+                                        <>
+                                          <RotateCcw className="size-2.5" />
+                                          <span>Restore</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Archive className="size-2.5" />
+                                          <span>Archive</span>
+                                        </>
+                                      )}
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
               )}
 

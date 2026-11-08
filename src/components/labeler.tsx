@@ -48,6 +48,7 @@ import {
   fetchAdmin,
   fetchCatalogue,
   fetchCropInfo,
+  fetchPartTypes,
   fetchAiSettings,
   fetchLabel,
   fetchMaintenanceStatus,
@@ -68,6 +69,7 @@ import {
   type CropRect,
   type ImageRow,
   type PartType,
+  type PartTypeDefinition,
   type PhotoStatus,
 } from "@/lib/label-client";
 import { useProject } from "@/lib/project";
@@ -391,6 +393,38 @@ export function Labeler() {
   const [savingDims, setSavingDims] = useState(false);
   const [dimsError, setDimsError] = useState<string | null>(null);
 
+  // Part types state for metrology
+  const [partTypes, setPartTypes] = useState<PartTypeDefinition[]>([]);
+  const partTypesMap = useMemo(() => {
+    const map = new Map<string, PartTypeDefinition>();
+    for (const pt of partTypes) {
+      map.set(pt.id, pt);
+    }
+    return map;
+  }, [partTypes]);
+
+  const partTypeOptions = useMemo(() => {
+    const currentPt = editingDimsClass?.part_type;
+    const opts: { value: string; label: string }[] = [{ value: "none", label: "None (unset)" }];
+    const seen = new Set<string>(["none"]);
+    for (const pt of partTypes) {
+      if (!pt.archived || pt.id === currentPt) {
+        opts.push({
+          value: pt.id,
+          label: pt.archived ? `${pt.name} (Archived)` : pt.name,
+        });
+        seen.add(pt.id);
+      }
+    }
+    for (const d of PART_TYPE_OPTIONS) {
+      if (!seen.has(d.value)) {
+        opts.push(d);
+        seen.add(d.value);
+      }
+    }
+    return opts;
+  }, [partTypes, editingDimsClass?.part_type]);
+
   useEffect(() => {
     setIsAdmin(sessionAdmin);
   }, [sessionAdmin]);
@@ -604,10 +638,11 @@ export function Labeler() {
 
   useEffect(() => {
     let cancel = false;
-    fetchCatalogue()
-      .then((data) => {
+    Promise.all([fetchCatalogue(), fetchPartTypes(true)])
+      .then(([data, pts]) => {
         if (cancel) return;
         setCatalogue(data);
+        setPartTypes(pts);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -2389,7 +2424,10 @@ export function Labeler() {
                     <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#f0f0f0]">
                       {filteredClasses.map((row) => {
                         const isSelected = row.id === activeClassId;
-                        const complete = hasCompleteMeasurements(row);
+                        const complete = hasCompleteMeasurements(
+                          row,
+                          partTypesMap.get(row.part_type || ""),
+                        );
                         const hasPartType = row.part_type && row.part_type !== "none";
 
                         return (
@@ -2494,7 +2532,7 @@ export function Labeler() {
                             }
                             className="h-6 flex-1 rounded-[2px] border border-[#c8c8c8] bg-white text-[11px] px-1"
                           >
-                            {PART_TYPE_OPTIONS.map((opt) => (
+                            {partTypeOptions.map((opt) => (
                               <option key={opt.value} value={opt.value}>
                                 {opt.label}
                               </option>
@@ -2882,6 +2920,249 @@ export function Labeler() {
                                 </div>
                               </div>
                             )}
+
+                            {/* Dynamic custom part class fields */}
+                            {editingDimsClass.part_type &&
+                              ![
+                                "none",
+                                "bolt",
+                                "nut",
+                                "washer",
+                                "label",
+                                "cable_tie",
+                                "spring",
+                                "other",
+                              ].includes(editingDimsClass.part_type) && (
+                                <div className="flex flex-col gap-1.5">
+                                  {(() => {
+                                    const def = partTypesMap.get(editingDimsClass.part_type);
+                                    const fields = def?.fields ?? [];
+                                    const reqs = new Set(def?.required_fields ?? []);
+                                    if (fields.length === 0) {
+                                      return (
+                                        <p className="text-[10px] text-[#707070] italic">
+                                          No structured fields defined for this class.
+                                        </p>
+                                      );
+                                    }
+                                    return (
+                                      <div className="grid grid-cols-2 gap-1.5">
+                                        {fields.includes("thread") && (
+                                          <div>
+                                            <label className="text-[9px] font-semibold text-[#505050] block">
+                                              Thread {reqs.has("thread") && "*"}
+                                            </label>
+                                            <input
+                                              type="text"
+                                              placeholder="M8"
+                                              value={editingDimsClass.thread ?? ""}
+                                              onChange={(e) =>
+                                                setEditingDimsClass({
+                                                  ...editingDimsClass,
+                                                  thread: e.target.value,
+                                                })
+                                              }
+                                              className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                            />
+                                          </div>
+                                        )}
+                                        {fields.includes("length_mm") && (
+                                          <div>
+                                            <label className="text-[9px] font-semibold text-[#505050] block">
+                                              Length (mm) {reqs.has("length_mm") && "*"}
+                                            </label>
+                                            <input
+                                              type="number"
+                                              step="any"
+                                              placeholder="mm"
+                                              value={editingDimsClass.length_mm ?? ""}
+                                              onChange={(e) =>
+                                                setEditingDimsClass({
+                                                  ...editingDimsClass,
+                                                  length_mm: e.target.value
+                                                    ? Number(e.target.value)
+                                                    : null,
+                                                })
+                                              }
+                                              className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                            />
+                                          </div>
+                                        )}
+                                        {fields.includes("head_type") && (
+                                          <div>
+                                            <label className="text-[9px] font-semibold text-[#505050] block">
+                                              Head Type {reqs.has("head_type") && "*"}
+                                            </label>
+                                            <input
+                                              type="text"
+                                              placeholder="Hex"
+                                              value={editingDimsClass.head_type ?? ""}
+                                              onChange={(e) =>
+                                                setEditingDimsClass({
+                                                  ...editingDimsClass,
+                                                  head_type: e.target.value,
+                                                })
+                                              }
+                                              className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                            />
+                                          </div>
+                                        )}
+                                        {fields.includes("af_mm") && (
+                                          <div>
+                                            <label className="text-[9px] font-semibold text-[#505050] block">
+                                              AF (mm) {reqs.has("af_mm") && "*"}
+                                            </label>
+                                            <input
+                                              type="number"
+                                              step="any"
+                                              placeholder="mm"
+                                              value={editingDimsClass.af_mm ?? ""}
+                                              onChange={(e) =>
+                                                setEditingDimsClass({
+                                                  ...editingDimsClass,
+                                                  af_mm: e.target.value
+                                                    ? Number(e.target.value)
+                                                    : null,
+                                                })
+                                              }
+                                              className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                            />
+                                          </div>
+                                        )}
+                                        {fields.includes("height_mm") && (
+                                          <div>
+                                            <label className="text-[9px] font-semibold text-[#505050] block">
+                                              Height (mm) {reqs.has("height_mm") && "*"}
+                                            </label>
+                                            <input
+                                              type="number"
+                                              step="any"
+                                              placeholder="mm"
+                                              value={editingDimsClass.height_mm ?? ""}
+                                              onChange={(e) =>
+                                                setEditingDimsClass({
+                                                  ...editingDimsClass,
+                                                  height_mm: e.target.value
+                                                    ? Number(e.target.value)
+                                                    : null,
+                                                })
+                                              }
+                                              className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                            />
+                                          </div>
+                                        )}
+                                        {fields.includes("od_mm") && (
+                                          <div>
+                                            <label className="text-[9px] font-semibold text-[#505050] block">
+                                              OD (mm) {reqs.has("od_mm") && "*"}
+                                            </label>
+                                            <input
+                                              type="number"
+                                              step="any"
+                                              placeholder="mm"
+                                              value={editingDimsClass.od_mm ?? ""}
+                                              onChange={(e) =>
+                                                setEditingDimsClass({
+                                                  ...editingDimsClass,
+                                                  od_mm: e.target.value
+                                                    ? Number(e.target.value)
+                                                    : null,
+                                                })
+                                              }
+                                              className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                            />
+                                          </div>
+                                        )}
+                                        {fields.includes("id_mm") && (
+                                          <div>
+                                            <label className="text-[9px] font-semibold text-[#505050] block">
+                                              ID (mm) {reqs.has("id_mm") && "*"}
+                                            </label>
+                                            <input
+                                              type="number"
+                                              step="any"
+                                              placeholder="mm"
+                                              value={editingDimsClass.id_mm ?? ""}
+                                              onChange={(e) =>
+                                                setEditingDimsClass({
+                                                  ...editingDimsClass,
+                                                  id_mm: e.target.value
+                                                    ? Number(e.target.value)
+                                                    : null,
+                                                })
+                                              }
+                                              className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                            />
+                                          </div>
+                                        )}
+                                        {fields.includes("thickness_mm") && (
+                                          <div>
+                                            <label className="text-[9px] font-semibold text-[#505050] block">
+                                              Thk (mm) {reqs.has("thickness_mm") && "*"}
+                                            </label>
+                                            <input
+                                              type="number"
+                                              step="any"
+                                              placeholder="mm"
+                                              value={editingDimsClass.thickness_mm ?? ""}
+                                              onChange={(e) =>
+                                                setEditingDimsClass({
+                                                  ...editingDimsClass,
+                                                  thickness_mm: e.target.value
+                                                    ? Number(e.target.value)
+                                                    : null,
+                                                })
+                                              }
+                                              className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                            />
+                                          </div>
+                                        )}
+                                        {fields.includes("width_mm") && (
+                                          <div>
+                                            <label className="text-[9px] font-semibold text-[#505050] block">
+                                              Width (mm) {reqs.has("width_mm") && "*"}
+                                            </label>
+                                            <input
+                                              type="number"
+                                              step="any"
+                                              placeholder="mm"
+                                              value={editingDimsClass.width_mm ?? ""}
+                                              onChange={(e) =>
+                                                setEditingDimsClass({
+                                                  ...editingDimsClass,
+                                                  width_mm: e.target.value
+                                                    ? Number(e.target.value)
+                                                    : null,
+                                                })
+                                              }
+                                              className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                            />
+                                          </div>
+                                        )}
+                                        {fields.includes("note") && (
+                                          <div className="col-span-2">
+                                            <label className="text-[9px] font-semibold text-[#505050] block">
+                                              Note {reqs.has("note") && "*"}
+                                            </label>
+                                            <input
+                                              type="text"
+                                              placeholder="Note"
+                                              value={editingDimsClass.note ?? ""}
+                                              onChange={(e) =>
+                                                setEditingDimsClass({
+                                                  ...editingDimsClass,
+                                                  note: e.target.value,
+                                                })
+                                              }
+                                              className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                            />
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              )}
                           </div>
                         )}
 
