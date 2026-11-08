@@ -4977,11 +4977,17 @@ export async function handle(req, res, url, root) {
     let output = "";
     let success = false;
     try {
-      const result = await execFileAsync("git", ["pull"], {
+      const result = await execFileAsync("git", ["pull", "--autostash"], {
         cwd: root,
         timeout: 45000,
         windowsHide: true,
-      });
+      }).catch(() =>
+        execFileAsync("git", ["pull"], {
+          cwd: root,
+          timeout: 45000,
+          windowsHide: true,
+        }),
+      );
       output = (result.stdout || "") + (result.stderr || "");
       success = true;
     } catch (err) {
@@ -5009,10 +5015,11 @@ export async function handle(req, res, url, root) {
     }
     const canRestart = Boolean(activeViteServer && typeof activeViteServer.restart === "function");
 
-    send(res, success ? 200 : 500, {
+    send(res, 200, {
       ok: success,
       success,
       output: output.trim(),
+      error: success ? undefined : output.trim(),
       packageJsonChanged: packageChanged,
       installed: shouldInstall,
       restarting: success && shouldRestart && canRestart,

@@ -92,8 +92,10 @@ function api(path: string): string {
 
 async function failMessage(res: Response): Promise<string> {
   try {
-    const data = (await res.json()) as { error?: string };
+    const data = (await res.json()) as { error?: string; message?: string; output?: string };
     if (data.error) return data.error;
+    if (data.output) return data.output;
+    if (data.message) return data.message;
   } catch {
     /* response was not JSON */
   }

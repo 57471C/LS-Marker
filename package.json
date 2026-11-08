@@ -13,9 +13,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "format": "biome format --write .",
-    "migrate:dimensions": "node scripts/migrate-dimensions.mjs",
-    "postinstall": "node scripts/migrate-dimensions.mjs"
+    "format": "biome format --write ."
   },
   "dependencies": {
     "@biomejs/biome": "^2.5.15",
