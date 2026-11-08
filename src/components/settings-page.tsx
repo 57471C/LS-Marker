@@ -213,7 +213,7 @@ export function SettingsPage() {
   useEffect(() => {
     if (!unlocked) return;
     let cancel = false;
-    Promise.all([fetchUsers(), fetchProjects(), fetchPartTypes(true)])
+    Promise.all([fetchUsers(), fetchProjects(), fetchPartTypes(true).catch(() => [])])
       .then(([userRows, projectRows, ptRows]) => {
         if (cancel) return;
         setUsers(userRows);

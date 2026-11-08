@@ -638,7 +638,7 @@ export function Labeler() {
 
   useEffect(() => {
     let cancel = false;
-    Promise.all([fetchCatalogue(), fetchPartTypes(true)])
+    Promise.all([fetchCatalogue(), fetchPartTypes(true).catch(() => [])])
       .then(([data, pts]) => {
         if (cancel) return;
         setCatalogue(data);

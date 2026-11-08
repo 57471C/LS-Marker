@@ -2934,6 +2934,21 @@ export function cleanClassDimensions(body, partTypeConfig = null) {
     }
   }
 
+  let finalNote = note;
+  if (partTypeConfig && Array.isArray(partTypeConfig.fields)) {
+    const allowed = new Set(partTypeConfig.fields);
+    if (!allowed.has("thread")) finalThread = null;
+    if (!allowed.has("length_mm")) finalLengthMm = null;
+    if (!allowed.has("head_type")) finalHeadType = null;
+    if (!allowed.has("af_mm")) finalAfMm = null;
+    if (!allowed.has("height_mm")) finalHeightMm = null;
+    if (!allowed.has("od_mm")) finalOdMm = null;
+    if (!allowed.has("id_mm")) finalIdMm = null;
+    if (!allowed.has("thickness_mm")) finalThicknessMm = null;
+    if (!allowed.has("width_mm")) finalWidthMm = null;
+    if (!allowed.has("note")) finalNote = null;
+  }
+
   // Populate canonical dimensions string
   const canonicalDims = formatCanonicalDimensions(
     {
@@ -2947,7 +2962,7 @@ export function cleanClassDimensions(body, partTypeConfig = null) {
       id_mm: finalIdMm,
       thickness_mm: finalThicknessMm,
       width_mm: finalWidthMm,
-      note,
+      note: finalNote,
       dimensions: cleanOptionalText(body.dimensions, 200),
     },
     partTypeConfig,
@@ -3025,7 +3040,7 @@ export function cleanClassDimensions(body, partTypeConfig = null) {
     id_mm: finalIdMm,
     thickness_mm: finalThicknessMm,
     width_mm: finalWidthMm,
-    note,
+    note: finalNote,
     dimensions: canonicalDims,
     dim1_name,
     dim1_mm,
@@ -4558,6 +4573,7 @@ async function guard(req, res, url, root, method, pathname) {
   }
 
   if (admin) return false;
+  if (method === "GET" && pathname === "/api/part-types") return false;
   if (method === "GET" && pathname === "/api/projects") return false;
   if (method === "DELETE" && pathname === "/api/projects") return false;
   if (method === "GET" && pathname === "/api/export") return false;
@@ -5288,7 +5304,10 @@ export async function handle(req, res, url, root) {
     const body = await readBody(req);
     const ic = cleanText(body.ic, "Item code", 40);
     const des = cleanText(body.des, "Description", 120);
-    const dims = cleanClassDimensions(body);
+    const partTypes = await getPartTypesMap(db);
+    const targetType = body.part_type ? String(body.part_type).trim().toLowerCase() : null;
+    const partTypeConfig = targetType ? partTypes.get(targetType) : null;
+    const dims = cleanClassDimensions(body, partTypeConfig);
     const next = await db
       .prepare("SELECT COALESCE(MAX(id), -1) + 1 AS id FROM classes WHERE project_id = ?")
       .get(project.id);
@@ -5376,7 +5395,10 @@ export async function handle(req, res, url, root) {
       body.dim3_mm !== undefined;
     try {
       if (hasDimsPayload) {
-        const dims = cleanClassDimensions(body);
+        const partTypes = await getPartTypesMap(db);
+        const targetType = body.part_type ? String(body.part_type).trim().toLowerCase() : null;
+        const partTypeConfig = targetType ? partTypes.get(targetType) : null;
+        const dims = cleanClassDimensions(body, partTypeConfig);
         await db
           .prepare(
             `UPDATE classes
@@ -5445,6 +5467,188 @@ export async function handle(req, res, url, root) {
     if (result.changes === 0) throw new HttpError(404, "Class not found");
     await writeClassesFile(db, project.id, path.resolve(root, project.folder));
     send(res, 200, { ok: true });
+    return;
+  }
+
+  // Part Types API (Class Definitions Adder & Manager)
+  if (method === "GET" && pathname === "/api/part-types") {
+    const db = await getDb(root);
+    const includeArchived = url.searchParams.get("includeArchived") === "true";
+    const map = await getPartTypesMap(db, true);
+    const list = Array.from(map.values()).filter((pt) => includeArchived || !pt.archived);
+    send(res, 200, list);
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/part-types") {
+    const db = await getDb(root);
+    const body = await readBody(req);
+    const name = cleanText(body.name, "Class name", 60);
+    let id = body.id
+      ? cleanText(body.id, "Class ID", 40)
+          .toLowerCase()
+          .replace(/[^a-z0-9_]/g, "_")
+      : null;
+    if (!id) {
+      id = name
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    }
+    if (!id) {
+      throw new HttpError(400, "Invalid class id");
+    }
+
+    const validFieldsSet = new Set([
+      "thread",
+      "length_mm",
+      "head_type",
+      "af_mm",
+      "height_mm",
+      "od_mm",
+      "id_mm",
+      "thickness_mm",
+      "width_mm",
+      "note",
+    ]);
+
+    const fields = Array.isArray(body.fields)
+      ? body.fields.filter((f) => typeof f === "string" && validFieldsSet.has(f))
+      : [];
+    const required_fields = Array.isArray(body.required_fields)
+      ? body.required_fields.filter((f) => fields.includes(f))
+      : [];
+    const display_format = cleanOptionalText(body.display_format, 120);
+
+    const existing = await db.prepare("SELECT id FROM part_types WHERE id = ?").get(id);
+    if (existing) {
+      throw new HttpError(409, `Part type with ID '${id}' already exists`);
+    }
+
+    await db
+      .prepare(
+        "INSERT INTO part_types (id, name, fields, required_fields, display_format, archived, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        id,
+        name,
+        JSON.stringify(fields),
+        JSON.stringify(required_fields),
+        display_format,
+        false,
+        new Date().toISOString(),
+      );
+
+    clearPartTypesCache();
+    const created = {
+      id,
+      name,
+      fields,
+      required_fields,
+      display_format,
+      archived: false,
+    };
+    send(res, 201, created);
+    return;
+  }
+
+  if (method === "PATCH" && pathname === "/api/part-types") {
+    const db = await getDb(root);
+    const body = await readBody(req);
+    const id = cleanText(body.id, "Class ID", 40).toLowerCase();
+    const existing = await db.prepare("SELECT * FROM part_types WHERE id = ?").get(id);
+    if (!existing) {
+      throw new HttpError(404, "Part type not found");
+    }
+
+    const validFieldsSet = new Set([
+      "thread",
+      "length_mm",
+      "head_type",
+      "af_mm",
+      "height_mm",
+      "od_mm",
+      "id_mm",
+      "thickness_mm",
+      "width_mm",
+      "note",
+    ]);
+
+    const parseArr = (v) => {
+      if (Array.isArray(v)) return v;
+      try {
+        return JSON.parse(v) || [];
+      } catch {
+        return [];
+      }
+    };
+
+    let fields = existing.fields ? parseArr(existing.fields) : [];
+    if (body.fields !== undefined) {
+      fields = Array.isArray(body.fields)
+        ? body.fields.filter((f) => typeof f === "string" && validFieldsSet.has(f))
+        : [];
+    }
+
+    let required_fields = existing.required_fields ? parseArr(existing.required_fields) : [];
+    if (body.required_fields !== undefined) {
+      required_fields = Array.isArray(body.required_fields)
+        ? body.required_fields.filter((f) => fields.includes(f))
+        : [];
+    }
+
+    const name = body.name !== undefined ? cleanText(body.name, "Class name", 60) : existing.name;
+    const display_format =
+      body.display_format !== undefined
+        ? cleanOptionalText(body.display_format, 120)
+        : existing.display_format;
+    const isArchived =
+      body.archived !== undefined
+        ? Boolean(body.archived)
+        : Boolean(
+            existing.archived === 1 ||
+              existing.archived === true ||
+              existing.archived === "t" ||
+              existing.archived === "true",
+          );
+
+    await db
+      .prepare(
+        "UPDATE part_types SET name = ?, fields = ?, required_fields = ?, display_format = ?, archived = ? WHERE id = ?",
+      )
+      .run(
+        name,
+        JSON.stringify(fields),
+        JSON.stringify(required_fields),
+        display_format,
+        isArchived,
+        id,
+      );
+
+    clearPartTypesCache();
+    send(res, 200, {
+      id,
+      name,
+      fields,
+      required_fields,
+      display_format,
+      archived: isArchived,
+    });
+    return;
+  }
+
+  if (method === "DELETE" && pathname === "/api/part-types") {
+    const db = await getDb(root);
+    const id = cleanText(url.searchParams.get("id"), "Class ID", 40).toLowerCase();
+    const existing = await db.prepare("SELECT id FROM part_types WHERE id = ?").get(id);
+    if (!existing) {
+      throw new HttpError(404, "Part type not found");
+    }
+    // Soft-delete: mark archived = true to preserve historical rows (Zero Data-Loss Guarantee)
+    await db.prepare("UPDATE part_types SET archived = ? WHERE id = ?").run(true, id);
+    clearPartTypesCache();
+    send(res, 200, { ok: true, archived: true, id });
     return;
   }
 

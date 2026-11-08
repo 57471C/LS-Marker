@@ -608,14 +608,14 @@ export function ClassesAdmin() {
   }, [partTypes, editPartType, newPartType]);
 
   async function load() {
-    const [data, pts] = await Promise.all([fetchCatalogue(), fetchPartTypes(true)]);
+    const [data, pts] = await Promise.all([fetchCatalogue(), fetchPartTypes(true).catch(() => [])]);
     setClasses(data.classes);
     setPartTypes(pts);
   }
 
   useEffect(() => {
     let cancel = false;
-    Promise.all([fetchCatalogue(), fetchPartTypes(true)])
+    Promise.all([fetchCatalogue(), fetchPartTypes(true).catch(() => [])])
       .then(([data, pts]) => {
         if (!cancel) {
           setClasses(data.classes);
