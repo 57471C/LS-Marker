@@ -157,6 +157,11 @@ try {
   assert(exportedClass, `Class ID ${testClassId} must be present in catalogue.json`);
   assert.equal(exportedClass.ic, testIc);
   assert.equal(exportedClass.part_type, "bolt");
+  assert.equal(exportedClass.length_rule, "length_mm", "Bolt must have length_rule = length_mm");
+  assert.equal(exportedClass.diameter_rule, "thread", "Bolt must have diameter_rule = thread");
+  assert(exportedClass.measurement_rules, "exportedClass must have measurement_rules object");
+  assert.equal(exportedClass.measurement_rules.length_rule, "length_mm");
+  assert.equal(exportedClass.measurement_rules.diameter_rule, "thread");
   assert.equal(exportedClass.dim1_name, "Length under head");
   assert.equal(exportedClass.dim1_mm, 25);
   assert.equal(exportedClass.dim2_name, "Thread diameter");

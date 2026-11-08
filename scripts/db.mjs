@@ -374,26 +374,45 @@ export async function getDb(root = process.cwd()) {
         fields TEXT NOT NULL,
         required_fields TEXT NOT NULL,
         display_format TEXT,
+        length_rule TEXT,
+        diameter_rule TEXT,
+        note TEXT,
         archived BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
+
+      ALTER TABLE part_types ADD COLUMN IF NOT EXISTS length_rule TEXT;
+      ALTER TABLE part_types ADD COLUMN IF NOT EXISTS diameter_rule TEXT;
+      ALTER TABLE part_types ADD COLUMN IF NOT EXISTS note TEXT;
     `);
 
     const ptCountRes = await client.query("SELECT COUNT(*) as count FROM part_types");
     if (parseInt(ptCountRes.rows[0].count, 10) === 0) {
       for (const pt of DEFAULT_PART_TYPES) {
         await client.query(
-          `INSERT INTO part_types (id, name, fields, required_fields, display_format, archived)
-           VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
+          `INSERT INTO part_types (id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (id) DO NOTHING`,
           [
             pt.id,
             pt.name,
             JSON.stringify(pt.fields),
             JSON.stringify(pt.required_fields),
             pt.display_format,
+            pt.length_rule || null,
+            pt.diameter_rule || null,
+            pt.note || null,
             false,
           ],
         );
+      }
+    } else {
+      for (const pt of DEFAULT_PART_TYPES) {
+        if (pt.length_rule || pt.diameter_rule) {
+          await client.query(
+            `UPDATE part_types SET length_rule = COALESCE(length_rule, $1), diameter_rule = COALESCE(diameter_rule, $2), note = COALESCE(note, $3) WHERE id = $4`,
+            [pt.length_rule || null, pt.diameter_rule || null, pt.note || null, pt.id],
+          );
+        }
       }
     }
   } finally {
@@ -518,6 +537,9 @@ export const DEFAULT_PART_TYPES = [
     fields: ["thread", "length_mm", "head_type", "af_mm"],
     required_fields: ["thread", "length_mm"],
     display_format: "{thread}x{length_mm} {head_type}",
+    length_rule: "length_mm",
+    diameter_rule: "thread",
+    note: "Shank length and nominal thread diameter",
     archived: false,
   },
   {
@@ -526,6 +548,9 @@ export const DEFAULT_PART_TYPES = [
     fields: ["thread", "af_mm", "height_mm"],
     required_fields: ["thread", "af_mm"],
     display_format: "{thread}, AF: {af_mm}mm",
+    length_rule: "height_mm",
+    diameter_rule: "af_mm",
+    note: "Nut height and across-flats width",
     archived: false,
   },
   {
@@ -534,6 +559,9 @@ export const DEFAULT_PART_TYPES = [
     fields: ["od_mm", "id_mm", "thickness_mm"],
     required_fields: ["od_mm", "thickness_mm"],
     display_format: "{od_mm} × {id_mm} × {thickness_mm} mm",
+    length_rule: "thickness_mm",
+    diameter_rule: "od_mm",
+    note: "Washer thickness and outer diameter",
     archived: false,
   },
   {
@@ -542,6 +570,9 @@ export const DEFAULT_PART_TYPES = [
     fields: ["width_mm", "height_mm"],
     required_fields: ["width_mm", "height_mm"],
     display_format: "{width_mm}x{height_mm}mm",
+    length_rule: "height_mm",
+    diameter_rule: "width_mm",
+    note: "Label height and width",
     archived: false,
   },
   {
@@ -550,6 +581,9 @@ export const DEFAULT_PART_TYPES = [
     fields: ["length_mm", "width_mm"],
     required_fields: ["length_mm", "width_mm"],
     display_format: "{length_mm}x{width_mm}mm",
+    length_rule: "length_mm",
+    diameter_rule: "width_mm",
+    note: "Cable tie length and strap width",
     archived: false,
   },
   {
@@ -558,6 +592,9 @@ export const DEFAULT_PART_TYPES = [
     fields: ["od_mm", "length_mm", "note"],
     required_fields: ["od_mm", "length_mm"],
     display_format: "OD: {od_mm}mm, L: {length_mm}mm",
+    length_rule: "length_mm",
+    diameter_rule: "od_mm",
+    note: "Spring free length and outer diameter",
     archived: false,
   },
   {
@@ -566,6 +603,9 @@ export const DEFAULT_PART_TYPES = [
     fields: ["width_mm", "height_mm", "od_mm", "length_mm", "note"],
     required_fields: [],
     display_format: "{width_mm}x{height_mm}mm",
+    length_rule: "length_mm",
+    diameter_rule: "width_mm",
+    note: null,
     archived: false,
   },
 ];
@@ -583,15 +623,31 @@ export function ensureSqlitePartTypesSchema(db) {
         fields TEXT NOT NULL,
         required_fields TEXT NOT NULL,
         display_format TEXT DEFAULT NULL,
+        length_rule TEXT DEFAULT NULL,
+        diameter_rule TEXT DEFAULT NULL,
+        note TEXT DEFAULT NULL,
         archived INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
     `);
+    const ptCols = db.prepare("PRAGMA table_info(part_types)").all();
+    if (Array.isArray(ptCols)) {
+      const colNames = new Set(ptCols.map((c) => c.name));
+      if (!colNames.has("length_rule")) {
+        db.prepare("ALTER TABLE part_types ADD COLUMN length_rule TEXT").run();
+      }
+      if (!colNames.has("diameter_rule")) {
+        db.prepare("ALTER TABLE part_types ADD COLUMN diameter_rule TEXT").run();
+      }
+      if (!colNames.has("note")) {
+        db.prepare("ALTER TABLE part_types ADD COLUMN note TEXT").run();
+      }
+    }
     const count = db.prepare("SELECT COUNT(*) as count FROM part_types").get()?.count || 0;
     if (count === 0) {
       const insert = db.prepare(
-        `INSERT OR IGNORE INTO part_types (id, name, fields, required_fields, display_format, archived)
-         VALUES (?, ?, ?, ?, ?, 0)`,
+        `INSERT OR IGNORE INTO part_types (id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       );
       for (const pt of DEFAULT_PART_TYPES) {
         insert.run(
@@ -600,7 +656,19 @@ export function ensureSqlitePartTypesSchema(db) {
           JSON.stringify(pt.fields),
           JSON.stringify(pt.required_fields),
           pt.display_format,
+          pt.length_rule || null,
+          pt.diameter_rule || null,
+          pt.note || null,
         );
+      }
+    } else {
+      const updateStmt = db.prepare(
+        `UPDATE part_types SET length_rule = COALESCE(length_rule, ?), diameter_rule = COALESCE(diameter_rule, ?), note = COALESCE(note, ?) WHERE id = ?`,
+      );
+      for (const pt of DEFAULT_PART_TYPES) {
+        if (pt.length_rule || pt.diameter_rule) {
+          updateStmt.run(pt.length_rule || null, pt.diameter_rule || null, pt.note || null, pt.id);
+        }
       }
     }
   } catch {

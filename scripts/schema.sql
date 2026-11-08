@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS part_types (
     fields TEXT NOT NULL,
     required_fields TEXT NOT NULL,
     display_format TEXT DEFAULT NULL,
+    length_rule TEXT DEFAULT NULL,
+    diameter_rule TEXT DEFAULT NULL,
+    note TEXT DEFAULT NULL,
     archived BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

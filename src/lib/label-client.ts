@@ -102,6 +102,9 @@ export type PartTypeDefinition = {
   fields: MetrologyField[];
   required_fields: MetrologyField[];
   display_format: string | null;
+  length_rule?: string | null;
+  diameter_rule?: string | null;
+  note?: string | null;
   archived: boolean;
   created_at?: string;
 };
@@ -562,6 +565,9 @@ export function createPartType(data: {
   fields: MetrologyField[];
   required_fields?: MetrologyField[];
   display_format?: string | null;
+  length_rule?: string | null;
+  diameter_rule?: string | null;
+  note?: string | null;
 }): Promise<PartTypeDefinition> {
   return fetch(api("/api/part-types"), {
     method: "POST",
@@ -576,6 +582,9 @@ export function updatePartType(data: {
   fields?: MetrologyField[];
   required_fields?: MetrologyField[];
   display_format?: string | null;
+  length_rule?: string | null;
+  diameter_rule?: string | null;
+  note?: string | null;
   archived?: boolean;
 }): Promise<PartTypeDefinition> {
   return fetch(api("/api/part-types"), {

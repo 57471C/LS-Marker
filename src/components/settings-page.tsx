@@ -168,6 +168,9 @@ export function SettingsPage() {
   const [classFormFields, setClassFormFields] = useState<MetrologyField[]>([]);
   const [classFormRequired, setClassFormRequired] = useState<MetrologyField[]>([]);
   const [classFormFormat, setClassFormFormat] = useState("");
+  const [classFormLengthRule, setClassFormLengthRule] = useState("");
+  const [classFormDiameterRule, setClassFormDiameterRule] = useState("");
+  const [classFormRuleNote, setClassFormRuleNote] = useState("");
   const [classFormError, setClassFormError] = useState<string | null>(null);
   const [classFormSaving, setClassFormSaving] = useState(false);
 
@@ -251,6 +254,9 @@ export function SettingsPage() {
     setClassFormFields(["width_mm", "height_mm"]);
     setClassFormRequired(["width_mm", "height_mm"]);
     setClassFormFormat("{width_mm}x{height_mm}mm");
+    setClassFormLengthRule("height_mm");
+    setClassFormDiameterRule("width_mm");
+    setClassFormRuleNote("");
     setClassFormError(null);
   }
 
@@ -262,6 +268,9 @@ export function SettingsPage() {
     setClassFormFields([...pt.fields]);
     setClassFormRequired([...pt.required_fields]);
     setClassFormFormat(pt.display_format || "");
+    setClassFormLengthRule(pt.length_rule || "");
+    setClassFormDiameterRule(pt.diameter_rule || "");
+    setClassFormRuleNote(pt.note || "");
     setClassFormError(null);
   }
 
@@ -311,6 +320,9 @@ export function SettingsPage() {
           fields: classFormFields,
           required_fields: classFormRequired,
           display_format: classFormFormat.trim() || null,
+          length_rule: classFormLengthRule.trim() || null,
+          diameter_rule: classFormDiameterRule.trim() || null,
+          note: classFormRuleNote.trim() || null,
         });
       } else if (editingPartTypeId) {
         await updatePartType({
@@ -319,6 +331,9 @@ export function SettingsPage() {
           fields: classFormFields,
           required_fields: classFormRequired,
           display_format: classFormFormat.trim() || null,
+          length_rule: classFormLengthRule.trim() || null,
+          diameter_rule: classFormDiameterRule.trim() || null,
+          note: classFormRuleNote.trim() || null,
         });
       }
       setIsAddingClass(false);
@@ -960,6 +975,86 @@ export function SettingsPage() {
                           </p>
                         </div>
 
+                        {/* MEASUREMENT RULES (DINO / VISION EXPORT) */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          <div>
+                            <label className="text-[11px] font-semibold text-[#505050] block mb-1">
+                              Length Rule (e.g. length_mm, height_mm, length_mm - head_length_mm)
+                            </label>
+                            <div className="flex gap-1.5">
+                              <input
+                                type="text"
+                                value={classFormLengthRule}
+                                onChange={(e) => setClassFormLengthRule(e.target.value)}
+                                placeholder="e.g. length_mm"
+                                className="flex-1 h-7 px-2 font-mono rounded-[2px] border border-[#c8c8c8] bg-white text-xs outline-none focus:border-[#1473e6]"
+                              />
+                              <select
+                                value=""
+                                onChange={(e) => {
+                                  if (e.target.value) setClassFormLengthRule(e.target.value);
+                                }}
+                                className="h-7 px-1.5 text-[11px] rounded-[2px] border border-[#c8c8c8] bg-white text-[#505050]"
+                              >
+                                <option value="">Presets...</option>
+                                <option value="length_mm">length_mm</option>
+                                <option value="height_mm">height_mm</option>
+                                <option value="thickness_mm">thickness_mm</option>
+                                <option value="length_mm - head_length_mm">
+                                  length_mm - head_length_mm
+                                </option>
+                              </select>
+                            </div>
+                            <p className="text-[10px] text-[#707070] mt-1">
+                              Expression or field that yields part length for Vision / DINO exports.
+                            </p>
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] font-semibold text-[#505050] block mb-1">
+                              Diameter / Cross-Section Rule (e.g. thread, af_mm, width_mm, od_mm)
+                            </label>
+                            <div className="flex gap-1.5">
+                              <input
+                                type="text"
+                                value={classFormDiameterRule}
+                                onChange={(e) => setClassFormDiameterRule(e.target.value)}
+                                placeholder="e.g. thread"
+                                className="flex-1 h-7 px-2 font-mono rounded-[2px] border border-[#c8c8c8] bg-white text-xs outline-none focus:border-[#1473e6]"
+                              />
+                              <select
+                                value=""
+                                onChange={(e) => {
+                                  if (e.target.value) setClassFormDiameterRule(e.target.value);
+                                }}
+                                className="h-7 px-1.5 text-[11px] rounded-[2px] border border-[#c8c8c8] bg-white text-[#505050]"
+                              >
+                                <option value="">Presets...</option>
+                                <option value="thread">thread</option>
+                                <option value="af_mm">af_mm</option>
+                                <option value="od_mm">od_mm</option>
+                                <option value="width_mm">width_mm</option>
+                              </select>
+                            </div>
+                            <p className="text-[10px] text-[#707070] mt-1">
+                              Cross-sectional dimension or nominal thread for Vision / DINO exports.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="text-[11px] font-semibold text-[#505050] block mb-1">
+                            Measurement Rule Note (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={classFormRuleNote}
+                            onChange={(e) => setClassFormRuleNote(e.target.value)}
+                            placeholder="e.g. Shank length and nominal thread diameter"
+                            className="w-full h-7 px-2 rounded-[2px] border border-[#c8c8c8] bg-white text-xs outline-none focus:border-[#1473e6]"
+                          />
+                        </div>
+
                         <div>
                           <label className="text-[11px] font-semibold text-[#505050] block mb-1.5">
                             Applicable Metrology Fields &amp; Requirements
@@ -1057,6 +1152,7 @@ export function SettingsPage() {
                             <th className="px-2.5 py-1.5">Slug ID</th>
                             <th className="px-2.5 py-1.5">Applicable Metrology Fields</th>
                             <th className="px-2.5 py-1.5">Display Format</th>
+                            <th className="px-2.5 py-1.5">Measurement Rules (DINO)</th>
                             <th className="px-2.5 py-1.5">Status</th>
                             <th className="px-2.5 py-1.5 text-right">Actions</th>
                           </tr>
@@ -1109,6 +1205,36 @@ export function SettingsPage() {
                                   ) : (
                                     <span className="text-[#a0a0a0] italic font-sans text-[10px]">
                                       Default order
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-2.5 py-2 font-mono text-[10px] text-[#505050]">
+                                  {pt.length_rule || pt.diameter_rule ? (
+                                    <div className="flex flex-col gap-0.5">
+                                      {pt.length_rule && (
+                                        <span title="Length calculation rule">
+                                          <strong className="text-[#707070]">L:</strong>{" "}
+                                          {pt.length_rule}
+                                        </span>
+                                      )}
+                                      {pt.diameter_rule && (
+                                        <span title="Diameter / cross-section rule">
+                                          <strong className="text-[#707070]">Dia:</strong>{" "}
+                                          {pt.diameter_rule}
+                                        </span>
+                                      )}
+                                      {pt.note && (
+                                        <span
+                                          className="text-[9px] text-[#707070] italic font-sans truncate max-w-[140px]"
+                                          title={pt.note}
+                                        >
+                                          {pt.note}
+                                        </span>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <span className="text-[#a0a0a0] italic font-sans text-[10px]">
+                                      Unset
                                     </span>
                                   )}
                                 </td>

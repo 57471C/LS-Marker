@@ -62,7 +62,17 @@ try {
   const map = await getPartTypesMap(db, true);
   assert.ok(map.has("bolt"));
   assert.deepEqual(map.get("bolt").required_fields, ["thread", "length_mm"]);
-  console.log("  ✓ getPartTypesMap loaded correctly from DB");
+  assert.equal(map.get("bolt").length_rule, "length_mm", "bolt length_rule should be length_mm");
+  assert.equal(map.get("bolt").diameter_rule, "thread", "bolt diameter_rule should be thread");
+  assert.equal(map.get("nut").length_rule, "height_mm", "nut length_rule should be height_mm");
+  assert.equal(map.get("nut").diameter_rule, "af_mm", "nut diameter_rule should be af_mm");
+  assert.equal(map.get("label").length_rule, "height_mm", "label length_rule should be height_mm");
+  assert.equal(
+    map.get("label").diameter_rule,
+    "width_mm",
+    "label diameter_rule should be width_mm",
+  );
+  console.log("  ✓ getPartTypesMap loaded correctly from DB with default measurement rules");
 
   // 3. Create a custom part type (e.g. Resin)
   console.log("3. Testing custom part type insertion...");
@@ -72,19 +82,25 @@ try {
     fields: ["width_mm", "height_mm", "thickness_mm", "note"],
     required_fields: ["width_mm", "height_mm"],
     display_format: "{width_mm}x{height_mm}mm ({thickness_mm}mm)",
+    length_rule: "height_mm",
+    diameter_rule: "width_mm",
+    note: "UV cured cartridge",
     archived: false,
     created_at: new Date().toISOString(),
   };
 
   db.prepare(`
-    INSERT INTO part_types (id, name, fields, required_fields, display_format, archived, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO part_types (id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     resinDef.id,
     resinDef.name,
     JSON.stringify(resinDef.fields),
     JSON.stringify(resinDef.required_fields),
     resinDef.display_format,
+    resinDef.length_rule,
+    resinDef.diameter_rule,
+    resinDef.note,
     0,
     resinDef.created_at,
   );
@@ -96,7 +112,12 @@ try {
   assert.equal(resinLoaded.name, "Resin");
   assert.deepEqual(resinLoaded.fields, resinDef.fields);
   assert.deepEqual(resinLoaded.required_fields, resinDef.required_fields);
-  console.log("  ✓ Custom part type 'resin' created and loaded successfully");
+  assert.equal(resinLoaded.length_rule, "height_mm");
+  assert.equal(resinLoaded.diameter_rule, "width_mm");
+  assert.equal(resinLoaded.note, "UV cured cartridge");
+  console.log(
+    "  ✓ Custom part type 'resin' with measurement rules created and loaded successfully",
+  );
 
   // 4. Test formatCanonicalDimensions and cleanClassDimensions with custom class
   console.log("4. Testing canonical formatting and cleaning for custom class...");

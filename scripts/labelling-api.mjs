@@ -1999,6 +1999,7 @@ async function streamDinoCatalogueExport(
 
   const dbClasses = await listClasses(db, project.id);
   const sourceClasses = dbClasses.length > 0 ? dbClasses : baseClasses;
+  const partTypesMap = await getPartTypesMap(db);
   const hasMm = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
 
   /** @type {Array<{
@@ -2007,6 +2008,10 @@ async function streamDinoCatalogueExport(
    *   description: string,
    *   part_type: string | null,
    *   dimensions: Array<{ name: string, mm: number }>,
+   *   length_rule: string | null,
+   *   diameter_rule: string | null,
+   *   rule_note: string | null,
+   *   measurement_rules: { length_rule: string | null, diameter_rule: string | null, note: string | null },
    *   dim1_name: string | null,
    *   dim1_mm: number | null,
    *   dim2_name: string | null,
@@ -2026,12 +2031,26 @@ async function streamDinoCatalogueExport(
     if (hasMm(c.dim3_mm)) {
       dimensions.push({ name: c.dim3_name || "dim3", mm: Number(c.dim3_mm) });
     }
+    const ptKey = c.part_type ? String(c.part_type).trim().toLowerCase() : null;
+    const ptDef = ptKey ? partTypesMap.get(ptKey) : null;
+    const lengthRule = ptDef?.length_rule || null;
+    const diameterRule = ptDef?.diameter_rule || null;
+    const ruleNote = ptDef?.note || null;
+
     return {
       id: c.id,
       ic: c.ic,
       description: c.des || "",
       part_type: c.part_type || null,
       dimensions,
+      length_rule: lengthRule,
+      diameter_rule: diameterRule,
+      rule_note: ruleNote,
+      measurement_rules: {
+        length_rule: lengthRule,
+        diameter_rule: diameterRule,
+        note: ruleNote,
+      },
       dim1_name: c.dim1_name ?? null,
       dim1_mm: hasMm(c.dim1_mm) ? Number(c.dim1_mm) : null,
       dim2_name: c.dim2_name ?? null,
@@ -2120,6 +2139,14 @@ async function streamDinoCatalogueExport(
             description: "",
             part_type: null,
             dimensions: [],
+            length_rule: null,
+            diameter_rule: null,
+            rule_note: null,
+            measurement_rules: {
+              length_rule: null,
+              diameter_rule: null,
+              note: null,
+            },
             dim1_name: null,
             dim1_mm: null,
             dim2_name: null,
@@ -2560,7 +2587,7 @@ export async function getPartTypesMap(db, forceRefresh = false) {
     try {
       const rows = await db
         .prepare(
-          "SELECT id, name, fields, required_fields, display_format, archived FROM part_types ORDER BY created_at ASC",
+          "SELECT id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived FROM part_types ORDER BY created_at ASC",
         )
         .all();
       if (Array.isArray(rows) && rows.length > 0) {
@@ -2579,6 +2606,9 @@ export async function getPartTypesMap(db, forceRefresh = false) {
             fields: parseArr(r.fields),
             required_fields: parseArr(r.required_fields),
             display_format: r.display_format || null,
+            length_rule: r.length_rule || null,
+            diameter_rule: r.diameter_rule || null,
+            note: r.note || null,
             archived: Boolean(r.archived === 1 || r.archived === true || r.archived === "t"),
           });
         }
@@ -5520,6 +5550,9 @@ export async function handle(req, res, url, root) {
       ? body.required_fields.filter((f) => fields.includes(f))
       : [];
     const display_format = cleanOptionalText(body.display_format, 120);
+    const length_rule = cleanOptionalText(body.length_rule, 120);
+    const diameter_rule = cleanOptionalText(body.diameter_rule, 120);
+    const note = cleanOptionalText(body.note, 255);
 
     const existing = await db.prepare("SELECT id FROM part_types WHERE id = ?").get(id);
     if (existing) {
@@ -5528,7 +5561,7 @@ export async function handle(req, res, url, root) {
 
     await db
       .prepare(
-        "INSERT INTO part_types (id, name, fields, required_fields, display_format, archived, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO part_types (id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         id,
@@ -5536,6 +5569,9 @@ export async function handle(req, res, url, root) {
         JSON.stringify(fields),
         JSON.stringify(required_fields),
         display_format,
+        length_rule,
+        diameter_rule,
+        note,
         false,
         new Date().toISOString(),
       );
@@ -5547,6 +5583,9 @@ export async function handle(req, res, url, root) {
       fields,
       required_fields,
       display_format,
+      length_rule,
+      diameter_rule,
+      note,
       archived: false,
     };
     send(res, 201, created);
@@ -5603,6 +5642,15 @@ export async function handle(req, res, url, root) {
       body.display_format !== undefined
         ? cleanOptionalText(body.display_format, 120)
         : existing.display_format;
+    const length_rule =
+      body.length_rule !== undefined
+        ? cleanOptionalText(body.length_rule, 120)
+        : existing.length_rule;
+    const diameter_rule =
+      body.diameter_rule !== undefined
+        ? cleanOptionalText(body.diameter_rule, 120)
+        : existing.diameter_rule;
+    const note = body.note !== undefined ? cleanOptionalText(body.note, 255) : existing.note;
     const isArchived =
       body.archived !== undefined
         ? Boolean(body.archived)
@@ -5615,13 +5663,16 @@ export async function handle(req, res, url, root) {
 
     await db
       .prepare(
-        "UPDATE part_types SET name = ?, fields = ?, required_fields = ?, display_format = ?, archived = ? WHERE id = ?",
+        "UPDATE part_types SET name = ?, fields = ?, required_fields = ?, display_format = ?, length_rule = ?, diameter_rule = ?, note = ?, archived = ? WHERE id = ?",
       )
       .run(
         name,
         JSON.stringify(fields),
         JSON.stringify(required_fields),
         display_format,
+        length_rule,
+        diameter_rule,
+        note,
         isArchived,
         id,
       );
@@ -5633,6 +5684,9 @@ export async function handle(req, res, url, root) {
       fields,
       required_fields,
       display_format,
+      length_rule,
+      diameter_rule,
+      note,
       archived: isArchived,
     });
     return;
