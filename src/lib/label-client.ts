@@ -1,10 +1,29 @@
-export type PartType = "none" | "bolt" | "nut" | "washer" | "cable_tie" | "spring" | "other";
+export type PartType =
+  | "none"
+  | "bolt"
+  | "nut"
+  | "washer"
+  | "label"
+  | "cable_tie"
+  | "spring"
+  | "other";
 export type ClassRow = {
   id: number;
   ic: string;
   des: string;
   color: string;
   part_type?: PartType | null;
+  thread?: string | null;
+  length_mm?: number | null;
+  head_type?: string | null;
+  af_mm?: number | null;
+  height_mm?: number | null;
+  od_mm?: number | null;
+  id_mm?: number | null;
+  thickness_mm?: number | null;
+  width_mm?: number | null;
+  note?: string | null;
+  dimensions?: string | null;
   dim1_name?: string | null;
   dim1_mm?: number | null;
   dim2_name?: string | null;
@@ -398,7 +417,24 @@ export type UpdateClassInput = Pick<ClassRow, "id" | "ic" | "des"> &
   Partial<
     Pick<
       ClassRow,
-      "part_type" | "dim1_name" | "dim1_mm" | "dim2_name" | "dim2_mm" | "dim3_name" | "dim3_mm"
+      | "part_type"
+      | "thread"
+      | "length_mm"
+      | "head_type"
+      | "af_mm"
+      | "height_mm"
+      | "od_mm"
+      | "id_mm"
+      | "thickness_mm"
+      | "width_mm"
+      | "note"
+      | "dimensions"
+      | "dim1_name"
+      | "dim1_mm"
+      | "dim2_name"
+      | "dim2_mm"
+      | "dim3_name"
+      | "dim3_mm"
     >
   >;
 

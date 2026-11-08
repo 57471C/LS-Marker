@@ -12,6 +12,7 @@ import {
   testDbConnection,
   updateDbConnectionString,
 } from "./db.mjs";
+import { migrateDatabaseDimensions } from "./migrate-dimensions.mjs";
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
@@ -115,6 +116,11 @@ export async function getDb(root) {
     dbPromise = (async () => {
       const db = await getPgDb(root);
       await ensureDefaultProject(db, root);
+      try {
+        await migrateDatabaseDimensions(db, "Database", false);
+      } catch (err) {
+        console.warn("[auto-migration] Dimension migration check skipped:", err.message);
+      }
       const projects = await db.prepare("SELECT id, folder FROM projects").all();
       for (const project of projects) {
         await assignMissingColors(db, project.id);
@@ -2521,21 +2527,28 @@ async function writeClassesFile(db, projectId, folder) {
 async function listClasses(db, projectId) {
   return await db
     .prepare(
-      `SELECT id, ic, des, color, part_type, dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
+      `SELECT id, ic, des, color, part_type,
+              thread, length_mm, head_type, af_mm, height_mm,
+              od_mm, id_mm, thickness_mm, width_mm, note, dimensions,
+              dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
        FROM classes WHERE project_id = ? ORDER BY id`,
     )
     .all(projectId);
 }
 
-const VALID_PART_TYPES = new Set(["none", "bolt", "nut", "washer", "cable_tie", "spring", "other"]);
-
-const DEFAULT_DIM_NAMES = {
-  bolt: ["Length under head", "Thread diameter", null],
-  nut: ["Across flats (A/F)", "Height", null],
-  washer: ["Outer diameter", "Inner diameter", "Thickness"],
-  cable_tie: ["Length", "Width", null],
-  spring: ["Height", "Diameter", null],
-};
+const VALID_PART_TYPES = new Set([
+  "none",
+  "bolt",
+  "nut",
+  "washer",
+  "spacer",
+  "crush_tube",
+  "label",
+  "sticker",
+  "cable_tie",
+  "spring",
+  "other",
+]);
 
 function cleanOptionalDimName(val, maxLen = 60) {
   if (val === undefined || val === null) return null;
@@ -2543,6 +2556,16 @@ function cleanOptionalDimName(val, maxLen = 60) {
   if (!s) return null;
   if (s.length > maxLen) {
     throw new HttpError(400, `Dimension name is limited to ${maxLen} characters`);
+  }
+  return s;
+}
+
+function cleanOptionalText(val, maxLen = 60) {
+  if (val === undefined || val === null) return null;
+  const s = String(val).trim();
+  if (!s) return null;
+  if (s.length > maxLen) {
+    throw new HttpError(400, `Value is limited to ${maxLen} characters`);
   }
   return s;
 }
@@ -2557,19 +2580,122 @@ function cleanOptionalDimMm(val, label = "Dimension value") {
 }
 
 /**
+ * Generate canonical display string for dimensions.
+ * Canonical order:
+ * - Bolt: thread x length, e.g. M6x30 (plus head_type and af_mm if present)
+ * - Nut: thread, AF: af_mm (plus height if present)
+ * - Washer / Spacer / Crush tube: od x id x thickness mm, e.g. 16 × 8.4 × 1.6 mm
+ * - Label / Sticker: width x height, e.g. 130x37mm
+ * - Cable tie: length x width, e.g. 200x4.8mm
+ * - Spring / Other: OD: od_mm, L: length_mm OR width x height (plus note)
+ * @param {Record<string, any>} cls
+ * @returns {string | null}
+ */
+export function formatCanonicalDimensions(cls) {
+  if (!cls) return null;
+  const pt = cls.part_type ? String(cls.part_type).trim().toLowerCase() : "none";
+  if (!pt || pt === "none") return null;
+
+  const hasNum = (v) =>
+    v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v)) && Number(v) > 0;
+  const hasStr = (v) => typeof v === "string" && v.trim().length > 0;
+
+  if (pt === "bolt") {
+    if (hasStr(cls.thread) && hasNum(cls.length_mm)) {
+      let s = `${cls.thread.trim()}x${cls.length_mm}`;
+      if (hasStr(cls.head_type)) {
+        s += ` ${cls.head_type.trim()}`;
+      }
+      if (hasNum(cls.af_mm)) {
+        s += ` (AF: ${cls.af_mm}mm)`;
+      }
+      return s;
+    }
+  }
+
+  if (pt === "nut") {
+    if (hasStr(cls.thread) && hasNum(cls.af_mm)) {
+      let s = `${cls.thread.trim()}, AF: ${cls.af_mm}mm`;
+      if (hasNum(cls.height_mm)) {
+        s += `, H: ${cls.height_mm}mm`;
+      }
+      return s;
+    }
+  }
+
+  if (pt === "washer" || pt === "spacer" || pt === "crush_tube") {
+    if (hasNum(cls.od_mm) && hasNum(cls.id_mm) && hasNum(cls.thickness_mm)) {
+      return `${cls.od_mm} × ${cls.id_mm} × ${cls.thickness_mm} mm`;
+    }
+    if (hasNum(cls.od_mm) && hasNum(cls.thickness_mm)) {
+      return `${cls.od_mm} × ${cls.thickness_mm} mm`;
+    }
+    if (hasNum(cls.od_mm) && hasNum(cls.id_mm)) {
+      return `${cls.od_mm} × ${cls.id_mm} mm`;
+    }
+  }
+
+  if (pt === "label" || pt === "sticker") {
+    if (hasNum(cls.width_mm) && hasNum(cls.height_mm)) {
+      return `${cls.width_mm}x${cls.height_mm}mm`;
+    }
+  }
+
+  if (pt === "cable_tie") {
+    if (hasNum(cls.length_mm) && hasNum(cls.width_mm)) {
+      return `${cls.length_mm}x${cls.width_mm}mm`;
+    }
+  }
+
+  if (pt === "spring" || pt === "other") {
+    let s = "";
+    if (hasNum(cls.od_mm) && hasNum(cls.length_mm)) {
+      s = `OD: ${cls.od_mm}mm, L: ${cls.length_mm}mm`;
+    } else if (hasNum(cls.width_mm) && hasNum(cls.height_mm)) {
+      s = `${cls.width_mm}x${cls.height_mm}mm`;
+    } else if (hasNum(cls.width_mm) && hasNum(cls.length_mm)) {
+      s = `${cls.width_mm}x${cls.length_mm}mm`;
+    }
+    if (hasStr(cls.note)) {
+      s = s ? `${s} (${cls.note.trim()})` : cls.note.trim();
+    }
+    if (s) return s;
+  }
+
+  // Fallback to existing dimensions display string if set (e.g. preserved ambiguous row)
+  if (hasStr(cls.dimensions)) return cls.dimensions.trim();
+
+  return null;
+}
+
+/**
  * @param {Record<string, unknown>} body
  */
 export function cleanClassDimensions(body) {
-  const rawType =
+  let rawType =
     body.part_type === undefined || body.part_type === null
       ? "none"
       : String(body.part_type).trim().toLowerCase() || "none";
+  if (rawType === "spacer" || rawType === "crush_tube") rawType = "washer";
+  if (rawType === "sticker") rawType = "label";
+
   if (!VALID_PART_TYPES.has(rawType)) {
     throw new HttpError(400, "Invalid part_type");
   }
   if (rawType === "none") {
     return {
       part_type: null,
+      thread: null,
+      length_mm: null,
+      head_type: null,
+      af_mm: null,
+      height_mm: null,
+      od_mm: null,
+      id_mm: null,
+      thickness_mm: null,
+      width_mm: null,
+      note: null,
+      dimensions: null,
       dim1_name: null,
       dim1_mm: null,
       dim2_name: null,
@@ -2578,19 +2704,238 @@ export function cleanClassDimensions(body) {
       dim3_mm: null,
     };
   }
-  const defaults = DEFAULT_DIM_NAMES[rawType];
-  const dim1_name = defaults ? defaults[0] : cleanOptionalDimName(body.dim1_name);
-  const dim2_name = defaults ? defaults[1] : cleanOptionalDimName(body.dim2_name);
-  const dim3_name = defaults ? defaults[2] : cleanOptionalDimName(body.dim3_name);
-  const dim1_mm = cleanOptionalDimMm(body.dim1_mm, dim1_name || "Dimension 1");
-  const dim2_mm = cleanOptionalDimMm(body.dim2_mm, dim2_name || "Dimension 2");
-  const dim3_mm =
-    rawType === "washer" || rawType === "other"
-      ? cleanOptionalDimMm(body.dim3_mm, dim3_name || "Dimension 3")
-      : null;
+
+  // Clean structured fields
+  const thread = cleanOptionalText(body.thread, 30);
+  const length_mm = cleanOptionalDimMm(body.length_mm, "Length");
+  const head_type = cleanOptionalText(body.head_type, 40);
+  const af_mm = cleanOptionalDimMm(body.af_mm, "Across flats");
+  const height_mm = cleanOptionalDimMm(body.height_mm, "Height");
+  const od_mm = cleanOptionalDimMm(body.od_mm, "Outer diameter");
+  const id_mm = cleanOptionalDimMm(body.id_mm, "Inner diameter");
+  const thickness_mm = cleanOptionalDimMm(body.thickness_mm, "Thickness");
+  const width_mm = cleanOptionalDimMm(body.width_mm, "Width");
+  const note = cleanOptionalText(body.note, 120);
+
+  let finalThread = thread;
+  let finalLengthMm = length_mm;
+  let finalHeadType = head_type;
+  let finalAfMm = af_mm;
+  let finalHeightMm = height_mm;
+  let finalOdMm = od_mm;
+  let finalIdMm = id_mm;
+  let finalThicknessMm = thickness_mm;
+  let finalWidthMm = width_mm;
+
+  // Legacy field support & backwards mapping:
+  if (rawType === "bolt") {
+    if (
+      finalLengthMm === null &&
+      body.dim1_mm !== undefined &&
+      body.dim1_mm !== null &&
+      body.dim1_mm !== ""
+    ) {
+      finalLengthMm = cleanOptionalDimMm(body.dim1_mm, "Length under head");
+    }
+    if (
+      finalThread === null &&
+      body.dim2_mm !== undefined &&
+      body.dim2_mm !== null &&
+      body.dim2_mm !== ""
+    ) {
+      const d = cleanOptionalDimMm(body.dim2_mm, "Thread diameter");
+      if (d !== null) finalThread = `M${d}`;
+    }
+    if (finalHeadType === null && (finalThread !== null || finalLengthMm !== null)) {
+      finalHeadType = "Hex";
+    }
+  } else if (rawType === "nut") {
+    if (
+      finalAfMm === null &&
+      body.dim1_mm !== undefined &&
+      body.dim1_mm !== null &&
+      body.dim1_mm !== ""
+    ) {
+      finalAfMm = cleanOptionalDimMm(body.dim1_mm, "Across flats");
+    }
+    if (
+      finalHeightMm === null &&
+      body.dim2_mm !== undefined &&
+      body.dim2_mm !== null &&
+      body.dim2_mm !== ""
+    ) {
+      finalHeightMm = cleanOptionalDimMm(body.dim2_mm, "Height");
+    }
+  } else if (rawType === "washer") {
+    if (
+      finalOdMm === null &&
+      body.dim1_mm !== undefined &&
+      body.dim1_mm !== null &&
+      body.dim1_mm !== ""
+    ) {
+      finalOdMm = cleanOptionalDimMm(body.dim1_mm, "Outer diameter");
+    }
+    if (
+      finalIdMm === null &&
+      body.dim2_mm !== undefined &&
+      body.dim2_mm !== null &&
+      body.dim2_mm !== ""
+    ) {
+      finalIdMm = cleanOptionalDimMm(body.dim2_mm, "Inner diameter");
+    }
+    if (
+      finalThicknessMm === null &&
+      body.dim3_mm !== undefined &&
+      body.dim3_mm !== null &&
+      body.dim3_mm !== ""
+    ) {
+      finalThicknessMm = cleanOptionalDimMm(body.dim3_mm, "Thickness");
+    }
+  } else if (rawType === "label") {
+    if (
+      finalWidthMm === null &&
+      body.dim1_mm !== undefined &&
+      body.dim1_mm !== null &&
+      body.dim1_mm !== ""
+    ) {
+      finalWidthMm = cleanOptionalDimMm(body.dim1_mm, "Width");
+    }
+    if (
+      finalHeightMm === null &&
+      body.dim2_mm !== undefined &&
+      body.dim2_mm !== null &&
+      body.dim2_mm !== ""
+    ) {
+      finalHeightMm = cleanOptionalDimMm(body.dim2_mm, "Height");
+    }
+  } else if (rawType === "cable_tie") {
+    if (
+      finalLengthMm === null &&
+      body.dim1_mm !== undefined &&
+      body.dim1_mm !== null &&
+      body.dim1_mm !== ""
+    ) {
+      finalLengthMm = cleanOptionalDimMm(body.dim1_mm, "Length");
+    }
+    if (
+      finalWidthMm === null &&
+      body.dim2_mm !== undefined &&
+      body.dim2_mm !== null &&
+      body.dim2_mm !== ""
+    ) {
+      finalWidthMm = cleanOptionalDimMm(body.dim2_mm, "Width");
+    }
+  } else if (rawType === "spring") {
+    if (
+      finalHeightMm === null &&
+      finalLengthMm === null &&
+      body.dim1_mm !== undefined &&
+      body.dim1_mm !== null &&
+      body.dim1_mm !== ""
+    ) {
+      finalHeightMm = cleanOptionalDimMm(body.dim1_mm, "Height");
+    }
+    if (
+      finalOdMm === null &&
+      finalWidthMm === null &&
+      body.dim2_mm !== undefined &&
+      body.dim2_mm !== null &&
+      body.dim2_mm !== ""
+    ) {
+      finalOdMm = cleanOptionalDimMm(body.dim2_mm, "Diameter");
+    }
+  }
+
+  // Populate canonical dimensions string
+  const canonicalDims = formatCanonicalDimensions({
+    part_type: rawType,
+    thread: finalThread,
+    length_mm: finalLengthMm,
+    head_type: finalHeadType,
+    af_mm: finalAfMm,
+    height_mm: finalHeightMm,
+    od_mm: finalOdMm,
+    id_mm: finalIdMm,
+    thickness_mm: finalThicknessMm,
+    width_mm: finalWidthMm,
+    note,
+    dimensions: cleanOptionalText(body.dimensions, 200),
+  });
+
+  // Keep legacy dim1_name, dim1_mm, etc. in sync for DINO export and existing verification tests
+  let dim1_name = null;
+  let dim1_mm = null;
+  let dim2_name = null;
+  let dim2_mm = null;
+  let dim3_name = null;
+  let dim3_mm = null;
+
+  if (rawType === "bolt") {
+    dim1_name = "Length under head";
+    dim1_mm = finalLengthMm;
+    dim2_name = "Thread diameter";
+    dim2_mm = finalThread ? parseFloat(finalThread.replace(/^M/i, "")) || null : null;
+  } else if (rawType === "nut") {
+    dim1_name = "Across flats (A/F)";
+    dim1_mm = finalAfMm;
+    dim2_name = "Height";
+    dim2_mm = finalHeightMm;
+  } else if (rawType === "washer") {
+    dim1_name = "Outer diameter";
+    dim1_mm = finalOdMm;
+    dim2_name = "Inner diameter";
+    dim2_mm = finalIdMm;
+    dim3_name = "Thickness";
+    dim3_mm = finalThicknessMm;
+  } else if (rawType === "label") {
+    dim1_name = "Width";
+    dim1_mm = finalWidthMm;
+    dim2_name = "Height";
+    dim2_mm = finalHeightMm;
+  } else if (rawType === "cable_tie") {
+    dim1_name = "Length";
+    dim1_mm = finalLengthMm;
+    dim2_name = "Width";
+    dim2_mm = finalWidthMm;
+  } else if (rawType === "spring") {
+    dim1_name = "Height";
+    dim1_mm = finalLengthMm ?? finalHeightMm;
+    dim2_name = "Diameter";
+    dim2_mm = finalOdMm ?? finalWidthMm;
+  } else if (rawType === "other") {
+    if (finalWidthMm !== null && finalHeightMm !== null) {
+      dim1_name = "Width";
+      dim1_mm = finalWidthMm;
+      dim2_name = "Height";
+      dim2_mm = finalHeightMm;
+    } else if (finalOdMm !== null && finalLengthMm !== null) {
+      dim1_name = "OD";
+      dim1_mm = finalOdMm;
+      dim2_name = "Length";
+      dim2_mm = finalLengthMm;
+    } else {
+      dim1_name = cleanOptionalDimName(body.dim1_name);
+      dim1_mm = cleanOptionalDimMm(body.dim1_mm, dim1_name || "Dimension 1");
+      dim2_name = cleanOptionalDimName(body.dim2_name);
+      dim2_mm = cleanOptionalDimMm(body.dim2_mm, dim2_name || "Dimension 2");
+      dim3_name = cleanOptionalDimName(body.dim3_name);
+      dim3_mm = cleanOptionalDimMm(body.dim3_mm, dim3_name || "Dimension 3");
+    }
+  }
 
   return {
     part_type: rawType,
+    thread: finalThread,
+    length_mm: finalLengthMm,
+    head_type: finalHeadType,
+    af_mm: finalAfMm,
+    height_mm: finalHeightMm,
+    od_mm: finalOdMm,
+    id_mm: finalIdMm,
+    thickness_mm: finalThicknessMm,
+    width_mm: finalWidthMm,
+    note,
+    dimensions: canonicalDims,
     dim1_name,
     dim1_mm,
     dim2_name,
@@ -2603,6 +2948,17 @@ export function cleanClassDimensions(body) {
 /**
  * @param {{
  *   part_type?: string | null,
+ *   thread?: string | null,
+ *   length_mm?: number | null,
+ *   head_type?: string | null,
+ *   af_mm?: number | null,
+ *   height_mm?: number | null,
+ *   od_mm?: number | null,
+ *   id_mm?: number | null,
+ *   thickness_mm?: number | null,
+ *   width_mm?: number | null,
+ *   note?: string | null,
+ *   dimensions?: string | null,
  *   dim1_name?: string | null,
  *   dim1_mm?: number | null,
  *   dim2_name?: string | null,
@@ -2616,20 +2972,48 @@ export function computeClassDimensionsStatus(cls) {
   const pt = cls?.part_type ? String(cls.part_type).trim().toLowerCase() : "none";
   if (!pt || pt === "none") return "none";
 
-  const hasMm = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
-  const hasName = (v) => typeof v === "string" && v.trim().length > 0;
+  const hasNum = (v) =>
+    v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v)) && Number(v) > 0;
+  const hasStr = (v) => typeof v === "string" && v.trim().length > 0;
 
-  if (pt === "bolt" || pt === "nut" || pt === "cable_tie" || pt === "spring") {
-    return hasMm(cls.dim1_mm) && hasMm(cls.dim2_mm) ? "complete" : "missing";
+  if (pt === "bolt") {
+    if (hasStr(cls.thread) && hasNum(cls.length_mm) && hasStr(cls.head_type)) return "complete";
+    if (hasNum(cls.dim1_mm) && hasNum(cls.dim2_mm)) return "complete";
+    return "missing";
+  }
+  if (pt === "nut") {
+    if (hasStr(cls.thread) && hasNum(cls.af_mm)) return "complete";
+    if (hasNum(cls.dim1_mm) && hasNum(cls.dim2_mm)) return "complete";
+    return "missing";
   }
   if (pt === "washer") {
-    return hasMm(cls.dim1_mm) && hasMm(cls.dim2_mm) && hasMm(cls.dim3_mm) ? "complete" : "missing";
+    if (hasNum(cls.od_mm) && hasNum(cls.id_mm) && hasNum(cls.thickness_mm)) return "complete";
+    if (hasNum(cls.dim1_mm) && hasNum(cls.dim2_mm) && hasNum(cls.dim3_mm)) return "complete";
+    return "missing";
+  }
+  if (pt === "label") {
+    if (hasNum(cls.width_mm) && hasNum(cls.height_mm)) return "complete";
+    if (hasNum(cls.dim1_mm) && hasNum(cls.dim2_mm)) return "complete";
+    return "missing";
+  }
+  if (pt === "cable_tie") {
+    if (hasNum(cls.length_mm) && hasNum(cls.width_mm)) return "complete";
+    if (hasNum(cls.dim1_mm) && hasNum(cls.dim2_mm)) return "complete";
+    return "missing";
+  }
+  if (pt === "spring") {
+    if (hasNum(cls.od_mm) && hasNum(cls.length_mm)) return "complete";
+    if (hasNum(cls.width_mm) && hasNum(cls.height_mm)) return "complete";
+    if (hasNum(cls.dim1_mm) && hasNum(cls.dim2_mm)) return "complete";
+    return "missing";
   }
   if (pt === "other") {
+    if (hasNum(cls.od_mm) && hasNum(cls.length_mm)) return "complete";
+    if (hasNum(cls.width_mm) && hasNum(cls.height_mm)) return "complete";
     const pairs = [
-      [hasName(cls.dim1_name), hasMm(cls.dim1_mm)],
-      [hasName(cls.dim2_name), hasMm(cls.dim2_mm)],
-      [hasName(cls.dim3_name), hasMm(cls.dim3_mm)],
+      [hasStr(cls.dim1_name), hasNum(cls.dim1_mm)],
+      [hasStr(cls.dim2_name), hasNum(cls.dim2_mm)],
+      [hasStr(cls.dim3_name), hasNum(cls.dim3_mm)],
     ];
     const anyFilled = pairs.some(([n, m]) => n && m);
     const anyPartial = pairs.some(([n, m]) => (n && !m) || (!n && m));
@@ -4795,8 +5179,10 @@ export async function handle(req, res, url, root) {
         .prepare(
           `INSERT INTO classes (
           project_id, id, ic, des, color,
-          part_type, dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          part_type, thread, length_mm, head_type, af_mm, height_mm,
+          od_mm, id_mm, thickness_mm, width_mm, note, dimensions,
+          dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           project.id,
@@ -4805,6 +5191,17 @@ export async function handle(req, res, url, root) {
           des,
           color,
           dims.part_type,
+          dims.thread,
+          dims.length_mm,
+          dims.head_type,
+          dims.af_mm,
+          dims.height_mm,
+          dims.od_mm,
+          dims.id_mm,
+          dims.thickness_mm,
+          dims.width_mm,
+          dims.note,
+          dims.dimensions,
           dims.dim1_name,
           dims.dim1_mm,
           dims.dim2_name,
@@ -4841,6 +5238,17 @@ export async function handle(req, res, url, root) {
     if (!existing) throw new HttpError(404, "Class not found");
     const hasDimsPayload =
       body.part_type !== undefined ||
+      body.thread !== undefined ||
+      body.length_mm !== undefined ||
+      body.head_type !== undefined ||
+      body.af_mm !== undefined ||
+      body.height_mm !== undefined ||
+      body.od_mm !== undefined ||
+      body.id_mm !== undefined ||
+      body.thickness_mm !== undefined ||
+      body.width_mm !== undefined ||
+      body.note !== undefined ||
+      body.dimensions !== undefined ||
       body.dim1_name !== undefined ||
       body.dim1_mm !== undefined ||
       body.dim2_name !== undefined ||
@@ -4854,8 +5262,9 @@ export async function handle(req, res, url, root) {
           .prepare(
             `UPDATE classes
            SET ic = ?, des = ?,
-               part_type = ?, dim1_name = ?, dim1_mm = ?,
-               dim2_name = ?, dim2_mm = ?,
+               part_type = ?, thread = ?, length_mm = ?, head_type = ?, af_mm = ?, height_mm = ?,
+               od_mm = ?, id_mm = ?, thickness_mm = ?, width_mm = ?, note = ?, dimensions = ?,
+               dim1_name = ?, dim1_mm = ?, dim2_name = ?, dim2_mm = ?,
                dim3_name = ?, dim3_mm = ?
            WHERE project_id = ? AND id = ?`,
           )
@@ -4863,6 +5272,17 @@ export async function handle(req, res, url, root) {
             ic,
             des,
             dims.part_type,
+            dims.thread,
+            dims.length_mm,
+            dims.head_type,
+            dims.af_mm,
+            dims.height_mm,
+            dims.od_mm,
+            dims.id_mm,
+            dims.thickness_mm,
+            dims.width_mm,
+            dims.note,
+            dims.dimensions,
             dims.dim1_name,
             dims.dim1_mm,
             dims.dim2_name,
@@ -4884,7 +5304,10 @@ export async function handle(req, res, url, root) {
     await writeClassesFile(db, project.id, path.resolve(root, project.folder));
     const row = await db
       .prepare(
-        `SELECT id, ic, des, color, part_type, dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
+        `SELECT id, ic, des, color, part_type,
+                thread, length_mm, head_type, af_mm, height_mm,
+                od_mm, id_mm, thickness_mm, width_mm, note, dimensions,
+                dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
          FROM classes WHERE project_id = ? AND id = ?`,
       )
       .get(project.id, id);

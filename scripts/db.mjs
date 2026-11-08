@@ -354,6 +354,20 @@ export async function getDb(root = process.cwd()) {
       const ddl = fs.readFileSync(schemaPath, "utf8");
       await client.query(ddl);
     }
+    // Additive schema migrations for structured dimensions
+    await client.query(`
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS thread TEXT;
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS length_mm DOUBLE PRECISION;
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS head_type TEXT;
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS af_mm DOUBLE PRECISION;
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS height_mm DOUBLE PRECISION;
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS od_mm DOUBLE PRECISION;
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS id_mm DOUBLE PRECISION;
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS thickness_mm DOUBLE PRECISION;
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS width_mm DOUBLE PRECISION;
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS note TEXT;
+      ALTER TABLE classes ADD COLUMN IF NOT EXISTS dimensions TEXT;
+    `);
   } finally {
     client.release();
   }
@@ -467,4 +481,42 @@ export async function updateDbConnectionString(root = process.cwd(), newUrl) {
     success: true,
     info: getDbConnectionInfo(root),
   };
+}
+
+/**
+ * Add missing structured dimensions columns to SQLite classes table additively.
+ * @param {any} db
+ */
+export function ensureSqliteClassesSchema(db) {
+  try {
+    const currentCols = db.prepare("PRAGMA table_info(classes)").all();
+    if (!Array.isArray(currentCols) || currentCols.length === 0) return;
+    const colNames = new Set(currentCols.map((c) => c.name));
+    const addCol = (name, type) => {
+      if (!colNames.has(name)) {
+        db.exec(`ALTER TABLE classes ADD COLUMN ${name} ${type}`);
+        colNames.add(name);
+      }
+    };
+    addCol("part_type", "TEXT DEFAULT NULL");
+    addCol("thread", "TEXT DEFAULT NULL");
+    addCol("length_mm", "REAL DEFAULT NULL");
+    addCol("head_type", "TEXT DEFAULT NULL");
+    addCol("af_mm", "REAL DEFAULT NULL");
+    addCol("height_mm", "REAL DEFAULT NULL");
+    addCol("od_mm", "REAL DEFAULT NULL");
+    addCol("id_mm", "REAL DEFAULT NULL");
+    addCol("thickness_mm", "REAL DEFAULT NULL");
+    addCol("width_mm", "REAL DEFAULT NULL");
+    addCol("note", "TEXT DEFAULT NULL");
+    addCol("dimensions", "TEXT DEFAULT NULL");
+    addCol("dim1_name", "TEXT DEFAULT NULL");
+    addCol("dim1_mm", "REAL DEFAULT NULL");
+    addCol("dim2_name", "TEXT DEFAULT NULL");
+    addCol("dim2_mm", "REAL DEFAULT NULL");
+    addCol("dim3_name", "TEXT DEFAULT NULL");
+    addCol("dim3_mm", "REAL DEFAULT NULL");
+  } catch {
+    /* ignore if classes table doesn't exist yet */
+  }
 }

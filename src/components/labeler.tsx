@@ -1552,6 +1552,17 @@ export function Labeler() {
         ic: editingDimsClass.ic,
         des: editingDimsClass.des,
         part_type: partType,
+        thread: editingDimsClass.thread ?? null,
+        length_mm: editingDimsClass.length_mm ?? null,
+        head_type: editingDimsClass.head_type ?? null,
+        af_mm: editingDimsClass.af_mm ?? null,
+        height_mm: editingDimsClass.height_mm ?? null,
+        od_mm: editingDimsClass.od_mm ?? null,
+        id_mm: editingDimsClass.id_mm ?? null,
+        thickness_mm: editingDimsClass.thickness_mm ?? null,
+        width_mm: editingDimsClass.width_mm ?? null,
+        note: editingDimsClass.note ?? null,
+        dimensions: editingDimsClass.dimensions ?? null,
         dim1_name: editingDimsClass.dim1_name,
         dim1_mm: editingDimsClass.dim1_mm,
         dim2_name: editingDimsClass.dim2_name,
@@ -2520,81 +2531,138 @@ export function Labeler() {
 
                         {/* Dense fields table */}
                         {editingDimsClass.part_type && editingDimsClass.part_type !== "none" && (
-                          <div>
+                          <div className="flex flex-col gap-1.5">
                             {editingDimsClass.part_type === "bolt" && (
-                              <div className="grid grid-cols-2 gap-1.5">
-                                <div>
-                                  <label className="text-[9px] text-[#707070] block">
-                                    Length under head (mm)
-                                  </label>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="40"
-                                    value={editingDimsClass.dim1_mm ?? ""}
-                                    onChange={(e) =>
-                                      setEditingDimsClass({
-                                        ...editingDimsClass,
-                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
-                                      })
-                                    }
-                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                                  />
+                              <div className="flex flex-col gap-1.5">
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  <div>
+                                    <label className="text-[9px] font-semibold text-[#505050] block">
+                                      Thread *
+                                    </label>
+                                    <input
+                                      type="text"
+                                      placeholder="M8"
+                                      value={editingDimsClass.thread ?? ""}
+                                      onChange={(e) =>
+                                        setEditingDimsClass({
+                                          ...editingDimsClass,
+                                          thread: e.target.value,
+                                        })
+                                      }
+                                      className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-[9px] font-semibold text-[#505050] block">
+                                      Length (mm) *
+                                    </label>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      placeholder="30"
+                                      value={editingDimsClass.length_mm ?? ""}
+                                      onChange={(e) =>
+                                        setEditingDimsClass({
+                                          ...editingDimsClass,
+                                          length_mm: e.target.value ? Number(e.target.value) : null,
+                                        })
+                                      }
+                                      className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                    />
+                                  </div>
                                 </div>
-                                <div>
-                                  <label className="text-[9px] text-[#707070] block">
-                                    Thread Ø (mm)
-                                  </label>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="8"
-                                    value={editingDimsClass.dim2_mm ?? ""}
-                                    onChange={(e) =>
-                                      setEditingDimsClass({
-                                        ...editingDimsClass,
-                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
-                                      })
-                                    }
-                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                                  />
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  <div>
+                                    <label className="text-[9px] font-semibold text-[#505050] block">
+                                      Head Type *
+                                    </label>
+                                    <input
+                                      type="text"
+                                      placeholder="Hex"
+                                      value={editingDimsClass.head_type ?? ""}
+                                      onChange={(e) =>
+                                        setEditingDimsClass({
+                                          ...editingDimsClass,
+                                          head_type: e.target.value,
+                                        })
+                                      }
+                                      className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-[9px] text-[#707070] block">
+                                      A/F (mm, opt)
+                                    </label>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      placeholder="13"
+                                      value={editingDimsClass.af_mm ?? ""}
+                                      onChange={(e) =>
+                                        setEditingDimsClass({
+                                          ...editingDimsClass,
+                                          af_mm: e.target.value ? Number(e.target.value) : null,
+                                        })
+                                      }
+                                      className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                    />
+                                  </div>
                                 </div>
                               </div>
                             )}
 
                             {editingDimsClass.part_type === "nut" && (
-                              <div className="grid grid-cols-2 gap-1.5">
-                                <div>
-                                  <label className="text-[9px] text-[#707070] block">
-                                    Across flats A/F (mm)
-                                  </label>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="13"
-                                    value={editingDimsClass.dim1_mm ?? ""}
-                                    onChange={(e) =>
-                                      setEditingDimsClass({
-                                        ...editingDimsClass,
-                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
-                                      })
-                                    }
-                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                                  />
+                              <div className="flex flex-col gap-1.5">
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  <div>
+                                    <label className="text-[9px] font-semibold text-[#505050] block">
+                                      Thread *
+                                    </label>
+                                    <input
+                                      type="text"
+                                      placeholder="M8"
+                                      value={editingDimsClass.thread ?? ""}
+                                      onChange={(e) =>
+                                        setEditingDimsClass({
+                                          ...editingDimsClass,
+                                          thread: e.target.value,
+                                        })
+                                      }
+                                      className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-[9px] font-semibold text-[#505050] block">
+                                      A/F (mm) *
+                                    </label>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      placeholder="13"
+                                      value={editingDimsClass.af_mm ?? ""}
+                                      onChange={(e) =>
+                                        setEditingDimsClass({
+                                          ...editingDimsClass,
+                                          af_mm: e.target.value ? Number(e.target.value) : null,
+                                        })
+                                      }
+                                      className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                    />
+                                  </div>
                                 </div>
                                 <div>
                                   <label className="text-[9px] text-[#707070] block">
-                                    Height (mm)
+                                    Height (mm, opt)
                                   </label>
                                   <input
                                     type="number"
                                     step="any"
                                     placeholder="6.5"
-                                    value={editingDimsClass.dim2_mm ?? ""}
+                                    value={editingDimsClass.height_mm ?? ""}
                                     onChange={(e) =>
                                       setEditingDimsClass({
                                         ...editingDimsClass,
-                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
+                                        height_mm: e.target.value ? Number(e.target.value) : null,
                                       })
                                     }
                                     className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
@@ -2606,54 +2674,97 @@ export function Labeler() {
                             {editingDimsClass.part_type === "washer" && (
                               <div className="grid grid-cols-3 gap-1">
                                 <div>
-                                  <label className="text-[9px] text-[#707070] block">
-                                    Outer Ø (mm)
+                                  <label className="text-[9px] font-semibold text-[#505050] block">
+                                    Outer Ø *
                                   </label>
                                   <input
                                     type="number"
                                     step="any"
                                     placeholder="16"
-                                    value={editingDimsClass.dim1_mm ?? ""}
+                                    value={editingDimsClass.od_mm ?? ""}
                                     onChange={(e) =>
                                       setEditingDimsClass({
                                         ...editingDimsClass,
-                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
+                                        od_mm: e.target.value ? Number(e.target.value) : null,
                                       })
                                     }
                                     className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                                   />
                                 </div>
                                 <div>
-                                  <label className="text-[9px] text-[#707070] block">
-                                    Inner Ø (mm)
+                                  <label className="text-[9px] font-semibold text-[#505050] block">
+                                    Inner Ø *
                                   </label>
                                   <input
                                     type="number"
                                     step="any"
                                     placeholder="8.4"
-                                    value={editingDimsClass.dim2_mm ?? ""}
+                                    value={editingDimsClass.id_mm ?? ""}
                                     onChange={(e) =>
                                       setEditingDimsClass({
                                         ...editingDimsClass,
-                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
+                                        id_mm: e.target.value ? Number(e.target.value) : null,
                                       })
                                     }
                                     className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                                   />
                                 </div>
                                 <div>
-                                  <label className="text-[9px] text-[#707070] block">
-                                    Thick (mm)
+                                  <label className="text-[9px] font-semibold text-[#505050] block">
+                                    Thick *
                                   </label>
                                   <input
                                     type="number"
                                     step="any"
                                     placeholder="1.6"
-                                    value={editingDimsClass.dim3_mm ?? ""}
+                                    value={editingDimsClass.thickness_mm ?? ""}
                                     onChange={(e) =>
                                       setEditingDimsClass({
                                         ...editingDimsClass,
-                                        dim3_mm: e.target.value ? Number(e.target.value) : null,
+                                        thickness_mm: e.target.value
+                                          ? Number(e.target.value)
+                                          : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                  />
+                                </div>
+                              </div>
+                            )}
+
+                            {editingDimsClass.part_type === "label" && (
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <div>
+                                  <label className="text-[9px] font-semibold text-[#505050] block">
+                                    Width (mm) *
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="130"
+                                    value={editingDimsClass.width_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        width_mm: e.target.value ? Number(e.target.value) : null,
+                                      })
+                                    }
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[9px] font-semibold text-[#505050] block">
+                                    Height (mm) *
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    placeholder="37"
+                                    value={editingDimsClass.height_mm ?? ""}
+                                    onChange={(e) =>
+                                      setEditingDimsClass({
+                                        ...editingDimsClass,
+                                        height_mm: e.target.value ? Number(e.target.value) : null,
                                       })
                                     }
                                     className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
@@ -2665,36 +2776,36 @@ export function Labeler() {
                             {editingDimsClass.part_type === "cable_tie" && (
                               <div className="grid grid-cols-2 gap-1.5">
                                 <div>
-                                  <label className="text-[9px] text-[#707070] block">
-                                    Length (mm)
+                                  <label className="text-[9px] font-semibold text-[#505050] block">
+                                    Length (mm) *
                                   </label>
                                   <input
                                     type="number"
                                     step="any"
                                     placeholder="200"
-                                    value={editingDimsClass.dim1_mm ?? ""}
+                                    value={editingDimsClass.length_mm ?? ""}
                                     onChange={(e) =>
                                       setEditingDimsClass({
                                         ...editingDimsClass,
-                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
+                                        length_mm: e.target.value ? Number(e.target.value) : null,
                                       })
                                     }
                                     className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                                   />
                                 </div>
                                 <div>
-                                  <label className="text-[9px] text-[#707070] block">
-                                    Width (mm)
+                                  <label className="text-[9px] font-semibold text-[#505050] block">
+                                    Width (mm) *
                                   </label>
                                   <input
                                     type="number"
                                     step="any"
                                     placeholder="4.8"
-                                    value={editingDimsClass.dim2_mm ?? ""}
+                                    value={editingDimsClass.width_mm ?? ""}
                                     onChange={(e) =>
                                       setEditingDimsClass({
                                         ...editingDimsClass,
-                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
+                                        width_mm: e.target.value ? Number(e.target.value) : null,
                                       })
                                     }
                                     className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
@@ -2703,128 +2814,70 @@ export function Labeler() {
                               </div>
                             )}
 
-                            {editingDimsClass.part_type === "spring" && (
-                              <div className="grid grid-cols-2 gap-1.5">
-                                <div>
-                                  <label className="text-[9px] text-[#707070] block">
-                                    Height (mm)
-                                  </label>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="35"
-                                    value={editingDimsClass.dim1_mm ?? ""}
-                                    onChange={(e) =>
-                                      setEditingDimsClass({
-                                        ...editingDimsClass,
-                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
-                                      })
-                                    }
-                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-[9px] text-[#707070] block">
-                                    Diameter (mm)
-                                  </label>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="12"
-                                    value={editingDimsClass.dim2_mm ?? ""}
-                                    onChange={(e) =>
-                                      setEditingDimsClass({
-                                        ...editingDimsClass,
-                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
-                                      })
-                                    }
-                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                                  />
-                                </div>
-                              </div>
-                            )}
-
-                            {editingDimsClass.part_type === "other" && (
+                            {(editingDimsClass.part_type === "spring" ||
+                              editingDimsClass.part_type === "other") && (
                               <div className="flex flex-col gap-1.5">
-                                <div className="flex gap-1">
-                                  <input
-                                    type="text"
-                                    placeholder="Dim 1 name"
-                                    value={editingDimsClass.dim1_name ?? ""}
-                                    onChange={(e) =>
-                                      setEditingDimsClass({
-                                        ...editingDimsClass,
-                                        dim1_name: e.target.value,
-                                      })
-                                    }
-                                    className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
-                                  />
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="mm"
-                                    value={editingDimsClass.dim1_mm ?? ""}
-                                    onChange={(e) =>
-                                      setEditingDimsClass({
-                                        ...editingDimsClass,
-                                        dim1_mm: e.target.value ? Number(e.target.value) : null,
-                                      })
-                                    }
-                                    className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                                  />
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  <div>
+                                    <label className="text-[9px] font-semibold text-[#505050] block">
+                                      OD / Width (mm)
+                                    </label>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      placeholder="12"
+                                      value={
+                                        editingDimsClass.od_mm ?? editingDimsClass.width_mm ?? ""
+                                      }
+                                      onChange={(e) =>
+                                        setEditingDimsClass({
+                                          ...editingDimsClass,
+                                          od_mm: e.target.value ? Number(e.target.value) : null,
+                                          width_mm: e.target.value ? Number(e.target.value) : null,
+                                        })
+                                      }
+                                      className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-[9px] font-semibold text-[#505050] block">
+                                      Length / Height (mm)
+                                    </label>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      placeholder="35"
+                                      value={
+                                        editingDimsClass.length_mm ??
+                                        editingDimsClass.height_mm ??
+                                        ""
+                                      }
+                                      onChange={(e) =>
+                                        setEditingDimsClass({
+                                          ...editingDimsClass,
+                                          length_mm: e.target.value ? Number(e.target.value) : null,
+                                          height_mm: e.target.value ? Number(e.target.value) : null,
+                                        })
+                                      }
+                                      className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                    />
+                                  </div>
                                 </div>
-                                <div className="flex gap-1">
+                                <div>
+                                  <label className="text-[9px] text-[#707070] block">
+                                    Note (opt)
+                                  </label>
                                   <input
                                     type="text"
-                                    placeholder="Dim 2 name"
-                                    value={editingDimsClass.dim2_name ?? ""}
+                                    placeholder="Note"
+                                    value={editingDimsClass.note ?? ""}
                                     onChange={(e) =>
                                       setEditingDimsClass({
                                         ...editingDimsClass,
-                                        dim2_name: e.target.value,
+                                        note: e.target.value,
                                       })
                                     }
-                                    className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
-                                  />
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="mm"
-                                    value={editingDimsClass.dim2_mm ?? ""}
-                                    onChange={(e) =>
-                                      setEditingDimsClass({
-                                        ...editingDimsClass,
-                                        dim2_mm: e.target.value ? Number(e.target.value) : null,
-                                      })
-                                    }
-                                    className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                                  />
-                                </div>
-                                <div className="flex gap-1">
-                                  <input
-                                    type="text"
-                                    placeholder="Dim 3 name (optional)"
-                                    value={editingDimsClass.dim3_name ?? ""}
-                                    onChange={(e) =>
-                                      setEditingDimsClass({
-                                        ...editingDimsClass,
-                                        dim3_name: e.target.value,
-                                      })
-                                    }
-                                    className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
-                                  />
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="mm"
-                                    value={editingDimsClass.dim3_mm ?? ""}
-                                    onChange={(e) =>
-                                      setEditingDimsClass({
-                                        ...editingDimsClass,
-                                        dim3_mm: e.target.value ? Number(e.target.value) : null,
-                                      })
-                                    }
-                                    className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                                    className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
                                   />
                                 </div>
                               </div>

@@ -22,10 +22,11 @@ export const PART_TYPE_OPTIONS: { value: PartType; label: string }[] = [
   { value: "none", label: "None (unset)" },
   { value: "bolt", label: "Bolt" },
   { value: "nut", label: "Nut" },
-  { value: "washer", label: "Washer" },
+  { value: "washer", label: "Washer / Spacer / Crush tube" },
+  { value: "label", label: "Label / Sticker" },
   { value: "cable_tie", label: "Cable tie" },
   { value: "spring", label: "Spring" },
-  { value: "other", label: "Other (custom)" },
+  { value: "other", label: "Other" },
 ];
 
 type ClassCol = "id" | "color" | "code" | "des" | "dims" | "status";
@@ -42,47 +43,114 @@ const CLASS_COLUMNS: Record<ClassCol, { default: number; min: number; max?: numb
 export function formatPartSummary(row: ClassRow): string | null {
   const pt = row.part_type;
   if (!pt || pt === "none") return null;
-  const label = PART_TYPE_OPTIONS.find((o) => o.value === pt)?.label ?? pt;
+
+  const hasNum = (v: number | null | undefined) =>
+    v !== null && v !== undefined && Number.isFinite(Number(v)) && Number(v) > 0;
+  const hasStr = (v: string | null | undefined) => typeof v === "string" && v.trim().length > 0;
+
+  if (pt === "bolt") {
+    if (hasStr(row.thread) && hasNum(row.length_mm)) {
+      let s = `${row.thread?.trim()}x${row.length_mm}`;
+      if (hasStr(row.head_type)) s += ` ${row.head_type?.trim()}`;
+      if (hasNum(row.af_mm)) s += ` (AF: ${row.af_mm}mm)`;
+      return s;
+    }
+  }
+
+  if (pt === "nut") {
+    if (hasStr(row.thread) && hasNum(row.af_mm)) {
+      let s = `${row.thread?.trim()}, AF: ${row.af_mm}mm`;
+      if (hasNum(row.height_mm)) s += `, H: ${row.height_mm}mm`;
+      return s;
+    }
+  }
+
+  if (pt === "washer") {
+    if (hasNum(row.od_mm) && hasNum(row.id_mm) && hasNum(row.thickness_mm)) {
+      return `${row.od_mm} × ${row.id_mm} × ${row.thickness_mm} mm`;
+    }
+  }
+
+  if (pt === "label") {
+    if (hasNum(row.width_mm) && hasNum(row.height_mm)) {
+      return `${row.width_mm}x${row.height_mm}mm`;
+    }
+  }
+
+  if (pt === "cable_tie") {
+    if (hasNum(row.length_mm) && hasNum(row.width_mm)) {
+      return `${row.length_mm}x${row.width_mm}mm`;
+    }
+  }
+
+  if (pt === "spring" || pt === "other") {
+    let s = "";
+    if (hasNum(row.od_mm) && hasNum(row.length_mm)) {
+      s = `OD: ${row.od_mm}mm, L: ${row.length_mm}mm`;
+    } else if (hasNum(row.width_mm) && hasNum(row.height_mm)) {
+      s = `${row.width_mm}x${row.height_mm}mm`;
+    }
+    if (hasStr(row.note)) {
+      s = s ? `${s} (${row.note?.trim()})` : (row.note?.trim() ?? "");
+    }
+    if (s) return s;
+  }
+
+  // Fallback to row.dimensions (e.g. unmigrated / ambiguous free text)
+  if (hasStr(row.dimensions)) return row.dimensions?.trim() ?? null;
+
+  // Legacy fallback
   const vals: string[] = [];
-  if (row.dim1_mm != null) {
-    vals.push(
-      pt === "other" && row.dim1_name ? `${row.dim1_name}: ${row.dim1_mm}mm` : `${row.dim1_mm}`,
-    );
-  }
-  if (row.dim2_mm != null) {
-    vals.push(
-      pt === "other" && row.dim2_name ? `${row.dim2_name}: ${row.dim2_mm}mm` : `${row.dim2_mm}`,
-    );
-  }
-  if (row.dim3_mm != null) {
-    vals.push(
-      pt === "other" && row.dim3_name ? `${row.dim3_name}: ${row.dim3_mm}mm` : `${row.dim3_mm}`,
-    );
-  }
-  if (vals.length === 0) return `${label} (no dims)`;
-  return pt === "other" ? `${label} (${vals.join(", ")})` : `${label}: ${vals.join(" × ")} mm`;
+  if (row.dim1_mm != null) vals.push(`${row.dim1_mm}`);
+  if (row.dim2_mm != null) vals.push(`${row.dim2_mm}`);
+  if (row.dim3_mm != null) vals.push(`${row.dim3_mm}`);
+  if (vals.length > 0) return `${pt}: ${vals.join(" × ")} mm`;
+
+  const label = PART_TYPE_OPTIONS.find((o) => o.value === pt)?.label ?? pt;
+  return `${label} (no dims)`;
 }
 
 export function hasCompleteMeasurements(row: ClassRow): boolean {
   const pt = row.part_type;
   if (!pt || pt === "none") return false;
-  const hasMm = (v: number | null | undefined) =>
-    v !== null && v !== undefined && Number.isFinite(Number(v));
-  const hasName = (v: string | null | undefined) => typeof v === "string" && v.trim().length > 0;
+  const hasNum = (v: number | null | undefined) =>
+    v !== null && v !== undefined && Number.isFinite(Number(v)) && Number(v) > 0;
+  const hasStr = (v: string | null | undefined) => typeof v === "string" && v.trim().length > 0;
 
-  if (pt === "bolt" || pt === "nut" || pt === "cable_tie" || pt === "spring") {
-    return hasMm(row.dim1_mm) && hasMm(row.dim2_mm);
+  if (pt === "bolt") {
+    if (hasStr(row.thread) && hasNum(row.length_mm) && hasStr(row.head_type)) return true;
+    return hasNum(row.dim1_mm) && hasNum(row.dim2_mm);
+  }
+  if (pt === "nut") {
+    if (hasStr(row.thread) && hasNum(row.af_mm)) return true;
+    return hasNum(row.dim1_mm) && hasNum(row.dim2_mm);
   }
   if (pt === "washer") {
-    return hasMm(row.dim1_mm) && hasMm(row.dim2_mm) && hasMm(row.dim3_mm);
+    if (hasNum(row.od_mm) && hasNum(row.id_mm) && hasNum(row.thickness_mm)) return true;
+    return hasNum(row.dim1_mm) && hasNum(row.dim2_mm) && hasNum(row.dim3_mm);
+  }
+  if (pt === "label") {
+    if (hasNum(row.width_mm) && hasNum(row.height_mm)) return true;
+    return hasNum(row.dim1_mm) && hasNum(row.dim2_mm);
+  }
+  if (pt === "cable_tie") {
+    if (hasNum(row.length_mm) && hasNum(row.width_mm)) return true;
+    return hasNum(row.dim1_mm) && hasNum(row.dim2_mm);
+  }
+  if (pt === "spring") {
+    if (hasNum(row.od_mm) && hasNum(row.length_mm)) return true;
+    if (hasNum(row.width_mm) && hasNum(row.height_mm)) return true;
+    return hasNum(row.dim1_mm) && hasNum(row.dim2_mm);
   }
   if (pt === "other") {
+    if (hasNum(row.od_mm) && hasNum(row.length_mm)) return true;
+    if (hasNum(row.width_mm) && hasNum(row.height_mm)) return true;
     const pairs: [boolean, boolean][] = [
-      [hasName(row.dim1_name), hasMm(row.dim1_mm)],
-      [hasName(row.dim2_name), hasMm(row.dim2_mm)],
-      [hasName(row.dim3_name), hasMm(row.dim3_mm)],
+      [hasStr(row.dim1_name), hasNum(row.dim1_mm)],
+      [hasStr(row.dim2_name), hasNum(row.dim2_mm)],
+      [hasStr(row.dim3_name), hasNum(row.dim3_mm)],
     ];
-    const anyFilled = pairs.some(([n, m]) => n && m) || hasMm(row.dim1_mm);
+    const anyFilled = pairs.some(([n, m]) => n && m) || hasNum(row.dim1_mm);
     const anyPartial = pairs.some(([n, m]) => n && !m);
     return anyFilled && !anyPartial;
   }
@@ -304,6 +372,52 @@ export function PartMeasurementPopover({
         </div>
       )}
 
+      {partType === "label" && (
+        <div className="flex flex-col gap-1.5">
+          <svg
+            viewBox="0 0 300 100"
+            className="h-20 w-full rounded-[2px] bg-[#f5f5f5] p-1 text-[#282828]"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            <rect
+              x="50"
+              y="20"
+              width="200"
+              height="50"
+              rx="2"
+              fill="currentColor"
+              fillOpacity="0.08"
+            />
+            <line x1="50" y1="80" x2="250" y2="80" stroke="#1473e6" strokeWidth="1.5" />
+            <polygon points="50,80 58,76 58,84" fill="#1473e6" stroke="none" />
+            <polygon points="250,80 242,76 242,84" fill="#1473e6" stroke="none" />
+            <text
+              x="150"
+              y="94"
+              textAnchor="middle"
+              fill="#1473e6"
+              fontSize="10"
+              fontFamily="monospace"
+              stroke="none"
+            >
+              Width (mm)
+            </text>
+            <line x1="260" y1="20" x2="260" y2="70" stroke="#d97706" strokeWidth="1.5" />
+            <polygon points="260,20 256,28 264,28" fill="#d97706" stroke="none" />
+            <polygon points="260,70 256,62 264,62" fill="#d97706" stroke="none" />
+            <text x="268" y="48" fill="#d97706" fontSize="9" fontFamily="monospace" stroke="none">
+              Height
+            </text>
+          </svg>
+          <p className="text-[10px] leading-snug text-[#6e6e6e]">
+            <strong className="text-[#282828]">Width</strong> = horizontal dimension across label.{" "}
+            <strong className="text-[#282828]">Height</strong> = vertical dimension top to bottom.
+          </p>
+        </div>
+      )}
+
       {partType === "cable_tie" && (
         <div className="flex flex-col gap-1.5">
           <svg
@@ -374,6 +488,13 @@ export function PartMeasurementPopover({
   );
 }
 
+function parseOptionalMm(val: string): number | null {
+  const trimmed = val.trim();
+  if (!trimmed) return null;
+  const num = Number(trimmed);
+  return Number.isFinite(num) && num >= 0 ? num : null;
+}
+
 export function ClassesAdmin() {
   const [classes, setClasses] = useState<ClassRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -384,6 +505,17 @@ export function ClassesAdmin() {
   const [editIc, setEditIc] = useState("");
   const [editDes, setEditDes] = useState("");
   const [editPartType, setEditPartType] = useState<PartType>("none");
+  const [editThread, setEditThread] = useState("");
+  const [editLengthMm, setEditLengthMm] = useState("");
+  const [editHeadType, setEditHeadType] = useState("");
+  const [editAfMm, setEditAfMm] = useState("");
+  const [editHeightMm, setEditHeightMm] = useState("");
+  const [editOdMm, setEditOdMm] = useState("");
+  const [editIdMm, setEditIdMm] = useState("");
+  const [editThicknessMm, setEditThicknessMm] = useState("");
+  const [editWidthMm, setEditWidthMm] = useState("");
+  const [editNote, setEditNote] = useState("");
+  const [springOtherMode, setSpringOtherMode] = useState<"od_length" | "width_height">("od_length");
   const [editDim1Name, setEditDim1Name] = useState("");
   const [editDim1Mm, setEditDim1Mm] = useState("");
   const [editDim2Name, setEditDim2Name] = useState("");
@@ -460,6 +592,75 @@ export function ClassesAdmin() {
       setEditIc(selectedClass.ic);
       setEditDes(selectedClass.des);
       setEditPartType((selectedClass.part_type as PartType) || "none");
+      setEditThread(
+        selectedClass.thread ??
+          (selectedClass.part_type === "bolt" && selectedClass.dim2_mm
+            ? `M${selectedClass.dim2_mm}`
+            : ""),
+      );
+      setEditLengthMm(
+        selectedClass.length_mm != null
+          ? String(selectedClass.length_mm)
+          : selectedClass.dim1_mm != null &&
+              (selectedClass.part_type === "bolt" || selectedClass.part_type === "cable_tie")
+            ? String(selectedClass.dim1_mm)
+            : "",
+      );
+      setEditHeadType(selectedClass.head_type ?? (selectedClass.part_type === "bolt" ? "Hex" : ""));
+      setEditAfMm(
+        selectedClass.af_mm != null
+          ? String(selectedClass.af_mm)
+          : selectedClass.part_type === "nut" && selectedClass.dim1_mm != null
+            ? String(selectedClass.dim1_mm)
+            : "",
+      );
+      setEditHeightMm(
+        selectedClass.height_mm != null
+          ? String(selectedClass.height_mm)
+          : selectedClass.part_type === "nut" && selectedClass.dim2_mm != null
+            ? String(selectedClass.dim2_mm)
+            : selectedClass.part_type === "label" && selectedClass.dim2_mm != null
+              ? String(selectedClass.dim2_mm)
+              : "",
+      );
+      setEditOdMm(
+        selectedClass.od_mm != null
+          ? String(selectedClass.od_mm)
+          : selectedClass.dim1_mm != null && selectedClass.part_type === "washer"
+            ? String(selectedClass.dim1_mm)
+            : selectedClass.dim2_mm != null && selectedClass.part_type === "spring"
+              ? String(selectedClass.dim2_mm)
+              : "",
+      );
+      setEditIdMm(
+        selectedClass.id_mm != null
+          ? String(selectedClass.id_mm)
+          : selectedClass.dim2_mm != null && selectedClass.part_type === "washer"
+            ? String(selectedClass.dim2_mm)
+            : "",
+      );
+      setEditThicknessMm(
+        selectedClass.thickness_mm != null
+          ? String(selectedClass.thickness_mm)
+          : selectedClass.dim3_mm != null && selectedClass.part_type === "washer"
+            ? String(selectedClass.dim3_mm)
+            : "",
+      );
+      setEditWidthMm(
+        selectedClass.width_mm != null
+          ? String(selectedClass.width_mm)
+          : selectedClass.dim1_mm != null && selectedClass.part_type === "label"
+            ? String(selectedClass.dim1_mm)
+            : selectedClass.dim2_mm != null && selectedClass.part_type === "cable_tie"
+              ? String(selectedClass.dim2_mm)
+              : "",
+      );
+      setEditNote(selectedClass.note ?? "");
+      setSpringOtherMode(
+        selectedClass.width_mm != null && selectedClass.height_mm != null
+          ? "width_height"
+          : "od_length",
+      );
       setEditDim1Name(selectedClass.dim1_name ?? "");
       setEditDim1Mm(selectedClass.dim1_mm != null ? String(selectedClass.dim1_mm) : "");
       setEditDim2Name(selectedClass.dim2_name ?? "");
@@ -515,13 +716,6 @@ export function ClassesAdmin() {
     }
   }, [selectedClass]);
 
-  function parseOptionalMm(val: string): number | null {
-    const trimmed = val.trim();
-    if (!trimmed) return null;
-    const num = Number(trimmed);
-    return Number.isFinite(num) && num >= 0 ? num : null;
-  }
-
   async function handleAddClass(e: React.FormEvent) {
     e.preventDefault();
     if (!newIc.trim() || !newDes.trim()) return;
@@ -551,6 +745,63 @@ export function ClassesAdmin() {
     }
   };
 
+  const previewDimensions = useMemo(() => {
+    return formatPartSummary({
+      id: selectedClass?.id ?? 0,
+      ic: editIc,
+      des: editDes,
+      color: "#000",
+      part_type: editPartType,
+      thread: editThread.trim() || null,
+      length_mm:
+        editPartType === "bolt" ||
+        editPartType === "cable_tie" ||
+        ((editPartType === "spring" || editPartType === "other") && springOtherMode === "od_length")
+          ? parseOptionalMm(editLengthMm)
+          : null,
+      head_type: editHeadType.trim() || null,
+      af_mm: parseOptionalMm(editAfMm),
+      height_mm:
+        editPartType === "nut" ||
+        editPartType === "label" ||
+        ((editPartType === "spring" || editPartType === "other") &&
+          springOtherMode === "width_height")
+          ? parseOptionalMm(editHeightMm)
+          : null,
+      od_mm:
+        editPartType === "washer" ||
+        ((editPartType === "spring" || editPartType === "other") && springOtherMode === "od_length")
+          ? parseOptionalMm(editOdMm)
+          : null,
+      id_mm: parseOptionalMm(editIdMm),
+      thickness_mm: parseOptionalMm(editThicknessMm),
+      width_mm:
+        editPartType === "label" ||
+        editPartType === "cable_tie" ||
+        ((editPartType === "spring" || editPartType === "other") &&
+          springOtherMode === "width_height")
+          ? parseOptionalMm(editWidthMm)
+          : null,
+      note: editNote.trim() || null,
+    });
+  }, [
+    selectedClass,
+    editIc,
+    editDes,
+    editPartType,
+    editThread,
+    editLengthMm,
+    editHeadType,
+    editAfMm,
+    editHeightMm,
+    editOdMm,
+    editIdMm,
+    editThicknessMm,
+    editWidthMm,
+    editNote,
+    springOtherMode,
+  ]);
+
   async function handleSaveSelectedClass() {
     if (!selectedClass) return;
     setBusy(true);
@@ -561,6 +812,41 @@ export function ClassesAdmin() {
         ic: editIc.trim(),
         des: editDes.trim(),
         part_type: editPartType,
+        thread:
+          editPartType === "bolt" || editPartType === "nut" ? editThread.trim() || null : null,
+        length_mm:
+          editPartType === "bolt" ||
+          editPartType === "cable_tie" ||
+          ((editPartType === "spring" || editPartType === "other") &&
+            springOtherMode === "od_length")
+            ? parseOptionalMm(editLengthMm)
+            : null,
+        head_type: editPartType === "bolt" ? editHeadType.trim() || null : null,
+        af_mm: editPartType === "bolt" || editPartType === "nut" ? parseOptionalMm(editAfMm) : null,
+        height_mm:
+          editPartType === "nut" ||
+          editPartType === "label" ||
+          ((editPartType === "spring" || editPartType === "other") &&
+            springOtherMode === "width_height")
+            ? parseOptionalMm(editHeightMm)
+            : null,
+        od_mm:
+          editPartType === "washer" ||
+          ((editPartType === "spring" || editPartType === "other") &&
+            springOtherMode === "od_length")
+            ? parseOptionalMm(editOdMm)
+            : null,
+        id_mm: editPartType === "washer" ? parseOptionalMm(editIdMm) : null,
+        thickness_mm: editPartType === "washer" ? parseOptionalMm(editThicknessMm) : null,
+        width_mm:
+          editPartType === "label" ||
+          editPartType === "cable_tie" ||
+          ((editPartType === "spring" || editPartType === "other") &&
+            springOtherMode === "width_height")
+            ? parseOptionalMm(editWidthMm)
+            : null,
+        note:
+          editPartType === "spring" || editPartType === "other" ? editNote.trim() || null : null,
         dim1_name: editPartType === "other" ? editDim1Name.trim() || null : null,
         dim1_mm: editPartType === "none" ? null : parseOptionalMm(editDim1Mm),
         dim2_name: editPartType === "other" ? editDim2Name.trim() || null : null,
@@ -1065,64 +1351,127 @@ export function ClassesAdmin() {
                   />
                 )}
 
-                {/* Specific Fields by Type */}
+                {/* Specific Structured Fields by Type */}
                 {editPartType === "bolt" && (
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <div>
-                      <label className="text-[9px] text-[#707070] block">
-                        Length under head (mm)
-                      </label>
-                      <input
-                        ref={dim1InputRef}
-                        type="number"
-                        step="any"
-                        placeholder="40"
-                        value={editDim1Mm}
-                        onChange={(e) => setEditDim1Mm(e.target.value)}
-                        onKeyDown={handleDimensionKeyDown}
-                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                      />
+                  <div className="flex flex-col gap-2">
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <div>
+                        <label className="text-[9px] font-semibold text-[#505050] block">
+                          Thread *{" "}
+                          <span className="text-[8px] text-[#707070] font-normal">
+                            (e.g. M6, M8)
+                          </span>
+                        </label>
+                        <input
+                          ref={dim1InputRef}
+                          type="text"
+                          placeholder="M8"
+                          value={editThread}
+                          onChange={(e) => setEditThread(e.target.value)}
+                          onKeyDown={handleDimensionKeyDown}
+                          className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-semibold text-[#505050] block">
+                          Length under head (mm) *
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          placeholder="30"
+                          value={editLengthMm}
+                          onChange={(e) => setEditLengthMm(e.target.value)}
+                          onKeyDown={handleDimensionKeyDown}
+                          className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                        />
+                      </div>
                     </div>
-                    <div>
-                      <label className="text-[9px] text-[#707070] block">Thread Ø (mm)</label>
-                      <input
-                        type="number"
-                        step="any"
-                        placeholder="8"
-                        value={editDim2Mm}
-                        onChange={(e) => setEditDim2Mm(e.target.value)}
-                        onKeyDown={handleDimensionKeyDown}
-                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                      />
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <div>
+                        <label className="text-[9px] font-semibold text-[#505050] block">
+                          Head type *
+                        </label>
+                        <input
+                          type="text"
+                          list="bolt-head-types"
+                          placeholder="Hex"
+                          value={editHeadType}
+                          onChange={(e) => setEditHeadType(e.target.value)}
+                          onKeyDown={handleDimensionKeyDown}
+                          className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
+                        />
+                        <datalist id="bolt-head-types">
+                          <option value="Hex" />
+                          <option value="Socket" />
+                          <option value="Button" />
+                          <option value="Countersunk" />
+                          <option value="Flange" />
+                          <option value="Pan" />
+                        </datalist>
+                      </div>
+                      <div>
+                        <label className="text-[9px] text-[#707070] block">
+                          Across flats A/F (mm){" "}
+                          <span className="text-[8px] text-[#909090]">(optional)</span>
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          placeholder="13"
+                          value={editAfMm}
+                          onChange={(e) => setEditAfMm(e.target.value)}
+                          onKeyDown={handleDimensionKeyDown}
+                          className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                        />
+                      </div>
                     </div>
                   </div>
                 )}
 
                 {editPartType === "nut" && (
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <div>
-                      <label className="text-[9px] text-[#707070] block">
-                        Across flats A/F (mm)
-                      </label>
-                      <input
-                        ref={dim1InputRef}
-                        type="number"
-                        step="any"
-                        placeholder="13"
-                        value={editDim1Mm}
-                        onChange={(e) => setEditDim1Mm(e.target.value)}
-                        onKeyDown={handleDimensionKeyDown}
-                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                      />
+                  <div className="flex flex-col gap-2">
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <div>
+                        <label className="text-[9px] font-semibold text-[#505050] block">
+                          Thread *{" "}
+                          <span className="text-[8px] text-[#707070] font-normal">(e.g. M8)</span>
+                        </label>
+                        <input
+                          ref={dim1InputRef}
+                          type="text"
+                          placeholder="M8"
+                          value={editThread}
+                          onChange={(e) => setEditThread(e.target.value)}
+                          onKeyDown={handleDimensionKeyDown}
+                          className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-semibold text-[#505050] block">
+                          Across flats A/F (mm) *
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          placeholder="13"
+                          value={editAfMm}
+                          onChange={(e) => setEditAfMm(e.target.value)}
+                          onKeyDown={handleDimensionKeyDown}
+                          className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                        />
+                      </div>
                     </div>
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Height (mm)</label>
+                      <label className="text-[9px] text-[#707070] block">
+                        Height (mm) <span className="text-[8px] text-[#909090]">(optional)</span>
+                      </label>
                       <input
                         type="number"
                         step="any"
                         placeholder="6.5"
-                        value={editDim2Mm}
-                        onChange={(e) => setEditDim2Mm(e.target.value)}
+                        value={editHeightMm}
+                        onChange={(e) => setEditHeightMm(e.target.value)}
                         onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
@@ -1133,38 +1482,78 @@ export function ClassesAdmin() {
                 {editPartType === "washer" && (
                   <div className="grid grid-cols-3 gap-1">
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Outer Ø (mm)</label>
+                      <label className="text-[9px] font-semibold text-[#505050] block">
+                        Outer Ø (mm) *
+                      </label>
                       <input
                         ref={dim1InputRef}
                         type="number"
                         step="any"
                         placeholder="16"
-                        value={editDim1Mm}
-                        onChange={(e) => setEditDim1Mm(e.target.value)}
+                        value={editOdMm}
+                        onChange={(e) => setEditOdMm(e.target.value)}
                         onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Inner Ø (mm)</label>
+                      <label className="text-[9px] font-semibold text-[#505050] block">
+                        Inner Ø (mm) *
+                      </label>
                       <input
                         type="number"
                         step="any"
                         placeholder="8.4"
-                        value={editDim2Mm}
-                        onChange={(e) => setEditDim2Mm(e.target.value)}
+                        value={editIdMm}
+                        onChange={(e) => setEditIdMm(e.target.value)}
                         onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Thick (mm)</label>
+                      <label className="text-[9px] font-semibold text-[#505050] block">
+                        Thick (mm) *
+                      </label>
                       <input
                         type="number"
                         step="any"
                         placeholder="1.6"
-                        value={editDim3Mm}
-                        onChange={(e) => setEditDim3Mm(e.target.value)}
+                        value={editThicknessMm}
+                        onChange={(e) => setEditThicknessMm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
+                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {editPartType === "label" && (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div>
+                      <label className="text-[9px] font-semibold text-[#505050] block">
+                        Width (mm) *
+                      </label>
+                      <input
+                        ref={dim1InputRef}
+                        type="number"
+                        step="any"
+                        placeholder="130"
+                        value={editWidthMm}
+                        onChange={(e) => setEditWidthMm(e.target.value)}
+                        onKeyDown={handleDimensionKeyDown}
+                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-semibold text-[#505050] block">
+                        Height (mm) *
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        placeholder="37"
+                        value={editHeightMm}
+                        onChange={(e) => setEditHeightMm(e.target.value)}
                         onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
@@ -1175,26 +1564,30 @@ export function ClassesAdmin() {
                 {editPartType === "cable_tie" && (
                   <div className="grid grid-cols-2 gap-1.5">
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Length (mm)</label>
+                      <label className="text-[9px] font-semibold text-[#505050] block">
+                        Length (mm) *
+                      </label>
                       <input
                         ref={dim1InputRef}
                         type="number"
                         step="any"
                         placeholder="200"
-                        value={editDim1Mm}
-                        onChange={(e) => setEditDim1Mm(e.target.value)}
+                        value={editLengthMm}
+                        onChange={(e) => setEditLengthMm(e.target.value)}
                         onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Width (mm)</label>
+                      <label className="text-[9px] font-semibold text-[#505050] block">
+                        Width (mm) *
+                      </label>
                       <input
                         type="number"
                         step="any"
                         placeholder="4.8"
-                        value={editDim2Mm}
-                        onChange={(e) => setEditDim2Mm(e.target.value)}
+                        value={editWidthMm}
+                        onChange={(e) => setEditWidthMm(e.target.value)}
                         onKeyDown={handleDimensionKeyDown}
                         className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
                       />
@@ -1202,97 +1595,135 @@ export function ClassesAdmin() {
                   </div>
                 )}
 
-                {editPartType === "spring" && (
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <div>
-                      <label className="text-[9px] text-[#707070] block">Height (mm)</label>
-                      <input
-                        ref={dim1InputRef}
-                        type="number"
-                        step="any"
-                        placeholder="35"
-                        value={editDim1Mm}
-                        onChange={(e) => setEditDim1Mm(e.target.value)}
-                        onKeyDown={handleDimensionKeyDown}
-                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                      />
+                {(editPartType === "spring" || editPartType === "other") && (
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <span className="text-[#707070] font-semibold">Mode:</span>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="springOtherMode"
+                          checked={springOtherMode === "od_length"}
+                          onChange={() => setSpringOtherMode("od_length")}
+                          className="size-3"
+                        />
+                        <span>OD × Length</span>
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="springOtherMode"
+                          checked={springOtherMode === "width_height"}
+                          onChange={() => setSpringOtherMode("width_height")}
+                          className="size-3"
+                        />
+                        <span>Width × Height</span>
+                      </label>
                     </div>
+
+                    {springOtherMode === "od_length" ? (
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <div>
+                          <label className="text-[9px] font-semibold text-[#505050] block">
+                            Outer Ø (mm) *
+                          </label>
+                          <input
+                            ref={dim1InputRef}
+                            type="number"
+                            step="any"
+                            placeholder="12"
+                            value={editOdMm}
+                            onChange={(e) => setEditOdMm(e.target.value)}
+                            onKeyDown={handleDimensionKeyDown}
+                            className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[9px] font-semibold text-[#505050] block">
+                            Length (mm) *
+                          </label>
+                          <input
+                            type="number"
+                            step="any"
+                            placeholder="35"
+                            value={editLengthMm}
+                            onChange={(e) => setEditLengthMm(e.target.value)}
+                            onKeyDown={handleDimensionKeyDown}
+                            className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <div>
+                          <label className="text-[9px] font-semibold text-[#505050] block">
+                            Width (mm) *
+                          </label>
+                          <input
+                            ref={dim1InputRef}
+                            type="number"
+                            step="any"
+                            placeholder="20"
+                            value={editWidthMm}
+                            onChange={(e) => setEditWidthMm(e.target.value)}
+                            onKeyDown={handleDimensionKeyDown}
+                            className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[9px] font-semibold text-[#505050] block">
+                            Height (mm) *
+                          </label>
+                          <input
+                            type="number"
+                            step="any"
+                            placeholder="40"
+                            value={editHeightMm}
+                            onChange={(e) => setEditHeightMm(e.target.value)}
+                            onKeyDown={handleDimensionKeyDown}
+                            className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                          />
+                        </div>
+                      </div>
+                    )}
+
                     <div>
-                      <label className="text-[9px] text-[#707070] block">Diameter (mm)</label>
+                      <label className="text-[9px] text-[#707070] block">Note (optional)</label>
                       <input
-                        type="number"
-                        step="any"
-                        placeholder="12"
-                        value={editDim2Mm}
-                        onChange={(e) => setEditDim2Mm(e.target.value)}
+                        type="text"
+                        placeholder="e.g. Left-hand wind, compression"
+                        value={editNote}
+                        onChange={(e) => setEditNote(e.target.value)}
                         onKeyDown={handleDimensionKeyDown}
-                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
+                        className="w-full h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
                       />
                     </div>
                   </div>
                 )}
 
-                {editPartType === "other" && (
-                  <div className="flex flex-col gap-1.5">
-                    <div className="flex gap-1">
-                      <input
-                        ref={dim1NameInputRef}
-                        type="text"
-                        placeholder="Dim 1 name"
-                        value={editDim1Name}
-                        onChange={(e) => setEditDim1Name(e.target.value)}
-                        onKeyDown={handleDimensionKeyDown}
-                        className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
-                      />
-                      <input
-                        ref={dim1InputRef}
-                        type="number"
-                        step="any"
-                        placeholder="mm"
-                        value={editDim1Mm}
-                        onChange={(e) => setEditDim1Mm(e.target.value)}
-                        onKeyDown={handleDimensionKeyDown}
-                        className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                      />
+                {editPartType === "none" && (
+                  <p className="text-[10px] text-[#707070] italic">
+                    Select a part type to enter structured metrology.
+                  </p>
+                )}
+
+                {/* Generated canonical string display */}
+                {editPartType !== "none" && (
+                  <div className="flex flex-col gap-1 p-2 bg-[#f8fafc] border border-[#cbd5e1] rounded-[2px]">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="text-[#64748b] uppercase font-semibold text-[9px] tracking-wide">
+                        Display String:
+                      </span>
+                      <span className="font-mono font-bold text-[#0f172a]">
+                        {previewDimensions || "—"}
+                      </span>
                     </div>
-                    <div className="flex gap-1">
-                      <input
-                        type="text"
-                        placeholder="Dim 2 name"
-                        value={editDim2Name}
-                        onChange={(e) => setEditDim2Name(e.target.value)}
-                        onKeyDown={handleDimensionKeyDown}
-                        className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
-                      />
-                      <input
-                        type="number"
-                        step="any"
-                        placeholder="mm"
-                        value={editDim2Mm}
-                        onChange={(e) => setEditDim2Mm(e.target.value)}
-                        onKeyDown={handleDimensionKeyDown}
-                        className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                      />
-                    </div>
-                    <div className="flex gap-1">
-                      <input
-                        type="text"
-                        placeholder="Dim 3 name"
-                        value={editDim3Name}
-                        onChange={(e) => setEditDim3Name(e.target.value)}
-                        onKeyDown={handleDimensionKeyDown}
-                        className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white"
-                      />
-                      <input
-                        type="number"
-                        step="any"
-                        placeholder="mm"
-                        value={editDim3Mm}
-                        onChange={(e) => setEditDim3Mm(e.target.value)}
-                        onKeyDown={handleDimensionKeyDown}
-                        className="w-1/2 h-6 rounded-[2px] border border-[#c8c8c8] px-1 text-[11px] bg-white font-mono"
-                      />
-                    </div>
+                    {selectedClass.dimensions && selectedClass.dimensions !== previewDimensions && (
+                      <div className="text-[9px] text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded-[2px] border border-amber-200">
+                        Original text:{" "}
+                        <span className="font-mono font-medium">{selectedClass.dimensions}</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

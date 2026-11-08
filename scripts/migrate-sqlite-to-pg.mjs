@@ -105,13 +105,29 @@ async function run() {
     const classes = sqlite.prepare("SELECT * FROM classes ORDER BY project_id, id").all();
     for (const c of classes) {
       await client.query(
-        `INSERT INTO classes (project_id, id, ic, des, color, part_type, dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        `INSERT INTO classes (
+          project_id, id, ic, des, color, part_type,
+          thread, length_mm, head_type, af_mm, height_mm,
+          od_mm, id_mm, thickness_mm, width_mm, note, dimensions,
+          dim1_name, dim1_mm, dim2_name, dim2_mm, dim3_name, dim3_mm
+        )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
          ON CONFLICT (project_id, id) DO UPDATE SET
            ic = EXCLUDED.ic,
            des = EXCLUDED.des,
            color = EXCLUDED.color,
            part_type = EXCLUDED.part_type,
+           thread = EXCLUDED.thread,
+           length_mm = EXCLUDED.length_mm,
+           head_type = EXCLUDED.head_type,
+           af_mm = EXCLUDED.af_mm,
+           height_mm = EXCLUDED.height_mm,
+           od_mm = EXCLUDED.od_mm,
+           id_mm = EXCLUDED.id_mm,
+           thickness_mm = EXCLUDED.thickness_mm,
+           width_mm = EXCLUDED.width_mm,
+           note = EXCLUDED.note,
+           dimensions = EXCLUDED.dimensions,
            dim1_name = EXCLUDED.dim1_name,
            dim1_mm = EXCLUDED.dim1_mm,
            dim2_name = EXCLUDED.dim2_name,
@@ -125,6 +141,17 @@ async function run() {
           c.des,
           c.color,
           c.part_type ?? null,
+          c.thread ?? null,
+          c.length_mm ?? null,
+          c.head_type ?? null,
+          c.af_mm ?? null,
+          c.height_mm ?? null,
+          c.od_mm ?? null,
+          c.id_mm ?? null,
+          c.thickness_mm ?? null,
+          c.width_mm ?? null,
+          c.note ?? null,
+          c.dimensions ?? null,
           c.dim1_name ?? null,
           c.dim1_mm ?? null,
           c.dim2_name ?? null,
