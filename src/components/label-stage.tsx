@@ -42,7 +42,7 @@ export type CropRect = {
   height: number;
 };
 
-export function computeSnappedCrop(
+function computeSnappedCrop(
   draft: { x0: number; y0: number; x1: number; y1: number },
   natural: { w: number; h: number },
 ): CropRect {
@@ -92,7 +92,7 @@ export function round6(n: number): number {
   return Math.round(n * 1e6) / 1e6;
 }
 
-export function getMinDimension(natural?: { w: number; h: number } | null): {
+function getMinDimension(natural?: { w: number; h: number } | null): {
   minW: number;
   minH: number;
 } {
@@ -105,7 +105,7 @@ export function getMinDimension(natural?: { w: number; h: number } | null): {
   };
 }
 
-export function polygonBBox(
+function polygonBBox(
   points: [number, number][],
   minW = 0.001,
   minH = 0.001,
@@ -211,7 +211,7 @@ function clampView(view: View, fit: Fit, frame: FrameSize): View {
   };
 }
 
-export interface StaticAnnotationsLayerProps {
+interface StaticAnnotationsLayerProps {
   boxes: StageBox[];
   selectedKey: string | null;
   activeKey: string | null;
@@ -224,7 +224,7 @@ export interface StaticAnnotationsLayerProps {
   zoom: number;
 }
 
-export const StaticAnnotationsLayer = memo(
+const StaticAnnotationsLayer = memo(
   function StaticAnnotationsLayer({
     boxes,
     selectedKey,
@@ -415,7 +415,7 @@ export const StaticAnnotationsLayer = memo(
   },
 );
 
-export interface ActiveAnnotationLayerProps {
+interface ActiveAnnotationLayerProps {
   activeBox: StageBox | null;
   draftBox: StageBox | null;
   colorFor: (classId: number) => string;
@@ -426,7 +426,7 @@ export interface ActiveAnnotationLayerProps {
   zoom: number;
 }
 
-export function ActiveAnnotationLayer({
+function ActiveAnnotationLayer({
   activeBox,
   draftBox,
   colorFor,
