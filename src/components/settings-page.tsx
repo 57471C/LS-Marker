@@ -83,6 +83,88 @@ function formatBytes(bytes: number): string {
   return `${(mb / 1024).toFixed(2)} GB`;
 }
 
+const CLASS_PRESET_TEMPLATES: Array<{
+  id: string;
+  name: string;
+  fields: MetrologyField[];
+  required: MetrologyField[];
+  format: string;
+  lengthRule: string;
+  diameterRule: string;
+  note: string;
+}> = [
+  {
+    id: "bolt",
+    name: "Bolt",
+    fields: ["thread", "length_mm", "head_type", "af_mm"],
+    required: ["thread", "length_mm"],
+    format: "{thread}x{length_mm} ({head_type})",
+    lengthRule: "length_mm",
+    diameterRule: "thread",
+    note: "Shank length and nominal thread diameter",
+  },
+  {
+    id: "nut",
+    name: "Nut",
+    fields: ["thread", "af_mm", "height_mm"],
+    required: ["thread", "height_mm"],
+    format: "{thread} AF:{af_mm} H:{height_mm}",
+    lengthRule: "height_mm",
+    diameterRule: "af_mm",
+    note: "Height and across-flats width",
+  },
+  {
+    id: "washer",
+    name: "Washer",
+    fields: ["od_mm", "id_mm", "thickness_mm"],
+    required: ["od_mm", "thickness_mm"],
+    format: "OD:{od_mm} ID:{id_mm} T:{thickness_mm}",
+    lengthRule: "thickness_mm",
+    diameterRule: "od_mm",
+    note: "Thickness and outer diameter",
+  },
+  {
+    id: "label",
+    name: "Label",
+    fields: ["width_mm", "height_mm", "note"],
+    required: ["width_mm", "height_mm"],
+    format: "{width_mm}x{height_mm}mm",
+    lengthRule: "height_mm",
+    diameterRule: "width_mm",
+    note: "Height and width bounds",
+  },
+  {
+    id: "cable_tie",
+    name: "Cable tie",
+    fields: ["width_mm", "length_mm", "note"],
+    required: ["width_mm", "length_mm"],
+    format: "{width_mm}x{length_mm}mm",
+    lengthRule: "length_mm",
+    diameterRule: "width_mm",
+    note: "Length and strip width",
+  },
+  {
+    id: "spring",
+    name: "Spring",
+    fields: ["od_mm", "length_mm", "id_mm", "thickness_mm"],
+    required: ["od_mm", "length_mm"],
+    format: "OD:{od_mm} L:{length_mm}",
+    lengthRule: "length_mm",
+    diameterRule: "od_mm",
+    note: "Free length and outer diameter",
+  },
+  {
+    id: "resin",
+    name: "Resin",
+    fields: ["width_mm", "height_mm", "thickness_mm", "note"],
+    required: ["width_mm", "height_mm"],
+    format: "{width_mm}x{height_mm}mm",
+    lengthRule: "height_mm",
+    diameterRule: "width_mm",
+    note: "Overall patch dimensions",
+  },
+];
+
 export function SettingsPage() {
   const [unlocked, setUnlocked] = useState<boolean | null>(null);
   const [password, setPassword] = useState("");
@@ -216,7 +298,11 @@ export function SettingsPage() {
   useEffect(() => {
     if (!unlocked) return;
     let cancel = false;
-    Promise.all([fetchUsers(), fetchProjects(), fetchPartTypes(true).catch(() => [])])
+    Promise.all([
+      fetchUsers(),
+      fetchProjects(),
+      project?.id ? fetchPartTypes(true, project.id).catch(() => []) : Promise.resolve([]),
+    ])
       .then(([userRows, projectRows, ptRows]) => {
         if (cancel) return;
         setUsers(userRows);
@@ -232,12 +318,17 @@ export function SettingsPage() {
     return () => {
       cancel = true;
     };
-  }, [unlocked, project, projectToExport]);
+  }, [unlocked, project?.id, projectToExport]);
 
-  async function reloadPartTypes() {
+  async function reloadPartTypes(targetProjectId?: number) {
+    const projId = targetProjectId ?? project?.id;
+    if (!projId) {
+      setPartTypes([]);
+      return;
+    }
     setLoadingPartTypes(true);
     try {
-      const list = await fetchPartTypes(true);
+      const list = await fetchPartTypes(true, projId);
       setPartTypes(list);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to load part classes");
@@ -258,6 +349,19 @@ export function SettingsPage() {
     setClassFormDiameterRule("width_mm");
     setClassFormRuleNote("");
     setClassFormError(null);
+  }
+
+  function handleApplyTemplate(templateId: string) {
+    const tmpl = CLASS_PRESET_TEMPLATES.find((t) => t.id === templateId);
+    if (!tmpl) return;
+    setClassFormName(tmpl.name);
+    setClassFormId(tmpl.id);
+    setClassFormFields([...tmpl.fields]);
+    setClassFormRequired([...tmpl.required]);
+    setClassFormFormat(tmpl.format);
+    setClassFormLengthRule(tmpl.lengthRule);
+    setClassFormDiameterRule(tmpl.diameterRule);
+    setClassFormRuleNote(tmpl.note);
   }
 
   function handleStartEditClass(pt: PartTypeDefinition) {
@@ -301,6 +405,10 @@ export function SettingsPage() {
   }
 
   async function handleSaveClass() {
+    if (!project?.id) {
+      setClassFormError("Please open or select an active project to create or edit classes.");
+      return;
+    }
     if (!classFormName.trim()) {
       setClassFormError("Class name is required");
       return;
@@ -316,6 +424,7 @@ export function SettingsPage() {
             .replace(/[^a-z0-9_]/g, "_") || undefined;
         await createPartType({
           id,
+          projectId: project.id,
           name: classFormName.trim(),
           fields: classFormFields,
           required_fields: classFormRequired,
@@ -327,6 +436,7 @@ export function SettingsPage() {
       } else if (editingPartTypeId) {
         await updatePartType({
           id: editingPartTypeId,
+          projectId: project.id,
           name: classFormName.trim(),
           fields: classFormFields,
           required_fields: classFormRequired,
@@ -338,7 +448,7 @@ export function SettingsPage() {
       }
       setIsAddingClass(false);
       setEditingPartTypeId(null);
-      await reloadPartTypes();
+      await reloadPartTypes(project.id);
     } catch (err: unknown) {
       setClassFormError(err instanceof Error ? err.message : "Failed to save part class");
     } finally {
@@ -350,9 +460,10 @@ export function SettingsPage() {
     try {
       await updatePartType({
         id: pt.id,
+        projectId: project?.id,
         archived: !pt.archived,
       });
-      await reloadPartTypes();
+      await reloadPartTypes(project?.id);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to update archive status");
     }
@@ -871,7 +982,13 @@ export function SettingsPage() {
                           <button
                             type="button"
                             onClick={handleStartAddClass}
-                            className="press inline-flex items-center gap-1 px-2 py-1 rounded-[2px] bg-[#1473e6] text-white text-[11px] font-medium hover:bg-[#0d62c7]"
+                            disabled={!project}
+                            className="press inline-flex items-center gap-1 px-2 py-1 rounded-[2px] bg-[#1473e6] text-white text-[11px] font-medium hover:bg-[#0d62c7] disabled:opacity-40"
+                            title={
+                              !project
+                                ? "Please select a project first"
+                                : "Add a class to this project"
+                            }
                           >
                             <Plus className="size-3" />
                             <span>Add Class</span>
@@ -879,10 +996,30 @@ export function SettingsPage() {
                         )}
                       </div>
                     </div>
+
+                    {project ? (
+                      <div className="flex items-center gap-2 mb-2 p-1.5 bg-blue-50/60 border border-blue-200/60 rounded-[2px] text-[11px] text-[#282828]">
+                        <span className="text-[#707070]">Project Scope:</span>
+                        <span className="font-semibold">{project.name}</span>
+                        <span className="font-mono text-[9px] bg-white border border-[#c8c8c8] text-[#505050] px-1 py-0.5 rounded-[2px]">
+                          ID: {project.id}
+                        </span>
+                        <span className="text-[10px] text-[#707070] ml-auto">
+                          Classes and measurement rules apply only to this project.
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="p-2.5 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-[2px] mb-3">
+                        <strong>No project is currently active.</strong> Classes are scoped to
+                        individual projects. Please open or select a project from the top navigation
+                        bar to manage its classes.
+                      </div>
+                    )}
+
                     <p className="text-[11px] text-[#707070] mb-3">
-                      Define the component classes (Bolt, Nut, Resin, etc.) available during
-                      labelling. Control which structured measurement fields (thread, length, AF,
-                      diameter, etc.) are shown and required for each class.
+                      Define the component classes (Bolt, Nut, Resin, etc.) available for this
+                      project during labelling. Control which structured measurement fields (thread,
+                      length, AF, diameter, etc.) are shown and required for each class.
                     </p>
 
                     {/* ADD / EDIT CLASS FORM */}
@@ -902,6 +1039,31 @@ export function SettingsPage() {
                             <X className="size-3.5" />
                           </button>
                         </div>
+
+                        {/* QUICK PRESET PICKER */}
+                        {isAddingClass && (
+                          <div className="flex items-center gap-2 pb-2 border-b border-[#e5e5e5]">
+                            <span className="text-[11px] font-semibold text-[#505050]">
+                              Quick Template:
+                            </span>
+                            <select
+                              value=""
+                              onChange={(e) => {
+                                if (e.target.value) handleApplyTemplate(e.target.value);
+                              }}
+                              className="h-6 px-2 text-[11px] rounded-[2px] border border-[#c8c8c8] bg-white text-[#505050]"
+                            >
+                              <option value="">
+                                Choose a template to prefill (Bolt, Nut, Washer, Resin...)
+                              </option>
+                              {CLASS_PRESET_TEMPLATES.map((tmpl) => (
+                                <option key={tmpl.id} value={tmpl.id}>
+                                  {tmpl.name} ({tmpl.fields.join(", ")})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
 
                         {classFormError && (
                           <div className="p-2 bg-red-50 border border-red-200 text-red-700 text-[11px] rounded-[2px]">
@@ -1290,6 +1452,19 @@ export function SettingsPage() {
                                 </td>
                               </tr>
                             ))}
+                          {(partTypes ?? []).filter((pt) => showArchivedClasses || !pt.archived)
+                            .length === 0 && (
+                            <tr>
+                              <td
+                                colSpan={7}
+                                className="px-3 py-6 text-center text-xs text-[#707070]"
+                              >
+                                {project
+                                  ? "No classes defined for this project yet. Click 'Add Class' or select a preset template above."
+                                  : "No project selected. Open a project to view its classes."}
+                              </td>
+                            </tr>
+                          )}
                         </tbody>
                       </table>
                     </div>

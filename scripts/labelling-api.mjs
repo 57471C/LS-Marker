@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 import sharp from "sharp";
 import tar from "tar-stream";
 import {
-  DEFAULT_PART_TYPES,
   getDb as getPgDb,
   getDbConnectionInfo,
   testDbConnection,
@@ -1999,7 +1998,7 @@ async function streamDinoCatalogueExport(
 
   const dbClasses = await listClasses(db, project.id);
   const sourceClasses = dbClasses.length > 0 ? dbClasses : baseClasses;
-  const partTypesMap = await getPartTypesMap(db);
+  const partTypesMap = await getPartTypesMap(db, project.id);
   const hasMm = (v) => v !== null && v !== undefined && v !== "" && Number.isFinite(Number(v));
 
   /** @type {Array<{
@@ -2564,32 +2563,38 @@ async function listClasses(db, projectId) {
     .all(projectId);
 }
 
-/** @type {Map<string, { id: string, name: string, fields: string[], required_fields: string[], display_format: string | null, archived: boolean }> | null} */
-let partTypesCache = null;
-let partTypesCacheTime = 0;
+/** @type {Map<string | number, { at: number, map: Map<string, any> }>} */
+const partTypesCache = new Map();
 
 /**
- * Fetch all registered part type definitions from database (with fallback to defaults).
+ * Fetch all registered part type definitions for a specific project from database.
  * @param {any} db
+ * @param {number | null} [projectId=null]
  * @param {boolean} [forceRefresh=false]
- * @returns {Promise<Map<string, { id: string, name: string, fields: string[], required_fields: string[], display_format: string | null, archived: boolean }>>}
+ * @returns {Promise<Map<string, { id: string, name: string, fields: string[], required_fields: string[], display_format: string | null, length_rule: string | null, diameter_rule: string | null, note: string | null, archived: boolean, project_id?: number }>>}
  */
-export async function getPartTypesMap(db, forceRefresh = false) {
+export async function getPartTypesMap(db, projectId = null, forceRefresh = false) {
+  const pId = projectId !== null && projectId !== undefined ? Number(projectId) : "all";
   const now = Date.now();
-  if (!forceRefresh && partTypesCache && now - partTypesCacheTime < 10000) {
-    return partTypesCache;
+  const cached = partTypesCache.get(pId);
+  if (!forceRefresh && cached && now - cached.at < 10000) {
+    return cached.map;
   }
   const map = new Map();
-  for (const pt of DEFAULT_PART_TYPES) {
-    map.set(pt.id, { ...pt });
-  }
   if (db) {
     try {
-      const rows = await db
-        .prepare(
-          "SELECT id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived FROM part_types ORDER BY created_at ASC",
-        )
-        .all();
+      const rows =
+        pId !== "all" && Number.isInteger(pId) && pId > 0
+          ? await db
+              .prepare(
+                "SELECT id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived, project_id FROM part_types WHERE project_id = ? ORDER BY created_at ASC",
+              )
+              .all(pId)
+          : await db
+              .prepare(
+                "SELECT id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived, project_id FROM part_types ORDER BY created_at ASC",
+              )
+              .all();
       if (Array.isArray(rows) && rows.length > 0) {
         for (const r of rows) {
           const parseArr = (v) => {
@@ -2610,21 +2615,25 @@ export async function getPartTypesMap(db, forceRefresh = false) {
             diameter_rule: r.diameter_rule || null,
             note: r.note || null,
             archived: Boolean(r.archived === 1 || r.archived === true || r.archived === "t"),
+            project_id: r.project_id ? Number(r.project_id) : undefined,
           });
         }
       }
     } catch {
-      /* fallback to defaults */
+      /* fallback */
     }
   }
-  partTypesCache = map;
-  partTypesCacheTime = now;
+  partTypesCache.set(pId, { at: now, map });
   return map;
 }
 
-export function clearPartTypesCache() {
-  partTypesCache = null;
-  partTypesCacheTime = 0;
+export function clearPartTypesCache(projectId = null) {
+  if (projectId !== null && projectId !== undefined) {
+    partTypesCache.delete(Number(projectId));
+    partTypesCache.delete("all");
+  } else {
+    partTypesCache.clear();
+  }
 }
 
 const VALID_PART_TYPES = new Set([
@@ -5334,7 +5343,7 @@ export async function handle(req, res, url, root) {
     const body = await readBody(req);
     const ic = cleanText(body.ic, "Item code", 40);
     const des = cleanText(body.des, "Description", 120);
-    const partTypes = await getPartTypesMap(db);
+    const partTypes = await getPartTypesMap(db, project.id);
     const targetType = body.part_type ? String(body.part_type).trim().toLowerCase() : null;
     const partTypeConfig = targetType ? partTypes.get(targetType) : null;
     const dims = cleanClassDimensions(body, partTypeConfig);
@@ -5425,7 +5434,7 @@ export async function handle(req, res, url, root) {
       body.dim3_mm !== undefined;
     try {
       if (hasDimsPayload) {
-        const partTypes = await getPartTypesMap(db);
+        const partTypes = await getPartTypesMap(db, project.id);
         const targetType = body.part_type ? String(body.part_type).trim().toLowerCase() : null;
         const partTypeConfig = targetType ? partTypes.get(targetType) : null;
         const dims = cleanClassDimensions(body, partTypeConfig);
@@ -5500,11 +5509,19 @@ export async function handle(req, res, url, root) {
     return;
   }
 
-  // Part Types API (Class Definitions Adder & Manager)
+  // Part Types API (Class Definitions Adder & Manager - Scoped to Project)
   if (method === "GET" && pathname === "/api/part-types") {
     const db = await getDb(root);
     const includeArchived = url.searchParams.get("includeArchived") === "true";
-    const map = await getPartTypesMap(db, true);
+    let projectId = url.searchParams.get("projectId") || url.searchParams.get("project_id");
+    if (projectId) {
+      projectId = Number(projectId);
+    } else {
+      const proj =
+        (await currentProject(db, req)) || (await requireProject(db, req).catch(() => null));
+      projectId = proj ? proj.id : null;
+    }
+    const map = await getPartTypesMap(db, projectId, true);
     const list = Array.from(map.values()).filter((pt) => includeArchived || !pt.archived);
     send(res, 200, list);
     return;
@@ -5513,6 +5530,17 @@ export async function handle(req, res, url, root) {
   if (method === "POST" && pathname === "/api/part-types") {
     const db = await getDb(root);
     const body = await readBody(req);
+    let projectId = body.projectId || body.project_id;
+    if (projectId) {
+      projectId = Number(projectId);
+    } else {
+      const proj = await requireProject(db, req);
+      projectId = proj.id;
+    }
+    if (!Number.isInteger(projectId) || projectId <= 0) {
+      throw new HttpError(400, "Valid project id required");
+    }
+
     const name = cleanText(body.name, "Class name", 60);
     let id = body.id
       ? cleanText(body.id, "Class ID", 40)
@@ -5554,16 +5582,19 @@ export async function handle(req, res, url, root) {
     const diameter_rule = cleanOptionalText(body.diameter_rule, 120);
     const note = cleanOptionalText(body.note, 255);
 
-    const existing = await db.prepare("SELECT id FROM part_types WHERE id = ?").get(id);
+    const existing = await db
+      .prepare("SELECT id FROM part_types WHERE project_id = ? AND id = ?")
+      .get(projectId, id);
     if (existing) {
-      throw new HttpError(409, `Part type with ID '${id}' already exists`);
+      throw new HttpError(409, `Part type with ID '${id}' already exists in this project`);
     }
 
     await db
       .prepare(
-        "INSERT INTO part_types (id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO part_types (project_id, id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
+        projectId,
         id,
         name,
         JSON.stringify(fields),
@@ -5576,8 +5607,9 @@ export async function handle(req, res, url, root) {
         new Date().toISOString(),
       );
 
-    clearPartTypesCache();
+    clearPartTypesCache(projectId);
     const created = {
+      project_id: projectId,
       id,
       name,
       fields,
@@ -5595,10 +5627,19 @@ export async function handle(req, res, url, root) {
   if (method === "PATCH" && pathname === "/api/part-types") {
     const db = await getDb(root);
     const body = await readBody(req);
+    let projectId = body.projectId || body.project_id;
+    if (projectId) {
+      projectId = Number(projectId);
+    } else {
+      const proj = await requireProject(db, req);
+      projectId = proj.id;
+    }
     const id = cleanText(body.id, "Class ID", 40).toLowerCase();
-    const existing = await db.prepare("SELECT * FROM part_types WHERE id = ?").get(id);
+    const existing = await db
+      .prepare("SELECT * FROM part_types WHERE project_id = ? AND id = ?")
+      .get(projectId, id);
     if (!existing) {
-      throw new HttpError(404, "Part type not found");
+      throw new HttpError(404, "Part type not found in this project");
     }
 
     const validFieldsSet = new Set([
@@ -5663,7 +5704,7 @@ export async function handle(req, res, url, root) {
 
     await db
       .prepare(
-        "UPDATE part_types SET name = ?, fields = ?, required_fields = ?, display_format = ?, length_rule = ?, diameter_rule = ?, note = ?, archived = ? WHERE id = ?",
+        "UPDATE part_types SET name = ?, fields = ?, required_fields = ?, display_format = ?, length_rule = ?, diameter_rule = ?, note = ?, archived = ? WHERE project_id = ? AND id = ?",
       )
       .run(
         name,
@@ -5674,11 +5715,13 @@ export async function handle(req, res, url, root) {
         diameter_rule,
         note,
         isArchived,
+        projectId,
         id,
       );
 
-    clearPartTypesCache();
+    clearPartTypesCache(projectId);
     send(res, 200, {
+      project_id: projectId,
       id,
       name,
       fields,
@@ -5694,15 +5737,26 @@ export async function handle(req, res, url, root) {
 
   if (method === "DELETE" && pathname === "/api/part-types") {
     const db = await getDb(root);
+    let projectId = url.searchParams.get("projectId") || url.searchParams.get("project_id");
+    if (projectId) {
+      projectId = Number(projectId);
+    } else {
+      const proj = await requireProject(db, req);
+      projectId = proj.id;
+    }
     const id = cleanText(url.searchParams.get("id"), "Class ID", 40).toLowerCase();
-    const existing = await db.prepare("SELECT id FROM part_types WHERE id = ?").get(id);
+    const existing = await db
+      .prepare("SELECT id FROM part_types WHERE project_id = ? AND id = ?")
+      .get(projectId, id);
     if (!existing) {
-      throw new HttpError(404, "Part type not found");
+      throw new HttpError(404, "Part type not found in this project");
     }
     // Soft-delete: mark archived = true to preserve historical rows (Zero Data-Loss Guarantee)
-    await db.prepare("UPDATE part_types SET archived = ? WHERE id = ?").run(true, id);
-    clearPartTypesCache();
-    send(res, 200, { ok: true, archived: true, id });
+    await db
+      .prepare("UPDATE part_types SET archived = ? WHERE project_id = ? AND id = ?")
+      .run(true, projectId, id);
+    clearPartTypesCache(projectId);
+    send(res, 200, { ok: true, archived: true, id, project_id: projectId });
     return;
   }
 

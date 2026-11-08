@@ -369,7 +369,8 @@ export async function getDb(root = process.cwd()) {
       ALTER TABLE classes ADD COLUMN IF NOT EXISTS dimensions TEXT;
 
       CREATE TABLE IF NOT EXISTS part_types (
-        id TEXT PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        id TEXT NOT NULL,
         name TEXT NOT NULL,
         fields TEXT NOT NULL,
         required_fields TEXT NOT NULL,
@@ -378,43 +379,81 @@ export async function getDb(root = process.cwd()) {
         diameter_rule TEXT,
         note TEXT,
         archived BOOLEAN NOT NULL DEFAULT FALSE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (project_id, id)
       );
 
+      ALTER TABLE part_types ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE;
       ALTER TABLE part_types ADD COLUMN IF NOT EXISTS length_rule TEXT;
       ALTER TABLE part_types ADD COLUMN IF NOT EXISTS diameter_rule TEXT;
       ALTER TABLE part_types ADD COLUMN IF NOT EXISTS note TEXT;
+
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint 
+          WHERE conname = 'part_types_pkey' AND conrelid = 'part_types'::regclass
+        ) THEN
+          ALTER TABLE part_types DROP CONSTRAINT part_types_pkey;
+        END IF;
+      END $$;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_part_types_project_id ON part_types (project_id, id);
     `);
 
-    const ptCountRes = await client.query("SELECT COUNT(*) as count FROM part_types");
-    if (parseInt(ptCountRes.rows[0].count, 10) === 0) {
-      for (const pt of DEFAULT_PART_TYPES) {
-        await client.query(
-          `INSERT INTO part_types (id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (id) DO NOTHING`,
-          [
-            pt.id,
-            pt.name,
-            JSON.stringify(pt.fields),
-            JSON.stringify(pt.required_fields),
-            pt.display_format,
-            pt.length_rule || null,
-            pt.diameter_rule || null,
-            pt.note || null,
-            false,
-          ],
+    // Ensure existing projects only keep the classes they actually use
+    const projectsRes = await client.query("SELECT id FROM projects");
+    for (const p of projectsRes.rows) {
+      const usedRes = await client.query(
+        "SELECT DISTINCT part_type FROM classes WHERE project_id = $1 AND part_type IS NOT NULL AND part_type != '' AND part_type != 'none'",
+        [p.id],
+      );
+      for (const u of usedRes.rows) {
+        const ptKey = String(u.part_type).trim().toLowerCase();
+        const existsRes = await client.query(
+          "SELECT id FROM part_types WHERE project_id = $1 AND id = $2",
+          [p.id, ptKey],
         );
-      }
-    } else {
-      for (const pt of DEFAULT_PART_TYPES) {
-        if (pt.length_rule || pt.diameter_rule) {
+        if (existsRes.rows.length === 0) {
+          const defRes = await client.query(
+            "SELECT * FROM part_types WHERE id = $1 AND project_id IS NULL LIMIT 1",
+            [ptKey],
+          );
+          const def = defRes.rows[0] ||
+            DEFAULT_PART_TYPES.find((d) => d.id === ptKey) || {
+              id: ptKey,
+              name: ptKey.charAt(0).toUpperCase() + ptKey.slice(1),
+              fields: JSON.stringify(["width_mm", "height_mm"]),
+              required_fields: JSON.stringify([]),
+              display_format: "{width_mm}x{height_mm}mm",
+              length_rule: "height_mm",
+              diameter_rule: "width_mm",
+              note: null,
+            };
           await client.query(
-            `UPDATE part_types SET length_rule = COALESCE(length_rule, $1), diameter_rule = COALESCE(diameter_rule, $2), note = COALESCE(note, $3) WHERE id = $4`,
-            [pt.length_rule || null, pt.diameter_rule || null, pt.note || null, pt.id],
+            `INSERT INTO part_types (project_id, id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT (project_id, id) DO NOTHING`,
+            [
+              p.id,
+              def.id,
+              def.name,
+              typeof def.fields === "string" ? def.fields : JSON.stringify(def.fields),
+              typeof def.required_fields === "string"
+                ? def.required_fields
+                : JSON.stringify(def.required_fields),
+              def.display_format,
+              def.length_rule || null,
+              def.diameter_rule || null,
+              def.note || null,
+              false,
+            ],
           );
         }
       }
     }
+    // Remove global orphan rows where project_id IS NULL
+    await client.query("DELETE FROM part_types WHERE project_id IS NULL");
   } finally {
     client.release();
   }
@@ -618,7 +657,8 @@ export function ensureSqlitePartTypesSchema(db) {
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS part_types (
-        id TEXT PRIMARY KEY,
+        project_id INTEGER NOT NULL DEFAULT 1,
+        id TEXT NOT NULL,
         name TEXT NOT NULL,
         fields TEXT NOT NULL,
         required_fields TEXT NOT NULL,
@@ -627,12 +667,16 @@ export function ensureSqlitePartTypesSchema(db) {
         diameter_rule TEXT DEFAULT NULL,
         note TEXT DEFAULT NULL,
         archived INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (project_id, id)
       );
     `);
     const ptCols = db.prepare("PRAGMA table_info(part_types)").all();
     if (Array.isArray(ptCols)) {
       const colNames = new Set(ptCols.map((c) => c.name));
+      if (!colNames.has("project_id")) {
+        db.prepare("ALTER TABLE part_types ADD COLUMN project_id INTEGER DEFAULT 1").run();
+      }
       if (!colNames.has("length_rule")) {
         db.prepare("ALTER TABLE part_types ADD COLUMN length_rule TEXT").run();
       }
@@ -643,32 +687,41 @@ export function ensureSqlitePartTypesSchema(db) {
         db.prepare("ALTER TABLE part_types ADD COLUMN note TEXT").run();
       }
     }
-    const count = db.prepare("SELECT COUNT(*) as count FROM part_types").get()?.count || 0;
-    if (count === 0) {
-      const insert = db.prepare(
-        `INSERT OR IGNORE INTO part_types (id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-      );
-      for (const pt of DEFAULT_PART_TYPES) {
-        insert.run(
-          pt.id,
-          pt.name,
-          JSON.stringify(pt.fields),
-          JSON.stringify(pt.required_fields),
-          pt.display_format,
-          pt.length_rule || null,
-          pt.diameter_rule || null,
-          pt.note || null,
+    // Seed used classes per project
+    const projects = db.prepare("SELECT id FROM projects").all();
+    const insertStmt = db.prepare(`
+      INSERT OR IGNORE INTO part_types (project_id, id, name, fields, required_fields, display_format, length_rule, diameter_rule, note, archived)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `);
+    for (const p of projects) {
+      const used = db
+        .prepare(
+          "SELECT DISTINCT part_type FROM classes WHERE project_id = ? AND part_type IS NOT NULL AND part_type != '' AND part_type != 'none'",
+        )
+        .all(p.id);
+      for (const u of used) {
+        const ptKey = String(u.part_type).trim().toLowerCase();
+        const def = DEFAULT_PART_TYPES.find((d) => d.id === ptKey) || {
+          id: ptKey,
+          name: ptKey.charAt(0).toUpperCase() + ptKey.slice(1),
+          fields: ["width_mm", "height_mm"],
+          required_fields: [],
+          display_format: "{width_mm}x{height_mm}mm",
+          length_rule: "height_mm",
+          diameter_rule: "width_mm",
+          note: null,
+        };
+        insertStmt.run(
+          p.id,
+          def.id,
+          def.name,
+          JSON.stringify(def.fields),
+          JSON.stringify(def.required_fields),
+          def.display_format,
+          def.length_rule || null,
+          def.diameter_rule || null,
+          def.note || null,
         );
-      }
-    } else {
-      const updateStmt = db.prepare(
-        `UPDATE part_types SET length_rule = COALESCE(length_rule, ?), diameter_rule = COALESCE(diameter_rule, ?), note = COALESCE(note, ?) WHERE id = ?`,
-      );
-      for (const pt of DEFAULT_PART_TYPES) {
-        if (pt.length_rule || pt.diameter_rule) {
-          updateStmt.run(pt.length_rule || null, pt.diameter_rule || null, pt.note || null, pt.id);
-        }
       }
     }
   } catch {

@@ -98,6 +98,8 @@ export const ALL_METROLOGY_FIELDS: MetrologyFieldInfo[] = [
 
 export type PartTypeDefinition = {
   id: string;
+  projectId?: number;
+  project_id?: number;
   name: string;
   fields: MetrologyField[];
   required_fields: MetrologyField[];
@@ -554,13 +556,20 @@ export async function deleteClass(id: number): Promise<void> {
   await asJson(res);
 }
 
-export function fetchPartTypes(includeArchived = false): Promise<PartTypeDefinition[]> {
-  const query = includeArchived ? "?includeArchived=true" : "";
+export function fetchPartTypes(
+  includeArchived = false,
+  projectId?: number,
+): Promise<PartTypeDefinition[]> {
+  const params = new URLSearchParams();
+  if (includeArchived) params.set("includeArchived", "true");
+  if (projectId != null) params.set("projectId", String(projectId));
+  const query = params.toString() ? `?${params.toString()}` : "";
   return fetch(api(`/api/part-types${query}`)).then((res) => asJson<PartTypeDefinition[]>(res));
 }
 
 export function createPartType(data: {
   id?: string;
+  projectId?: number;
   name: string;
   fields: MetrologyField[];
   required_fields?: MetrologyField[];
@@ -578,6 +587,7 @@ export function createPartType(data: {
 
 export function updatePartType(data: {
   id: string;
+  projectId?: number;
   name?: string;
   fields?: MetrologyField[];
   required_fields?: MetrologyField[];
@@ -594,8 +604,9 @@ export function updatePartType(data: {
   }).then((res) => asJson<PartTypeDefinition>(res));
 }
 
-export async function deletePartType(id: string): Promise<{ ok: boolean }> {
-  const res = await fetch(api(`/api/part-types?id=${encodeURIComponent(id)}`), {
+export async function deletePartType(id: string, projectId?: number): Promise<{ ok: boolean }> {
+  const query = projectId != null ? `&projectId=${encodeURIComponent(String(projectId))}` : "";
+  const res = await fetch(api(`/api/part-types?id=${encodeURIComponent(id)}${query}`), {
     method: "DELETE",
   });
   return asJson<{ ok: boolean }>(res);
