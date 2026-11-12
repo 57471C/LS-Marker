@@ -1,7 +1,5 @@
-import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
-import { ensureSqliteClassesSchema, getDb } from "./db.mjs";
+import { getDb } from "./db.mjs";
 import { formatCanonicalDimensions } from "./labelling-api.mjs";
 
 /**
@@ -485,7 +483,7 @@ export function parseLegacyDimensions(rawText, row = {}) {
 }
 
 /**
- * Run migration on a database connection (works with SQLite or Postgres adapter).
+ * Run migration on a database connection (Postgres adapter).
  * @param {any} db
  * @param {string} dbName
  * @param {boolean} dryRun
@@ -595,20 +593,7 @@ if (isCli) {
   const isDryRun = process.argv.includes("--dry-run");
   const root = process.cwd();
 
-  // 1. Migrate SQLite data/labels.db if present
-  const sqlitePath = path.join(root, "data", "labels.db");
-  if (fs.existsSync(sqlitePath)) {
-    try {
-      const sqlite = new Database(sqlitePath);
-      ensureSqliteClassesSchema(sqlite);
-      await migrateDatabaseDimensions(sqlite, "SQLite (data/labels.db)", isDryRun);
-      sqlite.close();
-    } catch (err) {
-      console.error("[warning] SQLite migration error:", err.message);
-    }
-  }
-
-  // 2. Migrate Postgres database if accessible
+  // Migrate Postgres database if accessible
   try {
     const pgDb = await getDb(root);
     await migrateDatabaseDimensions(pgDb, "PostgreSQL", isDryRun);
