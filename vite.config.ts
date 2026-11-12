@@ -10,6 +10,7 @@ export default defineConfig(() => {
     server: {
       host: "0.0.0.0",
       port,
+      allowedHosts: true,
       strictPort: process.env.STRICT_PORT === "true",
       watch: {
         ignored: ["**/data/**", "**/*.db", "**/*.db-*", ignoreLabelFolder],
