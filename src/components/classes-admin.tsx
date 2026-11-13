@@ -1,9 +1,30 @@
-import { BarChart3, Check, FileUp, Loader2, Plus, Search, Trash2, X } from "lucide-react";
+import {
+  BarChart3,
+  Check,
+  FileUp,
+  Loader2,
+  MoreHorizontal,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/app-header";
 import { DatasetHealthModal } from "@/components/dataset-health-modal";
 import { DuplicateCleanupModal } from "@/components/duplicate-cleanup-modal";
 import { classFill } from "@/lib/class-color";
+import {
+  applyRowClick,
+  clampMenuPosition,
+  copyPlainText,
+  emptyClassSelection,
+  icCodesForSelection,
+  selectionForContextMenu,
+  singleClassSelection,
+  type ClassSelection,
+} from "@/lib/class-selection";
 import { ColumnResizeHandle, useColumnResize } from "@/lib/use-column-resize";
 import {
   createClass,
@@ -524,7 +545,9 @@ export function ClassesAdmin() {
   const [classes, setClasses] = useState<ClassRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
+  const [selection, setSelection] = useState<ClassSelection>(() => emptyClassSelection());
+  const [codeMenu, setCodeMenu] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [copyNote, setCopyNote] = useState<string | null>(null);
 
   // Inspector edit state
   const [editIc, setEditIc] = useState("");
@@ -566,6 +589,7 @@ export function ClassesAdmin() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const newIcInputRef = useRef<HTMLInputElement>(null);
   const activeRowRef = useRef<HTMLDivElement>(null);
+  const codeMenuRef = useRef<HTMLDivElement>(null);
   const partTypeSelectRef = useRef<HTMLSelectElement>(null);
   const dim1InputRef = useRef<HTMLInputElement>(null);
   const dim1NameInputRef = useRef<HTMLInputElement>(null);
@@ -643,8 +667,10 @@ export function ClassesAdmin() {
   }, [classes, query]);
 
   const selectedClass = useMemo(() => {
-    return (classes ?? []).find((c) => c.id === selectedClassId) ?? null;
-  }, [classes, selectedClassId]);
+    return (classes ?? []).find((c) => c.id === selection.activeId) ?? null;
+  }, [classes, selection.activeId]);
+
+  const filteredIds = useMemo(() => filtered.map((row) => row.id), [filtered]);
 
   useEffect(() => {
     if (selectedClass) {
@@ -733,17 +759,45 @@ export function ClassesAdmin() {
 
   // Default selection
   useEffect(() => {
-    if (!selectedClassId && filtered.length > 0) {
-      setSelectedClassId(filtered[0].id);
+    if (selection.activeId == null && filtered.length > 0) {
+      const first = filtered[0];
+      if (first) setSelection(singleClassSelection(first.id));
     }
-  }, [filtered, selectedClassId]);
+  }, [filtered, selection.activeId]);
 
   // Scroll active row into view
   useEffect(() => {
-    if (selectedClassId != null && activeRowRef.current) {
+    if (selection.activeId != null && activeRowRef.current) {
       activeRowRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
-  }, [selectedClassId]);
+  }, [selection.activeId]);
+
+  useEffect(() => {
+    if (!copyNote) return;
+    const timer = setTimeout(() => setCopyNote(null), 2000);
+    return () => clearTimeout(timer);
+  }, [copyNote]);
+
+  useEffect(() => {
+    if (!codeMenu) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCodeMenu(null);
+    };
+    const onPointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && codeMenuRef.current?.contains(target)) return;
+      setCodeMenu(null);
+    };
+    const onWheel = () => setCodeMenu(null);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onPointer, true);
+    window.addEventListener("wheel", onWheel, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onPointer, true);
+      window.removeEventListener("wheel", onWheel, { capture: true });
+    };
+  }, [codeMenu]);
 
   // Focus IC input when quick add drawer opens
   useEffect(() => {
@@ -785,7 +839,7 @@ export function ClassesAdmin() {
       focusDimensionsPendingRef.current = true;
       await load();
       setQuery("");
-      setSelectedClassId(created.id);
+      setSelection(singleClassSelection(created.id));
       setNewIc("");
       setNewDes("");
       setNewPartType("none");
@@ -996,7 +1050,7 @@ export function ClassesAdmin() {
       await deleteClass(id);
       setPendingDeleteId(null);
       await load();
-      setSelectedClassId(null);
+      setSelection(emptyClassSelection());
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to delete class");
     } finally {
@@ -1018,6 +1072,29 @@ export function ClassesAdmin() {
     } finally {
       setBusy(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function openCodeMenu(clientX: number, clientY: number, rowId: number) {
+    const next = selectionForContextMenu(selection, rowId);
+    if (next !== selection) setSelection(next);
+    const text = icCodesForSelection(filtered, next.ids);
+    const pos = clampMenuPosition(clientX, clientY, {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    });
+    setCodeMenu({ ...pos, text });
+  }
+
+  async function handleCopyAllCodes(text: string) {
+    try {
+      await copyPlainText(text);
+      setCodeMenu(null);
+      const count = text.length === 0 ? 0 : text.split("\n").length;
+      setCopyNote(count === 1 ? "Copied 1 code" : `Copied ${count} codes`);
+    } catch (err: unknown) {
+      setCodeMenu(null);
+      setError(err instanceof Error ? err.message : "Could not copy codes to the clipboard");
     }
   }
 
@@ -1108,6 +1185,11 @@ export function ClassesAdmin() {
           {importNote && (
             <span className="font-mono text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded-[2px] border border-emerald-200">
               {importNote}
+            </span>
+          )}
+          {copyNote && (
+            <span className="font-mono text-[10px] text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded-[2px] border border-emerald-200">
+              {copyNote}
             </span>
           )}
         </div>
@@ -1284,7 +1366,9 @@ export function ClassesAdmin() {
                   </div>
                 ) : (
                   filtered.map((row) => {
-                    const isSelected = selectedClassId === row.id;
+                    const isSelected = selection.ids.has(row.id);
+                    const isActive = selection.activeId === row.id;
+                    const multi = selection.ids.size > 1;
                     const complete = hasCompleteMeasurements(
                       row,
                       partTypesMap.get(row.part_type || ""),
@@ -1295,11 +1379,29 @@ export function ClassesAdmin() {
                     return (
                       <div
                         key={row.id}
-                        ref={isSelected ? activeRowRef : undefined}
-                        onClick={() => setSelectedClassId(row.id)}
-                        className={`flex items-center px-2 py-1 cursor-pointer transition-colors text-xs border-l-2 ${
+                        ref={isActive ? activeRowRef : undefined}
+                        aria-selected={isSelected}
+                        onClick={(event) => {
+                          if (event.button !== 0) return;
+                          setSelection(
+                            applyRowClick({
+                              selection,
+                              orderedIds: filteredIds,
+                              clickedId: row.id,
+                              ctrl: event.ctrlKey || event.metaKey,
+                              shift: event.shiftKey,
+                            }),
+                          );
+                        }}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          openCodeMenu(event.clientX, event.clientY, row.id);
+                        }}
+                        className={`relative flex items-center py-1 pl-2 pr-7 cursor-pointer transition-colors text-xs border-l-2 ${
                           isSelected
-                            ? "bg-[#1473e6]/10 border-[#1473e6]"
+                            ? multi && isActive
+                              ? "bg-[#1473e6]/20 border-[#1473e6]"
+                              : "bg-[#1473e6]/10 border-[#1473e6]"
                             : "border-transparent hover:bg-[#f9f9f9]"
                         }`}
                       >
@@ -1364,6 +1466,22 @@ export function ClassesAdmin() {
                         </div>
 
                         <div className="flex-1 min-w-0" />
+                        {isSelected && (
+                          <button
+                            type="button"
+                            aria-label="Class row menu"
+                            aria-haspopup="menu"
+                            title="Class actions"
+                            className="press absolute right-1 top-1/2 z-10 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-[2px] border border-transparent text-[#707070] hover:border-[#c8c8c8] hover:bg-white hover:text-[#282828]"
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openCodeMenu(event.clientX, event.clientY, row.id);
+                            }}
+                          >
+                            <MoreHorizontal className="size-3.5" />
+                          </button>
+                        )}
                       </div>
                     );
                   })
@@ -2097,6 +2215,28 @@ export function ClassesAdmin() {
           }}
         />
       )}
+
+      {codeMenu &&
+        createPortal(
+          <div
+            ref={codeMenuRef}
+            role="menu"
+            aria-label="Class selection"
+            className="fixed z-50 min-w-[148px] rounded-[2px] border border-[#c8c8c8] bg-white py-0.5 text-xs"
+            style={{ left: codeMenu.x, top: codeMenu.y }}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="press flex w-full items-center px-2 py-1 text-left text-[11px] text-[#282828] hover:bg-[#1473e6]/10"
+              onClick={() => void handleCopyAllCodes(codeMenu.text)}
+            >
+              Copy all codes
+            </button>
+          </div>,
+          document.body,
+        )}
 
       {/* Duplicate Cleanup Modal */}
       {duplicatesResult && (
