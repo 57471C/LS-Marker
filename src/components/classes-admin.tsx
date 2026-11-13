@@ -1,14 +1,15 @@
 import { BarChart3, Check, FileUp, Loader2, Plus, Search, Trash2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { AppHeader } from "@/components/app-header";
 import { DatasetHealthModal } from "@/components/dataset-health-modal";
 import { DuplicateCleanupModal } from "@/components/duplicate-cleanup-modal";
 import { classFill } from "@/lib/class-color";
+import { buildClassSearch, filterClassSearch, mergeClassRow } from "@/lib/class-list";
 import { ColumnResizeHandle, useColumnResize } from "@/lib/use-column-resize";
 import {
   createClass,
   deleteClass,
-  fetchCatalogue,
+  fetchClasses,
   fetchPartTypes,
   fetchProjectHealth,
   importClasses,
@@ -520,6 +521,193 @@ function parseOptionalMm(val: string): number | null {
   return Number.isFinite(num) && num >= 0 ? num : null;
 }
 
+const ClassTableRow = memo(function ClassTableRow({
+  row,
+  selected,
+  widths,
+  partType,
+  onSelect,
+  rowRef,
+}: {
+  row: ClassRow;
+  selected: boolean;
+  widths: Record<ClassCol, number>;
+  partType: PartTypeDefinition | undefined;
+  onSelect: (id: number) => void;
+  rowRef?: React.Ref<HTMLDivElement>;
+}) {
+  const complete = hasCompleteMeasurements(row, partType);
+  const hasPartType = Boolean(row.part_type && row.part_type !== "none");
+  const summary = formatPartSummary(row);
+
+  return (
+    <div
+      ref={rowRef}
+      onClick={() => onSelect(row.id)}
+      className={`flex items-center px-2 py-1 cursor-pointer transition-colors text-xs border-l-2 ${
+        selected ? "bg-[#1473e6]/10 border-[#1473e6]" : "border-transparent hover:bg-[#f9f9f9]"
+      }`}
+    >
+      <div
+        className="shrink-0 pr-2 font-mono text-[10px] text-[#707070]"
+        style={{ width: widths.id }}
+      >
+        #{row.id}
+      </div>
+      <div className="shrink-0 pr-2 flex items-center" style={{ width: widths.color }}>
+        <span
+          className="size-2.5 rounded-[1px] inline-block border border-black/15"
+          style={{ backgroundColor: classFill(row.id, row.color) }}
+        />
+      </div>
+      <div
+        className="shrink-0 pr-2 font-bold font-mono text-[11px] text-[#282828] truncate min-w-0"
+        style={{ width: widths.code }}
+      >
+        {row.ic}
+      </div>
+      <div
+        className="shrink-0 pr-2 text-[#707070] truncate text-[11px] min-w-0"
+        style={{ width: widths.des }}
+      >
+        {row.des}
+      </div>
+      <div
+        className="shrink-0 pr-2 font-mono text-[10px] text-[#707070] truncate min-w-0"
+        style={{ width: widths.dims }}
+      >
+        {summary ?? "—"}
+      </div>
+      <div className="shrink-0 pr-2 min-w-0" style={{ width: widths.status }}>
+        {complete ? (
+          <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-emerald-100 text-emerald-800">
+            complete
+          </span>
+        ) : hasPartType ? (
+          <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-rose-100 text-rose-800">
+            unset
+          </span>
+        ) : (
+          <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-neutral-100 text-neutral-500">
+            none
+          </span>
+        )}
+      </div>
+      <div className="flex-1 min-w-0" />
+    </div>
+  );
+});
+
+const ClassTable = memo(function ClassTable({
+  rows,
+  loading,
+  selectedClassId,
+  colWidths,
+  partTypesMap,
+  onResizeStart,
+  onResetWidth,
+  onSelect,
+  activeRowRef,
+}: {
+  rows: ClassRow[];
+  loading: boolean;
+  selectedClassId: number | null;
+  colWidths: Record<ClassCol, number>;
+  partTypesMap: Map<string, PartTypeDefinition>;
+  onResizeStart: (column: ClassCol, event: PointerEvent) => void;
+  onResetWidth: (column: ClassCol) => void;
+  onSelect: (id: number) => void;
+  activeRowRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  return (
+    <div className="flex-1 min-h-0 flex flex-col overflow-x-auto">
+      <div className="min-w-full w-max flex-1 min-h-0 flex flex-col">
+        <div className="h-6 border-b border-[#c8c8c8] bg-[#f5f5f5] flex items-center px-2 text-[11px] font-semibold text-[#707070] shrink-0 select-none">
+          <div className="relative shrink-0 flex items-center pr-2" style={{ width: colWidths.id }}>
+            <span className="truncate">ID</span>
+            <ColumnResizeHandle column="id" onResizeStart={onResizeStart} onReset={onResetWidth} />
+          </div>
+          <div
+            className="relative shrink-0 flex items-center pr-2"
+            style={{ width: colWidths.color }}
+          >
+            <span className="truncate">Color</span>
+            <ColumnResizeHandle
+              column="color"
+              onResizeStart={onResizeStart}
+              onReset={onResetWidth}
+            />
+          </div>
+          <div
+            className="relative shrink-0 flex items-center pr-2 min-w-0"
+            style={{ width: colWidths.code }}
+          >
+            <span className="truncate">Code</span>
+            <ColumnResizeHandle
+              column="code"
+              onResizeStart={onResizeStart}
+              onReset={onResetWidth}
+            />
+          </div>
+          <div
+            className="relative shrink-0 flex items-center pr-2 min-w-0"
+            style={{ width: colWidths.des }}
+          >
+            <span className="truncate">Description</span>
+            <ColumnResizeHandle column="des" onResizeStart={onResizeStart} onReset={onResetWidth} />
+          </div>
+          <div
+            className="relative shrink-0 flex items-center pr-2 min-w-0"
+            style={{ width: colWidths.dims }}
+          >
+            <span className="truncate">Dimensions</span>
+            <ColumnResizeHandle
+              column="dims"
+              onResizeStart={onResizeStart}
+              onReset={onResetWidth}
+            />
+          </div>
+          <div
+            className="relative shrink-0 flex items-center pr-2 min-w-0"
+            style={{ width: colWidths.status }}
+          >
+            <span className="truncate">Status</span>
+            <ColumnResizeHandle
+              column="status"
+              onResizeStart={onResizeStart}
+              onReset={onResetWidth}
+            />
+          </div>
+          <div className="flex-1 min-w-0" />
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#f0f0f0]">
+          {rows.length === 0 ? (
+            <div className="p-4 text-center text-[#707070] text-xs">
+              {loading ? "Loading classes..." : "No classes match active search."}
+            </div>
+          ) : (
+            rows.map((row) => {
+              const selected = selectedClassId === row.id;
+              return (
+                <ClassTableRow
+                  key={row.id}
+                  row={row}
+                  selected={selected}
+                  widths={colWidths}
+                  partType={partTypesMap.get(row.part_type || "")}
+                  onSelect={onSelect}
+                  rowRef={selected ? activeRowRef : undefined}
+                />
+              );
+            })
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export function ClassesAdmin() {
   const [classes, setClasses] = useState<ClassRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -608,17 +796,17 @@ export function ClassesAdmin() {
   }, [partTypes, editPartType, newPartType]);
 
   async function load() {
-    const [data, pts] = await Promise.all([fetchCatalogue(), fetchPartTypes(true).catch(() => [])]);
-    setClasses(data.classes);
+    const [rows, pts] = await Promise.all([fetchClasses(), fetchPartTypes(true).catch(() => [])]);
+    setClasses(rows);
     setPartTypes(pts);
   }
 
   useEffect(() => {
     let cancel = false;
-    Promise.all([fetchCatalogue(), fetchPartTypes(true).catch(() => [])])
-      .then(([data, pts]) => {
+    Promise.all([fetchClasses(), fetchPartTypes(true).catch(() => [])])
+      .then(([rows, pts]) => {
         if (!cancel) {
-          setClasses(data.classes);
+          setClasses(rows);
           setPartTypes(pts);
         }
       })
@@ -630,17 +818,15 @@ export function ClassesAdmin() {
     };
   }, []);
 
-  const filtered = useMemo(() => {
-    if (!classes) return [];
-    if (!query.trim()) return classes;
-    const q = query.toLowerCase();
-    return classes.filter(
-      (c) =>
-        c.ic.toLowerCase().includes(q) ||
-        c.des.toLowerCase().includes(q) ||
-        String(c.id).includes(q),
-    );
-  }, [classes, query]);
+  const classSearch = useMemo(() => buildClassSearch(classes ?? []), [classes]);
+  const filtered = useMemo(
+    () => filterClassSearch(classes ?? [], classSearch, query),
+    [classes, classSearch, query],
+  );
+
+  const selectClass = useCallback((id: number) => {
+    setSelectedClassId(id);
+  }, []);
 
   const selectedClass = useMemo(() => {
     return (classes ?? []).find((c) => c.id === selectedClassId) ?? null;
@@ -741,7 +927,7 @@ export function ClassesAdmin() {
   // Scroll active row into view
   useEffect(() => {
     if (selectedClassId != null && activeRowRef.current) {
-      activeRowRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      activeRowRef.current.scrollIntoView({ block: "nearest", behavior: "auto" });
     }
   }, [selectedClassId]);
 
@@ -783,7 +969,7 @@ export function ClassesAdmin() {
     try {
       const created = await createClass(newIc.trim(), newDes.trim(), newPartType);
       focusDimensionsPendingRef.current = true;
-      await load();
+      setClasses((prev) => mergeClassRow(prev, created));
       setQuery("");
       setSelectedClassId(created.id);
       setNewIc("");
@@ -919,7 +1105,7 @@ export function ClassesAdmin() {
         "spring",
         "other",
       ].includes(editPartType);
-      await updateClass({
+      const updated = await updateClass({
         id: selectedClass.id,
         ic: editIc.trim(),
         des: editDes.trim(),
@@ -981,7 +1167,7 @@ export function ClassesAdmin() {
             ? parseOptionalMm(editDim3Mm)
             : null,
       });
-      await load();
+      setClasses((prev) => mergeClassRow(prev, updated));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to update class");
     } finally {
@@ -995,7 +1181,7 @@ export function ClassesAdmin() {
     try {
       await deleteClass(id);
       setPendingDeleteId(null);
-      await load();
+      setClasses((prev) => (prev ? prev.filter((row) => row.id !== id) : prev));
       setSelectedClassId(null);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to delete class");
@@ -1202,175 +1388,17 @@ export function ClassesAdmin() {
       <div className="flex-1 min-h-0 flex flex-row overflow-hidden">
         {/* Left: Dense Tabular List */}
         <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-white overflow-hidden">
-          {/* Scrollable Table Viewport */}
-          <div className="flex-1 min-h-0 flex flex-col overflow-x-auto">
-            <div className="min-w-full w-max flex-1 min-h-0 flex flex-col">
-              {/* Table Header */}
-              <div className="h-6 border-b border-[#c8c8c8] bg-[#f5f5f5] flex items-center px-2 text-[11px] font-semibold text-[#707070] shrink-0 select-none">
-                <div
-                  className="relative shrink-0 flex items-center pr-2"
-                  style={{ width: colWidths.id }}
-                >
-                  <span className="truncate">ID</span>
-                  <ColumnResizeHandle
-                    column="id"
-                    onResizeStart={handleResizeStart}
-                    onReset={resetWidth}
-                  />
-                </div>
-                <div
-                  className="relative shrink-0 flex items-center pr-2"
-                  style={{ width: colWidths.color }}
-                >
-                  <span className="truncate">Color</span>
-                  <ColumnResizeHandle
-                    column="color"
-                    onResizeStart={handleResizeStart}
-                    onReset={resetWidth}
-                  />
-                </div>
-                <div
-                  className="relative shrink-0 flex items-center pr-2 min-w-0"
-                  style={{ width: colWidths.code }}
-                >
-                  <span className="truncate">Code</span>
-                  <ColumnResizeHandle
-                    column="code"
-                    onResizeStart={handleResizeStart}
-                    onReset={resetWidth}
-                  />
-                </div>
-                <div
-                  className="relative shrink-0 flex items-center pr-2 min-w-0"
-                  style={{ width: colWidths.des }}
-                >
-                  <span className="truncate">Description</span>
-                  <ColumnResizeHandle
-                    column="des"
-                    onResizeStart={handleResizeStart}
-                    onReset={resetWidth}
-                  />
-                </div>
-                <div
-                  className="relative shrink-0 flex items-center pr-2 min-w-0"
-                  style={{ width: colWidths.dims }}
-                >
-                  <span className="truncate">Dimensions</span>
-                  <ColumnResizeHandle
-                    column="dims"
-                    onResizeStart={handleResizeStart}
-                    onReset={resetWidth}
-                  />
-                </div>
-                <div
-                  className="relative shrink-0 flex items-center pr-2 min-w-0"
-                  style={{ width: colWidths.status }}
-                >
-                  <span className="truncate">Status</span>
-                  <ColumnResizeHandle
-                    column="status"
-                    onResizeStart={handleResizeStart}
-                    onReset={resetWidth}
-                  />
-                </div>
-                <div className="flex-1 min-w-0" />
-              </div>
-
-              {/* Table Body (Scrollable Internally) */}
-              <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#f0f0f0]">
-                {filtered.length === 0 ? (
-                  <div className="p-4 text-center text-[#707070] text-xs">
-                    {classes ? "No classes match active search." : "Loading classes..."}
-                  </div>
-                ) : (
-                  filtered.map((row) => {
-                    const isSelected = selectedClassId === row.id;
-                    const complete = hasCompleteMeasurements(
-                      row,
-                      partTypesMap.get(row.part_type || ""),
-                    );
-                    const hasPartType = row.part_type && row.part_type !== "none";
-                    const summary = formatPartSummary(row);
-
-                    return (
-                      <div
-                        key={row.id}
-                        ref={isSelected ? activeRowRef : undefined}
-                        onClick={() => setSelectedClassId(row.id)}
-                        className={`flex items-center px-2 py-1 cursor-pointer transition-colors text-xs border-l-2 ${
-                          isSelected
-                            ? "bg-[#1473e6]/10 border-[#1473e6]"
-                            : "border-transparent hover:bg-[#f9f9f9]"
-                        }`}
-                      >
-                        {/* Numeric ID */}
-                        <div
-                          className="shrink-0 pr-2 font-mono text-[10px] text-[#707070]"
-                          style={{ width: colWidths.id }}
-                        >
-                          #{row.id}
-                        </div>
-
-                        {/* Color Swatch */}
-                        <div
-                          className="shrink-0 pr-2 flex items-center"
-                          style={{ width: colWidths.color }}
-                        >
-                          <span
-                            className="size-2.5 rounded-[1px] inline-block border border-black/15"
-                            style={{ backgroundColor: classFill(row.id, row.color) }}
-                          />
-                        </div>
-
-                        {/* Code */}
-                        <div
-                          className="shrink-0 pr-2 font-bold font-mono text-[11px] text-[#282828] truncate min-w-0"
-                          style={{ width: colWidths.code }}
-                        >
-                          {row.ic}
-                        </div>
-
-                        {/* Description */}
-                        <div
-                          className="shrink-0 pr-2 text-[#707070] truncate text-[11px] min-w-0"
-                          style={{ width: colWidths.des }}
-                        >
-                          {row.des}
-                        </div>
-
-                        {/* Dimensions Summary */}
-                        <div
-                          className="shrink-0 pr-2 font-mono text-[10px] text-[#707070] truncate min-w-0"
-                          style={{ width: colWidths.dims }}
-                        >
-                          {summary ?? "—"}
-                        </div>
-
-                        {/* Status Badge */}
-                        <div className="shrink-0 pr-2 min-w-0" style={{ width: colWidths.status }}>
-                          {complete ? (
-                            <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-emerald-100 text-emerald-800">
-                              complete
-                            </span>
-                          ) : hasPartType ? (
-                            <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-rose-100 text-rose-800">
-                              unset
-                            </span>
-                          ) : (
-                            <span className="text-[9px] font-mono px-1 py-0.2 rounded-[2px] bg-neutral-100 text-neutral-500">
-                              none
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="flex-1 min-w-0" />
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          </div>
+          <ClassTable
+            rows={filtered}
+            loading={classes === null}
+            selectedClassId={selectedClassId}
+            colWidths={colWidths}
+            partTypesMap={partTypesMap}
+            onResizeStart={handleResizeStart}
+            onResetWidth={resetWidth}
+            onSelect={selectClass}
+            activeRowRef={activeRowRef}
+          />
         </div>
 
         {/* Right: Inspector Pane (320px) */}
