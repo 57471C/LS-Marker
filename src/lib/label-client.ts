@@ -436,6 +436,13 @@ export function fetchCatalogue(): Promise<Catalogue> {
   return fetch(api("/api/catalogue")).then((res) => asJson<Catalogue>(res));
 }
 
+/** Class rows only. Does not rescan the image folder or return photo metadata. */
+export function fetchClasses(): Promise<ClassRow[]> {
+  return fetch(api("/api/classes"))
+    .then((res) => asJson<{ classes: ClassRow[] }>(res))
+    .then((data) => data.classes);
+}
+
 export function fetchCurrentProject(): Promise<Project | null> {
   return fetch(api("/api/project"))
     .then((res) => asJson<{ project: Project | null }>(res))

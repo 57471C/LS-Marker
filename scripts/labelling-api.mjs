@@ -2524,12 +2524,27 @@ export function formatBoxLine(box) {
 }
 
 /**
+ * Pending classes.txt writes. Edits coalesce to the latest database rows so a
+ * slow network share cannot stack one multi-minute write per click.
+ * @type {Map<string, { chain: Promise<void>, pending: boolean, scheduled: boolean }>}
+ */
+const classFileWrites = new Map();
+
+/**
+ * Mirror classes.txt from the database without blocking the API event loop.
+ * Synchronous writes on the training share stall the whole Node process while
+ * an SMB lease breaks.
  * @param {any} db
  * @param {number} projectId
  * @param {string} folder
  */
 async function writeClassesFile(db, projectId, folder) {
-  if (folderError(folder)) return;
+  try {
+    const stat = await fs.promises.stat(folder);
+    if (!stat.isDirectory()) return;
+  } catch {
+    return;
+  }
   const rows = await db
     .prepare("SELECT id, ic FROM classes WHERE project_id = ? ORDER BY id")
     .all(projectId);
@@ -2540,18 +2555,77 @@ async function writeClassesFile(db, projectId, folder) {
   const next = lines.length ? `${lines.join("\n")}\n` : "";
   const file = path.join(folder, "classes.txt");
   try {
-    if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === next) return;
+    const current = await fs.promises.readFile(file, "utf8");
+    if (current === next) return;
   } catch {
-    /* rewrite below */
+    /* missing or unreadable; rewrite below */
   }
-  fs.writeFileSync(file, next);
+  const tmp = path.join(folder, `.classes.${process.pid}.${Date.now()}.tmp`);
+  try {
+    await fs.promises.writeFile(tmp, next);
+    try {
+      await fs.promises.rename(tmp, file);
+    } catch {
+      await fs.promises.writeFile(file, next);
+      await fs.promises.unlink(tmp).catch(() => {});
+    }
+  } catch (err) {
+    await fs.promises.unlink(tmp).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * Queue a classes.txt mirror. Class routes must not await this: the share
+ * write can take minutes, and the database row is already the source of truth.
+ * @param {any} db
+ * @param {number} projectId
+ * @param {string} folder
+ */
+function scheduleClassesFileWrite(db, projectId, folder) {
+  const key = String(projectId);
+  let slot = classFileWrites.get(key);
+  if (!slot) {
+    slot = { chain: Promise.resolve(), pending: false, scheduled: false };
+    classFileWrites.set(key, slot);
+  }
+  slot.pending = true;
+  if (slot.scheduled) return;
+  slot.scheduled = true;
+  slot.chain = slot.chain
+    .catch(() => {})
+    .then(async () => {
+      try {
+        while (slot.pending) {
+          slot.pending = false;
+          await writeClassesFile(db, projectId, folder);
+        }
+      } catch (err) {
+        console.error("[label-api] classes.txt", err);
+      } finally {
+        slot.scheduled = false;
+        if (slot.pending) scheduleClassesFileWrite(db, projectId, folder);
+      }
+    });
+}
+
+/** Wait until queued classes.txt mirrors have finished. Used by verification scripts. */
+export function flushClassesFileWrites() {
+  return (async () => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const chains = [...classFileWrites.values()].map((slot) => slot.chain);
+      await Promise.all(chains);
+      const busy = [...classFileWrites.values()].some((slot) => slot.pending || slot.scheduled);
+      if (!busy) return;
+    }
+  })();
 }
 
 /**
  * @param {any} db
  * @param {number} projectId
  */
-async function listClasses(db, projectId) {
+export async function listClasses(db, projectId) {
   return await db
     .prepare(
       `SELECT id, ic, des, color, part_type,
@@ -3618,11 +3692,7 @@ export async function catalogue(root, project) {
   /** @type {{ id: number, name: string, labelled: boolean, claimedBy: string | null, claimedAt: string | null, status: string, completedAt: string | null, lockedBy: string | null, lockedAt: string | null }[]} */
   let images = [];
   if (!error) {
-    try {
-      await writeClassesFile(db, project.id, resolvedFolder);
-    } catch (err) {
-      console.error("[label-api] classes.txt", err);
-    }
+    scheduleClassesFileWrite(db, project.id, resolvedFolder);
     await syncProjectImages(db, root, project);
     const dbImages = await db
       .prepare(
@@ -5323,6 +5393,14 @@ export async function handle(req, res, url, root) {
     return;
   }
 
+  if (method === "GET" && pathname === "/api/classes") {
+    const db = await getDb(root);
+    const project = await requireProject(db, req);
+    // Class rows only. Do not rescan images or rewrite classes.txt on this read.
+    send(res, 200, { classes: await listClasses(db, project.id) });
+    return;
+  }
+
   if (method === "POST" && pathname === "/api/classes/import") {
     const db = await getDb(root);
     const project = await requireProject(db, req);
@@ -5332,7 +5410,7 @@ export async function handle(req, res, url, root) {
     if (rows.length === 0) throw new HttpError(400, "CSV has no rows");
     if (rows.length > 20000) throw new HttpError(400, "CSV is limited to 20000 rows");
     const result = await importClasses(db, project.id, rows);
-    await writeClassesFile(db, project.id, path.resolve(root, project.folder));
+    scheduleClassesFileWrite(db, project.id, path.resolve(root, project.folder));
     send(res, 200, result);
     return;
   }
@@ -5390,7 +5468,7 @@ export async function handle(req, res, url, root) {
       if (String(err).includes("UNIQUE")) throw new HttpError(409, "That item code already exists");
       throw err;
     }
-    await writeClassesFile(db, project.id, path.resolve(root, project.folder));
+    scheduleClassesFileWrite(db, project.id, path.resolve(root, project.folder));
     send(res, 200, {
       id: next.id,
       ic,
@@ -5481,7 +5559,7 @@ export async function handle(req, res, url, root) {
       if (String(err).includes("UNIQUE")) throw new HttpError(409, "That item code already exists");
       throw err;
     }
-    await writeClassesFile(db, project.id, path.resolve(root, project.folder));
+    scheduleClassesFileWrite(db, project.id, path.resolve(root, project.folder));
     const row = await db
       .prepare(
         `SELECT id, ic, des, color, part_type,
@@ -5504,7 +5582,7 @@ export async function handle(req, res, url, root) {
       .prepare("DELETE FROM classes WHERE project_id = ? AND id = ?")
       .run(project.id, id);
     if (result.changes === 0) throw new HttpError(404, "Class not found");
-    await writeClassesFile(db, project.id, path.resolve(root, project.folder));
+    scheduleClassesFileWrite(db, project.id, path.resolve(root, project.folder));
     send(res, 200, { ok: true });
     return;
   }
@@ -5854,11 +5932,7 @@ export async function handle(req, res, url, root) {
       ? path.basename(url.searchParams.get("filename")).replace(/[^a-zA-Z0-9_.-]/g, "_")
       : null;
 
-    try {
-      await writeClassesFile(db, project.id, resolvedFolder);
-    } catch (err) {
-      console.error("[label-api] classes.txt", err);
-    }
+    scheduleClassesFileWrite(db, project.id, resolvedFolder);
 
     if (exportFormat === "dino") {
       await streamDinoCatalogueExport(
