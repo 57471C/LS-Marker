@@ -1381,20 +1381,30 @@ function parseTiffOrientation(buf, tiffStart, maxBytes) {
 
 /**
  * @param {{ name: string }} project
- * @param {{ id: number, ic: string }[]} classes
+ * @param {{ id: number, ic: string, ic_codes?: string[] }[]} classes
  * @param {Array<{ id: number, relName: string, source_image_path: string, export_image_relative: string, split: string, txt_full_path: string }>} items
  * @param {"labels_only" | "full_tar"} exportType
  * @param {Map<number, number> | null} [classMap]
+ * @param {Map<number, { id: number, ic: string, part_type?: string | null }> | null} [originalClassById]
  */
-function buildCocoDatasets(project, classes, items, exportType, classMap = null) {
+function buildCocoDatasets(
+  project,
+  classes,
+  items,
+  exportType,
+  classMap = null,
+  originalClassById = null,
+) {
   const categories = classes.map((cls) => ({
     id: cls.id,
     name: cls.ic,
     supercategory: "part",
+    ...(Array.isArray(cls.ic_codes) && cls.ic_codes.length > 0 ? { ic_codes: cls.ic_codes } : {}),
   }));
 
   const createdDate = new Date().toISOString();
   const year = new Date().getFullYear();
+  let totalAnnotations = 0;
 
   function makeSplitJson(splitName) {
     const splitItems = items.filter((item) => item.split === splitName);
@@ -1422,6 +1432,7 @@ function buildCocoDatasets(project, classes, items, exportType, classMap = null)
         let y_min = (box.y - box.h / 2) * H;
         let bbox_w = box.w * W;
         let bbox_h = box.h * H;
+        const origClass = originalClassById?.get(box.classId) ?? null;
         const mappedClassId = classMap?.has(box.classId) ? classMap.get(box.classId) : box.classId;
 
         // Clamp to image dimensions
@@ -1454,7 +1465,9 @@ function buildCocoDatasets(project, classes, items, exportType, classMap = null)
           area,
           segmentation,
           iscrowd: 0,
+          ...(origClass ? { ic: origClass.ic, original_class_id: origClass.id } : {}),
         });
+        totalAnnotations++;
       }
     }
 
@@ -1477,6 +1490,7 @@ function buildCocoDatasets(project, classes, items, exportType, classMap = null)
   return {
     trainJson: makeSplitJson("train"),
     valJson: makeSplitJson("val"),
+    totalAnnotations,
   };
 }
 
@@ -1582,23 +1596,44 @@ export async function prepareExportPlan(
   classMode = "ic",
 ) {
   const dbClasses = await listClasses(db, project.id);
-  /** @type {{ id: number, ic: string }[]} */
+  /** @type {{ id: number, ic: string, ic_codes?: string[] }[]} */
   let classes = [];
   /** @type {Map<number, number> | null} */
   let classMap = null;
+  /** @type {Map<number, { id: number, ic: string, part_type?: string | null }>} */
+  const originalClassById = new Map(dbClasses.map((c) => [c.id, c]));
 
   if (classMode === "general") {
-    const generalClassMap = new Map();
+    /** @type {Map<string, string[]>} */
+    const generalGroups = new Map();
     classMap = new Map();
     if (dbClasses.length > 0) {
       for (const c of dbClasses) {
         const pt = c.part_type ? String(c.part_type).trim().toLowerCase() : "";
         const generalName = pt && pt !== "none" ? pt : c.ic.trim();
-        if (!generalClassMap.has(generalName)) {
-          const newId = classes.length;
-          generalClassMap.set(generalName, newId);
-          classes.push({ id: newId, ic: generalName });
+        if (!generalGroups.has(generalName)) {
+          generalGroups.set(generalName, []);
         }
+        generalGroups.get(generalName).push(c.ic.trim());
+      }
+      // Sort unique part types deterministically so category IDs are stable and
+      // independent of IC code ordering or additions.
+      const sortedNames = Array.from(generalGroups.keys()).sort((a, b) =>
+        a < b ? -1 : a > b ? 1 : 0,
+      );
+      /** @type {Map<string, number>} */
+      const generalClassMap = new Map();
+      sortedNames.forEach((generalName, idx) => {
+        generalClassMap.set(generalName, idx);
+        classes.push({
+          id: idx,
+          ic: generalName,
+          ic_codes: generalGroups.get(generalName),
+        });
+      });
+      for (const c of dbClasses) {
+        const pt = c.part_type ? String(c.part_type).trim().toLowerCase() : "";
+        const generalName = pt && pt !== "none" ? pt : c.ic.trim();
         classMap.set(c.id, generalClassMap.get(generalName));
       }
     } else {
@@ -1610,8 +1645,9 @@ export async function prepareExportPlan(
             .map((line, idx) => ({ id: idx, ic: line.trim() }))
             .filter((row) => Boolean(row.ic))
             .forEach((c) => {
-              classes.push(c);
+              classes.push({ id: c.id, ic: c.ic, ic_codes: [c.ic] });
               classMap.set(c.id, c.id);
+              originalClassById.set(c.id, c);
             });
         } catch {
           /* ignore classes.txt fallback error */
@@ -1628,6 +1664,9 @@ export async function prepareExportPlan(
           classes = lines
             .map((line, idx) => ({ id: idx, ic: line.trim() }))
             .filter((row) => Boolean(row.ic));
+          for (const c of classes) {
+            originalClassById.set(c.id, c);
+          }
         } catch {
           /* ignore classes.txt fallback error */
         }
@@ -1725,7 +1764,7 @@ export async function prepareExportPlan(
     })),
   };
 
-  return { classes, items, manifest, classMap };
+  return { classes, items, manifest, classMap, originalClassById };
 }
 
 /**
@@ -2246,7 +2285,7 @@ async function streamCocoExport(
   classMode = "ic",
   customFileName = null,
 ) {
-  const { classes, items, manifest, classMap } = await prepareExportPlan(
+  const { classes, items, manifest, classMap, originalClassById } = await prepareExportPlan(
     db,
     project,
     resolvedFolder,
@@ -2256,7 +2295,18 @@ async function streamCocoExport(
     exportScope,
     classMode,
   );
-  const { trainJson, valJson } = buildCocoDatasets(project, classes, items, exportType, classMap);
+  const { trainJson, valJson, totalAnnotations } = buildCocoDatasets(
+    project,
+    classes,
+    items,
+    exportType,
+    classMap,
+    originalClassById,
+  );
+  const exportSummary = `Exported ${classes.length} part types (${totalAnnotations} annotations)`;
+  console.log(`[export:coco] ${exportSummary}`);
+  manifest.total_annotations = totalAnnotations;
+  manifest.export_summary = exportSummary;
   const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
 
   const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, "_") || "coco";
@@ -5922,11 +5972,12 @@ export async function handle(req, res, url, root) {
     const rawClassMode = (
       url.searchParams.get("class_mode") ??
       url.searchParams.get("classes") ??
-      "ic"
+      (exportFormat === "coco" ? "general" : "ic")
     )
       .trim()
       .toLowerCase();
-    const classMode = rawClassMode === "general" ? "general" : "ic";
+    const classMode =
+      exportFormat === "coco" ? "general" : rawClassMode === "general" ? "general" : "ic";
 
     const customFileName = url.searchParams.has("filename")
       ? path.basename(url.searchParams.get("filename")).replace(/[^a-zA-Z0-9_.-]/g, "_")
