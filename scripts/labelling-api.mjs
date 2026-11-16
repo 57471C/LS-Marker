@@ -1100,20 +1100,165 @@ function labelFileFor(imageFull) {
   return path.join(path.dirname(imageFull), `${base}.txt`);
 }
 
+const THUMB_MAX_EDGE = 192;
+const THUMB_JPEG_QUALITY = 70;
+
+/** @type {Map<string, Promise<string>>} */
+const thumbInflight = new Map();
+
 /**
- * Small JPEG for the review filmstrip. The full file stays on disk; libvips
- * resizes it and only the tiny output is copied into JS.
- * @param {string} imageFull
- * @param {number} maxEdge
- * @returns {Promise<Buffer>}
+ * Absolute `data/thumbs/{projectId}` directory. Rejects ids that could escape it.
+ * @param {string} root
+ * @param {number} projectId
  */
-export async function renderImageThumb(imageFull, maxEdge) {
-  const edge = Math.min(256, Math.max(16, Math.round(Number(maxEdge))));
-  return sharp(imageFull, { sequentialRead: true, failOn: "none" })
-    .rotate()
-    .resize({ width: edge, height: edge, fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality: 60 })
-    .toBuffer();
+function thumbProjectDir(root, projectId) {
+  const id = Number(projectId);
+  if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, "Bad project id");
+  const thumbsRoot = path.resolve(root, "data", "thumbs");
+  const dir = path.resolve(thumbsRoot, String(id));
+  const dirNorm = process.platform === "win32" ? dir.toLowerCase() : dir;
+  const rootNorm = process.platform === "win32" ? thumbsRoot.toLowerCase() : thumbsRoot;
+  if (!dirNorm.startsWith(`${rootNorm}${path.sep}`)) throw new HttpError(400, "Bad project id");
+  return dir;
+}
+
+/**
+ * Local thumb path. Keeps the original relative folders and forces `.jpg`.
+ * @param {string} root
+ * @param {number} projectId
+ * @param {string} filename
+ */
+function thumbDestFor(root, projectId, filename) {
+  const dir = thumbProjectDir(root, projectId);
+  if (typeof filename !== "string" || !filename) throw new HttpError(400, "Bad image name");
+  const normalized = filename.replace(/\\/g, "/").replace(/^\/+/, "");
+  const parts = normalized.split("/");
+  if (parts.some((part) => !part || part === "." || part === ".." || part.includes("\0"))) {
+    throw new HttpError(400, "Bad image name");
+  }
+  const leaf = parts[parts.length - 1];
+  const ext = path.posix.extname(leaf);
+  const base = path.posix.basename(leaf, ext);
+  if (!base || base === "." || base === "..") throw new HttpError(400, "Bad image name");
+  parts[parts.length - 1] = `${base}.jpg`;
+  const dest = path.resolve(dir, ...parts);
+  const dirNorm = process.platform === "win32" ? dir.toLowerCase() : dir;
+  const destNorm = process.platform === "win32" ? dest.toLowerCase() : dest;
+  if (!destNorm.startsWith(`${dirNorm}${path.sep}`)) throw new HttpError(400, "Bad image name");
+  return dest;
+}
+
+/**
+ * SMB (or project-folder) original for a catalogue name. Read-only.
+ * @param {string} root
+ * @param {number} projectId
+ * @param {string} filename
+ * @param {any} [db]
+ */
+async function originalImagePath(root, projectId, filename, db) {
+  const database = db ?? (await getDb(root));
+  const project = await database
+    .prepare("SELECT id, folder FROM projects WHERE id = ?")
+    .get(projectId);
+  if (!project || typeof project.folder !== "string") {
+    throw new HttpError(404, "Project not found");
+  }
+  return resolveInside(path.resolve(root, project.folder), filename);
+}
+
+/**
+ * @param {string} root
+ * @param {number} projectId
+ * @param {string} filename
+ * @param {string} dest
+ * @param {{ db?: any, sourceFull?: string }} opts
+ */
+async function writeThumb(root, projectId, filename, dest, opts) {
+  const sourceFull = opts.sourceFull
+    ? path.resolve(opts.sourceFull)
+    : await originalImagePath(root, projectId, filename, opts.db);
+  const sourceNorm = process.platform === "win32" ? sourceFull.toLowerCase() : sourceFull;
+  const destNorm = process.platform === "win32" ? dest.toLowerCase() : dest;
+  if (sourceNorm === destNorm) throw new HttpError(500, "Refusing to overwrite the original");
+  let sourceStat;
+  try {
+    sourceStat = await fs.promises.stat(sourceFull);
+  } catch (err) {
+    if (err && /** @type {NodeJS.ErrnoException} */ (err).code === "ENOENT") {
+      throw new HttpError(404, "Image not found");
+    }
+    throw err;
+  }
+  if (!sourceStat.isFile()) throw new HttpError(404, "Image not found");
+  if (!IMAGE_EXT.has(path.extname(sourceFull).toLowerCase())) {
+    throw new HttpError(400, "Not an image");
+  }
+
+  await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+  const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.${process.pid}.tmp`);
+  try {
+    await sharp(sourceFull, { sequentialRead: true, failOn: "none" })
+      .rotate()
+      .resize({
+        width: THUMB_MAX_EDGE,
+        height: THUMB_MAX_EDGE,
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality: THUMB_JPEG_QUALITY })
+      .toFile(tmp);
+    await fs.promises.rm(dest, { force: true });
+    await fs.promises.rename(tmp, dest);
+  } catch (err) {
+    await fs.promises.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+  return dest;
+}
+
+/**
+ * Local JPEG under `data/thumbs/{projectId}/{filename}.jpg`.
+ * Returns the existing file immediately. Otherwise reads the original once,
+ * resizes to fit inside 192px, and writes only under `data/thumbs`.
+ * Catalogue rescan does not call this; `GET /api/thumb` generates on demand,
+ * and `scripts/generate-thumbs.mjs` can fill in thumbs for images already registered.
+ *
+ * @param {number} projectId
+ * @param {string} filename catalogue `file_path` (POSIX, folders allowed)
+ * @param {{ root?: string, db?: any, sourceFull?: string }} [opts]
+ * @returns {Promise<string>} absolute path of the local thumb
+ */
+export async function ensureThumb(projectId, filename, opts = {}) {
+  const root = opts.root ?? process.cwd();
+  const dest = thumbDestFor(root, projectId, filename);
+  try {
+    const existing = await fs.promises.stat(dest);
+    if (existing.isFile() && existing.size > 0) return dest;
+  } catch (err) {
+    if (!err || /** @type {NodeJS.ErrnoException} */ (err).code !== "ENOENT") throw err;
+  }
+
+  const pending = thumbInflight.get(dest);
+  if (pending) return pending;
+
+  /** @type {Promise<string>} */
+  let job;
+  job = writeThumb(root, projectId, filename, dest, opts).finally(() => {
+    if (thumbInflight.get(dest) === job) thumbInflight.delete(dest);
+  });
+  thumbInflight.set(dest, job);
+  return job;
+}
+
+/**
+ * Delete `data/thumbs/{projectId}` after the project row is gone.
+ * Does not touch the project image folder.
+ * @param {string} root
+ * @param {number} projectId
+ */
+export async function removeProjectThumbs(root, projectId) {
+  const dir = thumbProjectDir(root, projectId);
+  await fs.promises.rm(dir, { recursive: true, force: true });
 }
 
 /**
@@ -5107,6 +5252,12 @@ export async function handle(req, res, url, root) {
     });
     await tx();
 
+    try {
+      await removeProjectThumbs(root, id);
+    } catch (err) {
+      console.error("[thumbs] project cleanup failed", err);
+    }
+
     projectFolders.delete(resolvedFolder);
     const curId = Number(readCookies(req).partlab_project);
     if (curId === id) {
@@ -6294,6 +6445,38 @@ export async function handle(req, res, url, root) {
     return;
   }
 
+  const thumbMatch = pathname.match(/^\/api\/thumb\/(\d+)\/(.+)$/);
+  if (method === "GET" && thumbMatch) {
+    const project = await requireProject(db, req);
+    const requestedId = Number(thumbMatch[1]);
+    if (Number(project.id) !== requestedId) throw new HttpError(404, "Image not found");
+    let filename;
+    try {
+      filename = thumbMatch[2]
+        .split("/")
+        .map((part) => decodeURIComponent(part))
+        .join("/");
+    } catch {
+      throw new HttpError(400, "Bad image name");
+    }
+    const dest = await ensureThumb(project.id, filename, { root, db });
+    const stat = await fs.promises.stat(dest);
+    res.statusCode = 200;
+    res.setHeader("content-type", "image/jpeg");
+    res.setHeader("content-length", String(stat.size));
+    res.setHeader("cache-control", "public, max-age=31536000, immutable");
+    const stream = fs.createReadStream(dest);
+    stream.on("error", () => {
+      if (!res.headersSent) res.statusCode = 500;
+      res.end();
+    });
+    res.on("close", () => {
+      stream.destroy();
+    });
+    stream.pipe(res);
+    return;
+  }
+
   if (pathname === "/api/label" || pathname === "/api/image") {
     const db = await getDb(root);
     const project = await requireProject(db, req);
@@ -6358,20 +6541,6 @@ export async function handle(req, res, url, root) {
     }
 
     if (method === "GET" && pathname === "/api/image") {
-      const maxRaw = Number(url.searchParams.get("max"));
-      if (Number.isFinite(maxRaw) && maxRaw > 0) {
-        try {
-          const thumb = await renderImageThumb(imageFull, maxRaw);
-          res.statusCode = 200;
-          res.setHeader("content-type", "image/jpeg");
-          res.setHeader("content-length", String(thumb.length));
-          res.setHeader("cache-control", "private, max-age=86400");
-          res.end(thumb);
-          return;
-        } catch (err) {
-          console.error("[image-thumb]", err);
-        }
-      }
       const types = {
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",

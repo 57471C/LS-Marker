@@ -17,6 +17,7 @@ import {
   fetchAdmin,
   fetchCatalogue,
   imageSrc,
+  imageThumbSrc,
   type ImageRow,
   type PhotoStatus,
 } from "@/lib/label-client";
@@ -631,8 +632,11 @@ export function PhotosPage() {
                           style={{ width: colWidths.thumb }}
                         >
                           <img
-                            src={imageSrc(image.name)}
+                            src={project ? imageThumbSrc(project.id, image.name) : undefined}
                             alt=""
+                            width={28}
+                            height={28}
+                            decoding="async"
                             loading="lazy"
                             className="size-7 rounded-[1px] object-cover bg-black/10 border border-[#c8c8c8]"
                           />

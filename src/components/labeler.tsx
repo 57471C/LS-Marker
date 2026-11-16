@@ -3397,7 +3397,7 @@ export function Labeler() {
                 title={`${img.name} (${img.status})`}
               >
                 <img
-                  src={imageThumbSrc(img.name)}
+                  src={project ? imageThumbSrc(project.id, img.name) : undefined}
                   alt=""
                   width={56}
                   height={38}

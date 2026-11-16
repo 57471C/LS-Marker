@@ -432,9 +432,13 @@ export function imageSrc(name: string): string {
   return api(`/api/image?name=${encodeURIComponent(name)}`);
 }
 
-/** Filmstrip preview. Must not request the full-resolution photo. */
-export function imageThumbSrc(name: string): string {
-  return api(`/api/image?name=${encodeURIComponent(name)}&max=96`);
+/** Cached local JPEG. Full-resolution views stay on imageSrc. */
+export function imageThumbSrc(projectId: number, name: string): string {
+  const encoded = name
+    .split(/[/\\]/)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return api(`/api/thumb/${projectId}/${encoded}`);
 }
 
 export function fetchCatalogue(): Promise<Catalogue> {
