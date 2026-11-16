@@ -168,7 +168,14 @@ const CLASS_PRESET_TEMPLATES: Array<{
 export function SettingsPage() {
   const [unlocked, setUnlocked] = useState<boolean | null>(null);
   const [password, setPassword] = useState("");
+  const adminPasswordInputRef = useRef<HTMLInputElement | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>("projects");
+
+  useEffect(() => {
+    if (unlocked === false) {
+      adminPasswordInputRef.current?.focus();
+    }
+  }, [unlocked]);
 
   const [users, setUsers] = useState<LabUser[] | null>(null);
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -183,8 +190,8 @@ export function SettingsPage() {
   // Export State
   const [projectToExport, setProjectToExport] = useState<Project | null>(null);
   const [exportFormat, setExportFormat] = useState<ExportFormat>("yolo");
-  const [exportType, setExportType] = useState<DatasetExportType>("labels_only");
-  const [exportScope, setExportScope] = useState<ExportScope>("all");
+  const [exportType, setExportType] = useState<DatasetExportType>("full_tar");
+  const [exportScope, setExportScope] = useState<ExportScope>("approved");
   const [trainSplit, setTrainSplit] = useState<number>(80);
   const [isExporting, setIsExporting] = useState(false);
   const [bytesExported, setBytesExported] = useState(0);
@@ -742,9 +749,11 @@ export function SettingsPage() {
               </p>
               <div>
                 <input
+                  ref={adminPasswordInputRef}
                   type="password"
                   placeholder="Admin password (admin)"
                   autoComplete="current-password"
+                  autoFocus
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
