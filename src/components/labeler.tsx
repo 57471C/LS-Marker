@@ -55,6 +55,7 @@ import {
   fetchNextImage,
   fetchNextReviewImage,
   imageSrc,
+  imageThumbSrc,
   logout,
   releaseIncomplete,
   saveLabel,
@@ -462,6 +463,7 @@ export function Labeler() {
   const [activeClassId, setActiveClassId] = useState<number | null>(null);
   const [status, setStatus] = useState("Loading");
   const [busy, setBusy] = useState(false);
+  const reviewBusyRef = useRef(false);
   const [queue, setQueue] = useState<Queue>("all");
   const [confirmTakeover, setConfirmTakeover] = useState(false);
   const [codeList, setCodeList] = useState("");
@@ -1237,7 +1239,8 @@ export function Labeler() {
   }
 
   async function handleReviewApprove() {
-    if (!current) return;
+    if (!current || reviewBusyRef.current) return;
+    reviewBusyRef.current = true;
     setBusy(true);
     try {
       const cleaned = toApiBoxes(boxes);
@@ -1282,12 +1285,14 @@ export function Labeler() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Approval failed");
     } finally {
+      reviewBusyRef.current = false;
       setBusy(false);
     }
   }
 
   async function handleReviewReject() {
-    if (!current) return;
+    if (!current || reviewBusyRef.current) return;
+    reviewBusyRef.current = true;
     setBusy(true);
     try {
       const res = await submitReviewAction({
@@ -1333,11 +1338,14 @@ export function Labeler() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Reject failed");
     } finally {
+      reviewBusyRef.current = false;
       setBusy(false);
     }
   }
 
   async function handleNextPendingReview() {
+    if (reviewBusyRef.current) return;
+    reviewBusyRef.current = true;
     setBusy(true);
     try {
       const res = await fetchNextReviewImage(projectId ?? undefined);
@@ -1354,6 +1362,7 @@ export function Labeler() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Could not fetch next review image");
     } finally {
+      reviewBusyRef.current = false;
       setBusy(false);
     }
   }
@@ -2120,10 +2129,16 @@ export function Labeler() {
                 onCropCancel={() => setCropMode(false)}
                 onCropReset={handleCropReset}
                 onSam2Status={(st) => {
-                  setSam2Status(st);
-                  if (st.state !== "idle") setStatus(st.message);
+                  setSam2Status((prev) => {
+                    const prevMessage = "message" in prev ? prev.message : "";
+                    const nextMessage = "message" in st ? st.message : "";
+                    return prev.state === st.state && prevMessage === nextMessage ? prev : st;
+                  });
+                  if (st.state === "idle" || !("message" in st)) return;
+                  const message = st.message;
+                  setStatus((prev) => (prev === message ? prev : message));
                 }}
-                onSam2Error={(msg) => setError(msg)}
+                onSam2Error={(msg) => setError((prev) => (prev === msg ? prev : msg))}
                 labelFor={labelFor}
                 colorFor={colorFor}
                 readOnly={locked}
@@ -3382,8 +3397,11 @@ export function Labeler() {
                 title={`${img.name} (${img.status})`}
               >
                 <img
-                  src={imageSrc(img.name)}
+                  src={imageThumbSrc(img.name)}
                   alt=""
+                  width={56}
+                  height={38}
+                  decoding="async"
                   loading="lazy"
                   className="h-[38px] w-full object-cover bg-black/10 rounded-[1px]"
                 />

@@ -432,6 +432,11 @@ export function imageSrc(name: string): string {
   return api(`/api/image?name=${encodeURIComponent(name)}`);
 }
 
+/** Filmstrip preview. Must not request the full-resolution photo. */
+export function imageThumbSrc(name: string): string {
+  return api(`/api/image?name=${encodeURIComponent(name)}&max=96`);
+}
+
 export function fetchCatalogue(): Promise<Catalogue> {
   return fetch(api("/api/catalogue")).then((res) => asJson<Catalogue>(res));
 }

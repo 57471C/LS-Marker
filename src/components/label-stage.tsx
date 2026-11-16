@@ -699,6 +699,10 @@ export function LabelStage({
   const samDraftPolygonRef = useRef(samDraftPolygon);
   samDraftPolygonRef.current = samDraftPolygon;
   const samRunSeqRef = useRef(0);
+  const onSam2StatusRef = useRef(onSam2Status);
+  const onSam2ErrorRef = useRef(onSam2Error);
+  onSam2StatusRef.current = onSam2Status;
+  onSam2ErrorRef.current = onSam2Error;
 
   const [view, setView] = useState<View>({ zoom: 1, x: 0, y: 0 });
   const [spaceMode, setSpaceMode] = useState<"off" | "ready" | "dragging">("off");
@@ -763,26 +767,29 @@ export function LabelStage({
   useEffect(() => {
     if (!sam2Enabled || !natural || !imgRef.current) return;
     let cancelled = false;
-    encodeSam2Image(imgRef.current, src, (st) => {
-      if (!cancelled) onSam2Status?.(st);
+    const img = imgRef.current;
+    encodeSam2Image(img, src, (st) => {
+      if (!cancelled) onSam2StatusRef.current?.(st);
     }).catch((err: unknown) => {
       if (!cancelled) {
         const msg = err instanceof Error ? err.message : "SAM2 encoding failed";
-        onSam2Status?.({ state: "error", message: msg });
-        onSam2Error?.(msg);
+        onSam2StatusRef.current?.({ state: "error", message: msg });
+        onSam2ErrorRef.current?.(msg);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [sam2Enabled, natural, src, onSam2Status, onSam2Error]);
+  }, [sam2Enabled, natural, src]);
 
   useEffect(() => {
     const el = frameRef.current;
     if (!el) return;
     const measure = () => {
       const rect = el.getBoundingClientRect();
-      setFrame({ w: rect.width, h: rect.height });
+      const w = rect.width;
+      const h = rect.height;
+      setFrame((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -1647,9 +1654,13 @@ export function LabelStage({
         src={src}
         alt={alt}
         draggable={false}
+        decoding="async"
         onLoad={(event) => {
           const img = event.currentTarget;
-          setNatural({ w: img.naturalWidth, h: img.naturalHeight });
+          const w = img.naturalWidth;
+          const h = img.naturalHeight;
+          if (w < 1 || h < 1) return;
+          setNatural((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }));
         }}
         className={
           placed ? "absolute max-w-none select-none" : "h-full w-full object-contain select-none"

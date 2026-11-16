@@ -1101,6 +1101,22 @@ function labelFileFor(imageFull) {
 }
 
 /**
+ * Small JPEG for the review filmstrip. The full file stays on disk; libvips
+ * resizes it and only the tiny output is copied into JS.
+ * @param {string} imageFull
+ * @param {number} maxEdge
+ * @returns {Promise<Buffer>}
+ */
+export async function renderImageThumb(imageFull, maxEdge) {
+  const edge = Math.min(256, Math.max(16, Math.round(Number(maxEdge))));
+  return sharp(imageFull, { sequentialRead: true, failOn: "none" })
+    .rotate()
+    .resize({ width: edge, height: edge, fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 60 })
+    .toBuffer();
+}
+
+/**
  * Recursively remove all .txt files in a folder, leaving all other files (photos) and folder structure alone.
  * @param {string} dir
  */
@@ -6342,6 +6358,20 @@ export async function handle(req, res, url, root) {
     }
 
     if (method === "GET" && pathname === "/api/image") {
+      const maxRaw = Number(url.searchParams.get("max"));
+      if (Number.isFinite(maxRaw) && maxRaw > 0) {
+        try {
+          const thumb = await renderImageThumb(imageFull, maxRaw);
+          res.statusCode = 200;
+          res.setHeader("content-type", "image/jpeg");
+          res.setHeader("content-length", String(thumb.length));
+          res.setHeader("cache-control", "private, max-age=86400");
+          res.end(thumb);
+          return;
+        } catch (err) {
+          console.error("[image-thumb]", err);
+        }
+      }
       const types = {
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
@@ -6352,13 +6382,18 @@ export async function handle(req, res, url, root) {
         ".tiff": "image/tiff",
       };
       const ext = path.extname(imageFull).toLowerCase();
+      const stat = await fs.promises.stat(imageFull);
       res.statusCode = 200;
       res.setHeader("content-type", types[ext] || "application/octet-stream");
+      res.setHeader("content-length", String(stat.size));
       res.setHeader("cache-control", "no-store");
       const stream = fs.createReadStream(imageFull);
       stream.on("error", () => {
         if (!res.headersSent) res.statusCode = 500;
         res.end();
+      });
+      res.on("close", () => {
+        stream.destroy();
       });
       stream.pipe(res);
       return;
