@@ -5413,6 +5413,40 @@ export async function handle(req, res, url, root) {
     }
   }
 
+  /**
+   * Restart the ls-marker systemd service on Linux, falling back to Vite dev server restart when available.
+   * @param {import("vite").ViteDevServer | null} viteServer
+   * @param {string} root
+   */
+  async function restartServiceOrVite(viteServer, root) {
+    const canViteRestart = Boolean(viteServer && typeof viteServer.restart === "function");
+    if (process.platform === "linux") {
+      try {
+        const systemctlCmd = fs.existsSync("/bin/systemctl") ? "/bin/systemctl" : "systemctl";
+        console.log(
+          `[system] Restarting ls-marker service via sudo -n ${systemctlCmd} restart ls-marker...`,
+        );
+        await execFileAsync("sudo", ["-n", systemctlCmd, "restart", "ls-marker"], {
+          cwd: root,
+          timeout: 30000,
+        });
+        return;
+      } catch (err) {
+        console.error("[system] sudo systemctl restart ls-marker failed:", err);
+        if (!canViteRestart) return;
+        console.log("[system] Falling back to Vite server restart...");
+      }
+    }
+    if (canViteRestart) {
+      try {
+        console.log("[system] Restarting Vite server...");
+        await viteServer.restart(true);
+      } catch (err) {
+        console.error("[system] Failed to restart Vite server:", err);
+      }
+    }
+  }
+
   if (method === "POST" && pathname === "/api/system/git-pull") {
     const db = await getDb(root);
     const user = await currentUser(db, req);
@@ -5427,6 +5461,7 @@ export async function handle(req, res, url, root) {
 
     const body = await readBody(req).catch(() => ({}));
     const shouldRestart = body.restart !== false;
+    const shouldBuild = body.build !== false;
 
     let output = "";
     let success = false;
@@ -5451,6 +5486,7 @@ export async function handle(req, res, url, root) {
 
     const packageChanged = output.includes("package.json") || output.includes("package-lock.json");
     const shouldInstall = body.install === true || (packageChanged && success);
+    let installed = false;
     if (success && shouldInstall) {
       try {
         console.log("[system] Running npm install after git pull...");
@@ -5461,13 +5497,39 @@ export async function handle(req, res, url, root) {
         });
         const installLog = (installResult.stdout || "") + (installResult.stderr || "");
         output = `${output.trim()}\n\n[npm install]\n${installLog.trim()}`;
+        installed = true;
       } catch (installErr) {
         const installErrLog = `${installErr.stdout || ""}\n${installErr.stderr || ""}\n${installErr.message || ""}`;
         output = `${output.trim()}\n\n[npm install failed]\n${installErrLog.trim()}`;
         console.error("[system] npm install after git pull failed:", installErr);
+        success = false;
       }
     }
-    const canRestart = Boolean(activeViteServer && typeof activeViteServer.restart === "function");
+
+    let built = false;
+    if (success && shouldBuild) {
+      try {
+        console.log("[system] Running npm run build after git pull...");
+        const buildResult = await execAsync("npm run build", {
+          cwd: root,
+          timeout: 180000,
+          windowsHide: true,
+        });
+        const buildLog = (buildResult.stdout || "") + (buildResult.stderr || "");
+        output = `${output.trim()}\n\n[npm run build]\n${buildLog.trim()}`;
+        built = true;
+      } catch (buildErr) {
+        const buildErrLog = `${buildErr.stdout || ""}\n${buildErr.stderr || ""}\n${buildErr.message || ""}`;
+        output = `${output.trim()}\n\n[npm run build failed]\n${buildErrLog.trim()}`;
+        console.error("[system] npm run build after git pull failed:", buildErr);
+        success = false;
+      }
+    }
+
+    const canViteRestart = Boolean(
+      activeViteServer && typeof activeViteServer.restart === "function",
+    );
+    const canRestart = process.platform === "linux" || canViteRestart;
 
     send(res, 200, {
       ok: success,
@@ -5475,25 +5537,23 @@ export async function handle(req, res, url, root) {
       output: output.trim(),
       error: success ? undefined : output.trim(),
       packageJsonChanged: packageChanged,
-      installed: shouldInstall,
+      installed,
+      built,
       restarting: success && shouldRestart && canRestart,
       message: success
         ? shouldRestart && canRestart
-          ? packageChanged
-            ? "Git pull and npm install succeeded. Vite server is restarting."
-            : "Git pull succeeded. Vite server is restarting."
+          ? installed
+            ? "Git pull, npm install, and build succeeded. Service is restarting."
+            : built
+              ? "Git pull and build succeeded. Service is restarting."
+              : "Git pull succeeded. Service is restarting."
           : "Git pull succeeded."
-        : "Git pull failed. Check output for details.",
+        : "Update failed. Check output for details.",
     });
 
     if (success && shouldRestart && canRestart) {
-      setTimeout(async () => {
-        try {
-          console.log("[system] Restarting Vite server after git pull...");
-          await activeViteServer.restart(true);
-        } catch (err) {
-          console.error("[system] Failed to restart Vite server:", err);
-        }
+      setTimeout(() => {
+        void restartServiceOrVite(activeViteServer, root);
       }, 600);
     }
     return;
@@ -5511,25 +5571,26 @@ export async function handle(req, res, url, root) {
       throw new HttpError(400, "Maintenance mode must be active before restarting server.");
     }
 
-    const canRestart = Boolean(activeViteServer && typeof activeViteServer.restart === "function");
+    const canViteRestart = Boolean(
+      activeViteServer && typeof activeViteServer.restart === "function",
+    );
+    const canRestart = process.platform === "linux" || canViteRestart;
     if (!canRestart) {
-      throw new HttpError(400, "Vite server restart is not supported in this runtime environment.");
+      throw new HttpError(400, "Server restart is not supported in this runtime environment.");
     }
 
     send(res, 200, {
       ok: true,
       success: true,
       restarting: true,
-      message: "Vite server is restarting.",
+      message:
+        process.platform === "linux"
+          ? "ls-marker service is restarting."
+          : "Vite server is restarting.",
     });
 
-    setTimeout(async () => {
-      try {
-        console.log("[system] Restarting Vite server...");
-        await activeViteServer.restart(true);
-      } catch (err) {
-        console.error("[system] Failed to restart Vite server:", err);
-      }
+    setTimeout(() => {
+      void restartServiceOrVite(activeViteServer, root);
     }, 600);
     return;
   }

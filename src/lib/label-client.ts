@@ -1243,6 +1243,7 @@ export type GitPullResult = {
   restarting: boolean;
   packageJsonChanged?: boolean;
   installed?: boolean;
+  built?: boolean;
   message: string;
 };
 

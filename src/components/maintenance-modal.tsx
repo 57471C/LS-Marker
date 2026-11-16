@@ -246,7 +246,9 @@ export function MaintenanceModal({
                     <>
                       <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
                       <span>
-                        {forceInstall ? "Pulling & Installing…" : "Pulling & Restarting…"}
+                        {forceInstall
+                          ? "Pulling, Installing & Building…"
+                          : "Pulling, Building & Restarting…"}
                       </span>
                     </>
                   ) : (
