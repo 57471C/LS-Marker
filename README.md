@@ -54,6 +54,7 @@ Draw bounding boxes and segmentation polygons on part photos, run QA review, aud
 - **QA Review & Approved Freeze**: Once a reviewer approves a photo (`status = 'approved'`), it is frozen in read-only mode on the canvas and excluded from the `Free` queue to protect ground truth. Admins and reviewers can click **Unlock to Edit** to revoke approval and reopen the photo if needed.
 - **Maintenance Mode & Database Backups**: Admins can enable Maintenance Mode from **Settings**, download consistent SQLite `.db` backups, and trigger **Git Pull & Update** with automatic Vite server reload.
 - **Streaming Exports**: Export **YOLO** (`data.yaml` + `.txt` labels), **COCO JSON** (`instances_train.json` / `instances_val.json`), or **DINO Catalogue** (`catalogue.json` with part descriptions, dimensions, and cropped JPEG parts at quality 80) as a `.tar` stream.
+  - **Coarse Part-Type Mapping (`export-class-mapping.json`)**: Both **YOLO** and **COCO** exports default to coarse part-type class names (`bolt`, `nut`, `washer`, `label`, `cable_tie`, `spring`, `other`) instead of raw IC codes, without modifying the database or on-disk `.txt` files. Resolution order: `ic_overrides` → DB `part_type` → `description_patterns` → `ic_prefixes` → `fallback` (`"other"`). Edit `export-class-mapping.json` at the repo root to customize IC prefixes, overrides, or description rules (takes effect on the next export). **DINO Catalogue** exports keep individual IC codes, and `/api/export?...&class_mode=ic` remains available if raw IC labels are explicitly needed.
 
 ## Scripts
 

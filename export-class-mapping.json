@@ -1,0 +1,28 @@
+{
+  "ic_overrides": {},
+  "ic_prefixes": {
+    "2BBMN": "nut",
+    "2BBN": "nut",
+    "2BBW": "washer",
+    "2BB": "bolt",
+    "2VD": "label",
+    "WSH": "washer",
+    "NUT": "nut",
+    "BLT": "bolt",
+    "BOLT": "bolt"
+  },
+  "description_patterns": [
+    { "pattern": "\\b(label|sticker)\\b", "part_type": "label" },
+    { "pattern": "\\b(crush\\s*tube|spacer|washer)\\b", "part_type": "washer" },
+    { "pattern": "\\bcable\\s*tie\\b", "part_type": "cable_tie" },
+    { "pattern": "\\bspring\\b", "part_type": "spring" },
+    { "pattern": "\\bnut\\b", "part_type": "nut" },
+    { "pattern": "\\b(bolt|setscrew|set\\s*screw|cap\\s*screw|shcs|coach)\\b", "part_type": "bolt" }
+  ],
+  "part_type_aliases": {
+    "spacer": "washer",
+    "crush_tube": "washer",
+    "sticker": "label"
+  },
+  "fallback": "other"
+}

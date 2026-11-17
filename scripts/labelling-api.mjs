@@ -12,6 +12,7 @@ import {
   testDbConnection,
   updateDbConnectionString,
 } from "./db.mjs";
+import { loadExportClassMapping, resolveExportPartType } from "./export-class-mapping.mjs";
 import { migrateDatabaseDimensions } from "./migrate-dimensions.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -1765,13 +1766,34 @@ export async function prepareExportPlan(
   const originalClassById = new Map(dbClasses.map((c) => [c.id, c]));
 
   if (classMode === "general") {
+    const classMapping = loadExportClassMapping();
     /** @type {Map<string, string[]>} */
     const generalGroups = new Map();
     classMap = new Map();
-    if (dbClasses.length > 0) {
-      for (const c of dbClasses) {
-        const pt = c.part_type ? String(c.part_type).trim().toLowerCase() : "";
-        const generalName = pt && pt !== "none" ? pt : c.ic.trim();
+
+    let sourceClasses = dbClasses;
+    if (sourceClasses.length === 0) {
+      const classesFile = path.join(resolvedFolder, "classes.txt");
+      if (fs.existsSync(classesFile)) {
+        try {
+          const lines = fs.readFileSync(classesFile, "utf8").split(/\r?\n/);
+          sourceClasses = lines
+            .map((line, idx) => ({ id: idx, ic: line.trim() }))
+            .filter((row) => Boolean(row.ic));
+          for (const c of sourceClasses) {
+            originalClassById.set(c.id, c);
+          }
+        } catch {
+          /* ignore classes.txt fallback error */
+        }
+      }
+    }
+
+    if (sourceClasses.length > 0) {
+      const resolvedByClassId = new Map();
+      for (const c of sourceClasses) {
+        const generalName = resolveExportPartType(c, classMapping);
+        resolvedByClassId.set(c.id, generalName);
         if (!generalGroups.has(generalName)) {
           generalGroups.set(generalName, []);
         }
@@ -1792,27 +1814,9 @@ export async function prepareExportPlan(
           ic_codes: generalGroups.get(generalName),
         });
       });
-      for (const c of dbClasses) {
-        const pt = c.part_type ? String(c.part_type).trim().toLowerCase() : "";
-        const generalName = pt && pt !== "none" ? pt : c.ic.trim();
+      for (const c of sourceClasses) {
+        const generalName = resolvedByClassId.get(c.id);
         classMap.set(c.id, generalClassMap.get(generalName));
-      }
-    } else {
-      const classesFile = path.join(resolvedFolder, "classes.txt");
-      if (fs.existsSync(classesFile)) {
-        try {
-          const lines = fs.readFileSync(classesFile, "utf8").split(/\r?\n/);
-          lines
-            .map((line, idx) => ({ id: idx, ic: line.trim() }))
-            .filter((row) => Boolean(row.ic))
-            .forEach((c) => {
-              classes.push({ id: c.id, ic: c.ic, ic_codes: [c.ic] });
-              classMap.set(c.id, c.id);
-              originalClassById.set(c.id, c);
-            });
-        } catch {
-          /* ignore classes.txt fallback error */
-        }
       }
     }
   } else {
@@ -6200,12 +6204,12 @@ export async function handle(req, res, url, root) {
     const rawClassMode = (
       url.searchParams.get("class_mode") ??
       url.searchParams.get("classes") ??
-      (exportFormat === "coco" ? "general" : "ic")
+      (exportFormat === "coco" || exportFormat === "yolo" ? "general" : "ic")
     )
       .trim()
       .toLowerCase();
     const classMode =
-      exportFormat === "coco" ? "general" : rawClassMode === "general" ? "general" : "ic";
+      exportFormat === "coco" ? "general" : rawClassMode === "ic" ? "ic" : "general";
 
     const customFileName = url.searchParams.has("filename")
       ? path.basename(url.searchParams.get("filename")).replace(/[^a-zA-Z0-9_.-]/g, "_")

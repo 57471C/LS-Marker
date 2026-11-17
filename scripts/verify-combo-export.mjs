@@ -198,27 +198,37 @@ try {
   );
   console.log("✓ DINO catalogue export verified successfully.");
 
-  // Test 4: Single format export remains strictly unchanged (class_mode=ic by default)
-  console.log("\n[Test 4] Verifying default single YOLO export remains unchanged (ic codes)...");
+  // Test 4: Default single YOLO export uses coarse part types (class_mode=general by default)
+  // while explicit class_mode=ic still retains original IC codes.
+  console.log("\n[Test 4] Verifying default single YOLO export uses part types...");
   const defaultRes = await fetch(
     `http://127.0.0.1:${port}/api/export?id=${project.id}&type=full_tar&format=yolo`,
   );
   assert.equal(defaultRes.status, 200);
   const defaultTar = await unpackTar(Buffer.from(await defaultRes.arrayBuffer()));
   const defaultYaml = defaultTar.get("data.yaml").content.toString("utf8");
-  assert(
-    defaultYaml.includes(boltIc) || defaultYaml.includes(nutIc),
-    "Default single export must retain original IC codes",
-  );
+  assert(defaultYaml.includes("bolt"), "Default YOLO export must include general class 'bolt'");
+  assert(defaultYaml.includes("nut"), "Default YOLO export must include general class 'nut'");
   const defaultManifest = JSON.parse(
     defaultTar.get("export_manifest.json").content.toString("utf8"),
   );
   assert.equal(
     defaultManifest.class_mode,
-    "ic",
-    "Default single export must remain class_mode: ic",
+    "general",
+    "Default single YOLO export must use class_mode: general",
   );
-  console.log("✓ Default single export verified completely unchanged.");
+
+  const icRes = await fetch(
+    `http://127.0.0.1:${port}/api/export?id=${project.id}&type=full_tar&format=yolo&class_mode=ic`,
+  );
+  assert.equal(icRes.status, 200);
+  const icTar = await unpackTar(Buffer.from(await icRes.arrayBuffer()));
+  const icYaml = icTar.get("data.yaml").content.toString("utf8");
+  assert(
+    icYaml.includes(boltIc) || icYaml.includes(nutIc),
+    "Explicit class_mode=ic YOLO export must retain original IC codes",
+  );
+  console.log("✓ Default single YOLO export (part types) and explicit class_mode=ic verified.");
 
   console.log("\n🎉 ALL COMBO EXPORT TESTS PASSED SUCCESSFULLY!");
 } finally {
