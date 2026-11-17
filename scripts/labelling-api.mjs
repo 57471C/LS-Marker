@@ -5425,20 +5425,32 @@ export async function handle(req, res, url, root) {
   async function restartServiceOrVite(viteServer, root) {
     const canViteRestart = Boolean(viteServer && typeof viteServer.restart === "function");
     if (process.platform === "linux") {
+      const systemctlCmd = fs.existsSync("/bin/systemctl") ? "/bin/systemctl" : "systemctl";
       try {
-        const systemctlCmd = fs.existsSync("/bin/systemctl") ? "/bin/systemctl" : "systemctl";
         console.log(
-          `[system] Restarting ls-marker service via sudo -n ${systemctlCmd} restart ls-marker...`,
+          `[system] Restarting ls-marker service via ${systemctlCmd} restart ls-marker...`,
         );
-        await execFileAsync("sudo", ["-n", systemctlCmd, "restart", "ls-marker"], {
+        await execFileAsync(systemctlCmd, ["restart", "ls-marker"], {
           cwd: root,
           timeout: 30000,
         });
         return;
-      } catch (err) {
-        console.error("[system] sudo systemctl restart ls-marker failed:", err);
-        if (!canViteRestart) return;
-        console.log("[system] Falling back to Vite server restart...");
+      } catch (directErr) {
+        console.warn(
+          "[system] Direct systemctl restart ls-marker failed, trying sudo -n:",
+          directErr,
+        );
+        try {
+          await execFileAsync("sudo", ["-n", systemctlCmd, "restart", "ls-marker"], {
+            cwd: root,
+            timeout: 30000,
+          });
+          return;
+        } catch (sudoErr) {
+          console.error("[system] sudo systemctl restart ls-marker failed:", sudoErr);
+          if (!canViteRestart) return;
+          console.log("[system] Falling back to Vite server restart...");
+        }
       }
     }
     if (canViteRestart) {
